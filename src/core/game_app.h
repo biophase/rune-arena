@@ -87,6 +87,7 @@ class GameApp {
     void RenderRunes();
     void RenderIceWalls();
     void RenderPlayers();
+    void RenderMeleeAttacks();
     void RenderProjectiles();
     void RenderParticles();
     void RenderRunePlacementOverlay();

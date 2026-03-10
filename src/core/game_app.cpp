@@ -39,6 +39,10 @@ bool IsHorizontalDirection(SpellDirection direction) {
            direction == SpellDirection::Right;
 }
 
+float AimToDegrees(Vector2 aim_dir) {
+    return std::atan2f(aim_dir.y, aim_dir.x) * (180.0f / PI);
+}
+
 Rectangle SnapRect(Rectangle rect) {
     rect.x = std::roundf(rect.x);
     rect.y = std::roundf(rect.y);
@@ -612,6 +616,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         player.team = player_snapshot.team;
         player.pos = {player_snapshot.pos_x, player_snapshot.pos_y};
         player.vel = {player_snapshot.vel_x, player_snapshot.vel_y};
+        player.aim_dir = {player_snapshot.aim_dir_x, player_snapshot.aim_dir_y};
         player.hp = player_snapshot.hp;
         player.kills = player_snapshot.kills;
         player.alive = player_snapshot.alive;
@@ -699,6 +704,8 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         player_snapshot.pos_y = player.pos.y;
         player_snapshot.vel_x = player.vel.x;
         player_snapshot.vel_y = player.vel.y;
+        player_snapshot.aim_dir_x = player.aim_dir.x;
+        player_snapshot.aim_dir_y = player.aim_dir.y;
         player_snapshot.hp = player.hp;
         player_snapshot.kills = player.kills;
         player_snapshot.alive = player.alive;
@@ -803,7 +810,7 @@ void GameApp::SimulateHostGameplay(float dt) {
     UpdateIceWalls(dt);
 
     for (auto& player : state_.players) {
-        if (player.melee_active_remaining > 0.0f && player.alive && !player.melee_hit_consumed) {
+        if (player.melee_active_remaining > 0.0f && player.alive) {
             HandleMeleeHit(player);
         }
     }
@@ -853,7 +860,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         } else if (player.melee_cooldown_remaining <= 0.0f) {
             player.melee_cooldown_remaining = Constants::kMeleeCooldownSeconds;
             player.melee_active_remaining = Constants::kMeleeActiveWindowSeconds;
-            player.melee_hit_consumed = false;
+            player.melee_hit_target_ids.clear();
             player.action_state = PlayerActionState::Slashing;
         }
     }
@@ -1013,7 +1020,7 @@ void GameApp::UpdateProjectiles(float dt) {
 
         if (!destroy_projectile) {
             const int wall_cell_size = state_.map.cell_size;
-            for (const auto& wall : state_.ice_walls) {
+            for (auto& wall : state_.ice_walls) {
                 if (!wall.alive || wall.state != IceWallState::Active) {
                     continue;
                 }
@@ -1024,6 +1031,11 @@ void GameApp::UpdateProjectiles(float dt) {
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;
                 if (CollisionWorld::CircleVsAabb(projectile.pos, projectile.radius, aabb, normal, penetration)) {
+                    wall.hp = std::max(0.0f, wall.hp - static_cast<float>(projectile.damage));
+                    if (wall.hp <= 0.0f) {
+                        wall.state = IceWallState::Dying;
+                        wall.state_time = 0.0f;
+                    }
                     destroy_projectile = true;
                     break;
                 }
@@ -1245,12 +1257,19 @@ void GameApp::ResolvePlayerCollisions() {
 }
 
 void GameApp::HandleMeleeHit(Player& attacker) {
-    const Vector2 hit_center = Vector2Add(
-        attacker.pos,
-        Vector2Scale(attacker.aim_dir, attacker.radius + Constants::kMeleeRange));
+    const float attack_elapsed = Constants::kMeleeActiveWindowSeconds - attacker.melee_active_remaining;
+    if (attack_elapsed < Constants::kMeleeHitStartSeconds || attack_elapsed > Constants::kMeleeHitEndSeconds) {
+        return;
+    }
+
+    const Vector2 hit_center = Vector2Add(attacker.pos, Vector2Scale(attacker.aim_dir, Constants::kMeleeRange));
 
     for (auto& target : state_.players) {
         if (!target.alive || target.team == attacker.team || target.id == attacker.id) {
+            continue;
+        }
+        if (std::find(attacker.melee_hit_target_ids.begin(), attacker.melee_hit_target_ids.end(), target.id) !=
+            attacker.melee_hit_target_ids.end()) {
             continue;
         }
 
@@ -1263,7 +1282,7 @@ void GameApp::HandleMeleeHit(Player& attacker) {
 
         target.hp -= Constants::kMeleeDamage;
         event_queue_.Push(PlayerHitEvent{attacker.id, target.id, Constants::kMeleeDamage, "melee"});
-        attacker.melee_hit_consumed = true;
+        attacker.melee_hit_target_ids.push_back(target.id);
 
         if (target.hp <= 0 && target.alive) {
             target.alive = false;
@@ -1276,7 +1295,6 @@ void GameApp::HandleMeleeHit(Player& attacker) {
             }
             event_queue_.Push(PlayerDiedEvent{target.id, attacker.id});
         }
-        return;
     }
 }
 
@@ -1499,6 +1517,7 @@ void GameApp::RenderWorld() {
     RenderProjectiles();
     RenderParticles();
     RenderPlayers();
+    RenderMeleeAttacks();
     RenderRunePlacementOverlay();
     EndMode2D();
 }
@@ -1681,6 +1700,35 @@ void GameApp::RenderPlayers() {
         const int text_y =
             static_cast<int>(health_bar.y + (health_bar.height - static_cast<float>(font_size)) * 0.5f);
         DrawText(hp_text, text_x, text_y, font_size, BLACK);
+    }
+}
+
+void GameApp::RenderMeleeAttacks() {
+    if (!sprite_metadata_.IsLoaded() || !sprite_metadata_.HasAnimation("melee_attack")) {
+        return;
+    }
+
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    for (const auto& player : state_.players) {
+        if (!player.alive || player.melee_active_remaining <= 0.0f) {
+            continue;
+        }
+
+        const float attack_elapsed = Constants::kMeleeActiveWindowSeconds - player.melee_active_remaining;
+        const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+        const float rotation = AimToDegrees(player.aim_dir);
+
+        const Rectangle src =
+            InsetSourceRect(sprite_metadata_.GetFrame("melee_attack", "default", attack_elapsed),
+                            Constants::kAtlasSampleInsetPixels);
+
+        const float visual_size = 32.0f * Constants::kMeleeAttackVisualScale;
+        Rectangle dst = {draw_pos.x, draw_pos.y, visual_size, visual_size};
+        dst = SnapRect(dst);
+
+        // Rotate around player centroid and keep slash offset one cell to the east at 0 degrees.
+        const Vector2 origin = {visual_size * 0.5f - Constants::kMeleeRange, visual_size * 0.5f};
+        DrawTexturePro(texture, src, dst, origin, rotation, WHITE);
     }
 }
 

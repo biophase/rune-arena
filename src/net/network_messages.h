@@ -26,6 +26,8 @@ struct PlayerSnapshot {
     float pos_y = 0.0f;
     float vel_x = 0.0f;
     float vel_y = 0.0f;
+    float aim_dir_x = 1.0f;
+    float aim_dir_y = 0.0f;
     int hp = 100;
     int kills = 0;
     bool alive = true;

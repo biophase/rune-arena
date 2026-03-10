@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <raylib.h>
 
@@ -32,7 +33,7 @@ struct Player {
 
     float melee_cooldown_remaining = 0.0f;
     float melee_active_remaining = 0.0f;
-    bool melee_hit_consumed = false;
+    std::vector<int> melee_hit_target_ids;
 
     // Emitter-capable state (currently not active on players).
     bool emitter_enabled = false;

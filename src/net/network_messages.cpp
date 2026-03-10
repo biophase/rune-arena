@@ -47,6 +47,8 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"pos_y", player.pos_y},
             {"vel_x", player.vel_x},
             {"vel_y", player.vel_y},
+            {"aim_dir_x", player.aim_dir_x},
+            {"aim_dir_y", player.aim_dir_y},
             {"hp", player.hp},
             {"kills", player.kills},
             {"alive", player.alive},
@@ -127,6 +129,8 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.pos_y = item.value("pos_y", 0.0f);
             player.vel_x = item.value("vel_x", 0.0f);
             player.vel_y = item.value("vel_y", 0.0f);
+            player.aim_dir_x = item.value("aim_dir_x", 1.0f);
+            player.aim_dir_y = item.value("aim_dir_y", 0.0f);
             player.hp = item.value("hp", 100);
             player.kills = item.value("kills", 0);
             player.alive = item.value("alive", true);

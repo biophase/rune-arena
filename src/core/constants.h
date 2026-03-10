@@ -35,11 +35,14 @@ constexpr float kProjectileSmokeBackVelocityFactor = -0.08f;
 constexpr float kSmokeEmitterOffsetStdDev = 4.0f;
 constexpr float kSmokeEmitterVelocityJitterStdDev = 10.0f;
 
-constexpr float kMeleeCooldownSeconds = 0.45f;
-constexpr float kMeleeActiveWindowSeconds = 0.12f;
-constexpr float kMeleeRange = 20.0f;
+constexpr float kMeleeCooldownSeconds = 0.3f;
+constexpr float kMeleeActiveWindowSeconds = 0.3f;
+constexpr float kMeleeHitStartSeconds = 0.1f;
+constexpr float kMeleeHitEndSeconds = 0.3f;
+constexpr float kMeleeRange = 32.0f;
 constexpr float kMeleeHitRadius = 14.0f;
 constexpr int kMeleeDamage = 24;
+constexpr float kMeleeAttackVisualScale = 2.0f;
 constexpr float kRunePlaceCooldownSeconds = 1.0f;
 
 constexpr int kMatchDurationSeconds = 120;
