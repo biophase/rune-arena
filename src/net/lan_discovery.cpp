@@ -2,9 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
-
-#include <raylib.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -23,6 +22,12 @@ using SocketLenType = socklen_t;
 namespace {
 
 constexpr const char* kDiscoveryMagic = "RUNE_ARENA";
+
+double GetNowSeconds() {
+    static const auto start = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(now - start).count();
+}
 
 void CloseSocketSafe(int& socket_fd) {
     if (socket_fd < 0) {
@@ -135,7 +140,7 @@ void LanDiscovery::Stop() {
 }
 
 void LanDiscovery::Update() {
-    const double now = GetTime();
+    const double now = GetNowSeconds();
 
     if (broadcaster_socket_ >= 0 && now >= next_broadcast_time_seconds_) {
         sockaddr_in target = {};

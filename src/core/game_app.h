@@ -102,8 +102,6 @@ class GameApp {
 
     AppScreen app_screen_ = AppScreen::MainMenu;
     Camera2D camera_ = {};
-    RenderTexture2D mirrored_side_frame_ = {};
-
     std::unordered_map<int, ClientInputMessage> latest_remote_inputs_;
 
     int local_input_tick_ = 0;

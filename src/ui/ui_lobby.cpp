@@ -1,7 +1,7 @@
 #include "ui/ui_lobby.h"
 
-#include <raygui.h>
 #include <raylib.h>
+#include <raygui.h>
 
 LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_host, const std::string& host_display_ip,
                         int round_time_seconds, const std::string& mode_name) {

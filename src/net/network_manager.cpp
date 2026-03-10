@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include <enet/enet.h>
 #include <nlohmann/json.hpp>
 
 namespace {

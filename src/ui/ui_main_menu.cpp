@@ -2,8 +2,8 @@
 
 #include <cstdio>
 
-#include <raygui.h>
 #include <raylib.h>
+#include <raygui.h>
 
 MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_size, char* join_ip_buffer,
                               int join_ip_buffer_size, const std::vector<DiscoveredHost>& discovered_hosts,

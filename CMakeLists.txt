@@ -35,4 +35,5 @@ target_link_libraries(rune_arena PRIVATE
 
 if(WIN32)
     target_link_libraries(rune_arena PRIVATE ws2_32)
+    target_compile_definitions(rune_arena PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()

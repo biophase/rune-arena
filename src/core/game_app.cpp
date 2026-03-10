@@ -102,8 +102,6 @@ bool GameApp::Initialize() {
 
     sprite_metadata_.LoadFromFile(Constants::kSpriteMetadataPath);
     spell_patterns_.LoadFromFile(Constants::kSpellPatternPath);
-    mirrored_side_frame_ = LoadRenderTexture(32, 32);
-
     camera_.target = {0.0f, 0.0f};
     camera_.offset = {static_cast<float>(settings_.window_width) * 0.5f,
                       static_cast<float>(settings_.window_height) * 0.5f};
@@ -163,10 +161,6 @@ void GameApp::Shutdown() {
 
     lan_discovery_.Stop();
     network_manager_.Stop();
-    if (mirrored_side_frame_.id != 0) {
-        UnloadRenderTexture(mirrored_side_frame_);
-        mirrored_side_frame_ = {};
-    }
     sprite_metadata_.Unload();
     CloseWindow();
 }
@@ -1151,19 +1145,11 @@ void GameApp::RenderPlayers() {
                 tint = Color{215, 230, 255, 255};
             }
 
-            if (mirror && mirrored_side_frame_.id != 0) {
-                // Workflow: crop side frame -> mirror within 32x32 tile -> animate using same side coords.
-                BeginTextureMode(mirrored_side_frame_);
-                ClearBackground(Color{0, 0, 0, 0});
-                const Rectangle mirror_dst = {32.0f, 0.0f, -32.0f, 32.0f};
-                DrawTexturePro(texture, src, mirror_dst, {0, 0}, 0.0f, WHITE);
-                EndTextureMode();
-
-                const Rectangle cache_src = {0.0f, 0.0f, 32.0f, -32.0f};
-                DrawTexturePro(mirrored_side_frame_.texture, cache_src, dst, {0, 0}, 0.0f, tint);
-            } else {
-                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+            if (mirror) {
+                src.x += src.width;
+                src.width = -src.width;
             }
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
         } else {
             const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
             DrawCircleV(player.pos, player.radius, fallback);

@@ -5,9 +5,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include <enet/enet.h>
-
 #include "net/network_messages.h"
+
+struct _ENetHost;
+struct _ENetPeer;
+typedef struct _ENetHost ENetHost;
+typedef struct _ENetPeer ENetPeer;
 
 struct RemotePlayerInfo {
     int player_id = -1;
