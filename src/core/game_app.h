@@ -11,6 +11,7 @@
 #include "assets/map_loader.h"
 #include "assets/sprite_metadata.h"
 #include "config/config_manager.h"
+#include "config/controls_manager.h"
 #include "emitters/smoke_emitter.h"
 #include "events/event_queue.h"
 #include "modes/most_kills_mode.h"
@@ -100,6 +101,8 @@ class GameApp {
     std::string GetClientLobbyStatusText() const;
 
     ConfigManager config_manager_;
+    ControlsManager controls_manager_;
+    ControlsBindings controls_bindings_;
     UserSettings settings_;
     MapLoader map_loader_;
     SpriteMetadataLoader sprite_metadata_;

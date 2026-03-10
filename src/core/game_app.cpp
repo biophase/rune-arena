@@ -98,6 +98,8 @@ bool GameApp::Initialize() {
         settings_.fullscreen = true;
     }
     initial_fullscreen_setting_ = settings_.fullscreen;
+    controls_manager_.Load(controls_bindings_);
+    controls_manager_.Save(controls_bindings_);
 
     std::snprintf(player_name_buffer_, sizeof(player_name_buffer_), "%s", settings_.player_name.c_str());
     std::snprintf(join_ip_buffer_, sizeof(join_ip_buffer_), "%s", "127.0.0.1");
@@ -172,9 +174,9 @@ void GameApp::Run() {
 }
 
 void GameApp::CaptureFrameInputEdges() {
-    pending_primary_pressed_ = pending_primary_pressed_ || IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
-    pending_select_fire_ = pending_select_fire_ || IsKeyPressed(KEY_ONE);
-    pending_select_water_ = pending_select_water_ || IsKeyPressed(KEY_TWO);
+    pending_primary_pressed_ = pending_primary_pressed_ || IsBindingPressed(controls_bindings_.primary_action);
+    pending_select_fire_ = pending_select_fire_ || IsBindingPressed(controls_bindings_.select_fire_rune);
+    pending_select_water_ = pending_select_water_ || IsBindingPressed(controls_bindings_.select_water_rune);
 }
 
 void GameApp::Shutdown() {
@@ -400,8 +402,8 @@ void GameApp::Render() {
         case AppScreen::MainMenu: {
             const MainMenuUiResult ui_result =
                 DrawMainMenu(player_name_buffer_, sizeof(player_name_buffer_), join_ip_buffer_, sizeof(join_ip_buffer_),
-                             lan_discovery_.GetHosts(), config_manager_.GetConfigPath(), main_menu_status_message_,
-                             main_menu_status_is_error_);
+                             lan_discovery_.GetHosts(), config_manager_.GetConfigPath(), controls_bindings_,
+                             controls_manager_.GetControlsPath(), main_menu_status_message_, main_menu_status_is_error_);
 
             if (ui_result.request_host) {
                 StartAsHost();
@@ -410,6 +412,17 @@ void GameApp::Render() {
                 const int join_port =
                     ui_result.selected_host_port > 0 ? ui_result.selected_host_port : Constants::kDefaultPort;
                 StartAsClient(ui_result.selected_host_ip, join_port);
+            }
+            if (ui_result.request_apply_controls) {
+                controls_bindings_ = ui_result.controls_bindings;
+                if (controls_manager_.Save(controls_bindings_)) {
+                    main_menu_status_message_ =
+                        TextFormat("Controls saved: %s", controls_manager_.GetControlsPath().c_str());
+                    main_menu_status_is_error_ = false;
+                } else {
+                    main_menu_status_message_ = "Failed to save controls.json";
+                    main_menu_status_is_error_ = true;
+                }
             }
             break;
         }
@@ -622,6 +635,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         player.alive = player_snapshot.alive;
         player.facing = static_cast<FacingDirection>(player_snapshot.facing);
         player.action_state = static_cast<PlayerActionState>(player_snapshot.action_state);
+        player.melee_active_remaining = player_snapshot.melee_active_remaining;
         player.rune_placing_mode = player_snapshot.rune_placing_mode;
         player.selected_rune_type = static_cast<RuneType>(player_snapshot.selected_rune_type);
         player.rune_place_cooldown_remaining = player_snapshot.rune_place_cooldown_remaining;
@@ -711,6 +725,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         player_snapshot.alive = player.alive;
         player_snapshot.facing = static_cast<int>(player.facing);
         player_snapshot.action_state = static_cast<int>(player.action_state);
+        player_snapshot.melee_active_remaining = player.melee_active_remaining;
         player_snapshot.rune_placing_mode = player.rune_placing_mode;
         player_snapshot.selected_rune_type = static_cast<int>(player.selected_rune_type);
         player_snapshot.rune_place_cooldown_remaining = player.rune_place_cooldown_remaining;
@@ -770,10 +785,10 @@ ClientInputMessage GameApp::BuildLocalInput(int local_player_id) {
 
     input.move_x = 0.0f;
     input.move_y = 0.0f;
-    if (IsKeyDown(KEY_A)) input.move_x -= 1.0f;
-    if (IsKeyDown(KEY_D)) input.move_x += 1.0f;
-    if (IsKeyDown(KEY_W)) input.move_y -= 1.0f;
-    if (IsKeyDown(KEY_S)) input.move_y += 1.0f;
+    if (IsBindingDown(controls_bindings_.move_left)) input.move_x -= 1.0f;
+    if (IsBindingDown(controls_bindings_.move_right)) input.move_x += 1.0f;
+    if (IsBindingDown(controls_bindings_.move_up)) input.move_y -= 1.0f;
+    if (IsBindingDown(controls_bindings_.move_down)) input.move_y += 1.0f;
 
     Vector2 mouse_world = GetScreenToWorld2D(GetMousePosition(), camera_);
     input.aim_x = mouse_world.x;
@@ -1849,17 +1864,38 @@ void GameApp::RenderDebugRuneCooldown() {
     }
 
     const float cooldown = local_player->rune_place_cooldown_remaining;
-    const bool ready = cooldown <= 0.0f;
-    const int x = 16;
-    const int y = GetScreenHeight() - 54;
-    DrawRectangle(x - 8, y - 8, 260, 42, Color{0, 0, 0, 150});
-    char cooldown_text[64] = {};
-    if (ready) {
-        std::snprintf(cooldown_text, sizeof(cooldown_text), "Rune Place CD: READY");
-    } else {
-        std::snprintf(cooldown_text, sizeof(cooldown_text), "Rune Place CD: %.2fs", cooldown);
+    if (cooldown <= 0.0f) {
+        return;
     }
-    DrawText(cooldown_text, x, y, 20, ready ? Color{120, 240, 140, 255} : Color{255, 210, 120, 255});
+
+    const float duration = std::max(0.001f, local_player->rune_place_cooldown_duration);
+    const float ratio = std::clamp(cooldown / duration, 0.0f, 1.0f);
+
+    const float x = 16.0f;
+    const float y = static_cast<float>(GetScreenHeight()) - 22.0f;
+    const Rectangle bar = {x, y, Constants::kRuneCooldownBarWidth, Constants::kRuneCooldownBarHeight};
+
+    const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
+                            static_cast<unsigned char>(Constants::kPlayerHealthBarFillG),
+                            static_cast<unsigned char>(Constants::kPlayerHealthBarFillB), 255};
+    const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
+                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
+                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
+
+    DrawRectangleRec(bar, bar_missing);
+    Rectangle fill = bar;
+    fill.width = std::roundf(fill.width * ratio);
+    if (fill.width > 0.0f) {
+        DrawRectangleRec(fill, bar_fill);
+    }
+
+    char cooldown_text[32] = {};
+    std::snprintf(cooldown_text, sizeof(cooldown_text), "%.2fs", cooldown);
+    const int font_size = Constants::kRuneCooldownTextFontSize;
+    const int text_width = MeasureText(cooldown_text, font_size);
+    const int text_x = static_cast<int>(bar.x + (bar.width - static_cast<float>(text_width)) * 0.5f);
+    const int text_y = static_cast<int>(bar.y - static_cast<float>(font_size) - 2.0f);
+    DrawText(cooldown_text, text_x, text_y, font_size, WHITE);
 }
 
 void GameApp::UpdateCameraTarget() {

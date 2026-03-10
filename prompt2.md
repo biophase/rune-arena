@@ -17,3 +17,8 @@ Long term
 - dash ability
 - melee cooldown
 - melee animation
+
+Can you apply the following fixes:
+- only host can see melee attack animations. can you make all attack animations visible to all players?
+- can you make the cooldown of rune placing from 1 sec to 0.5 seconds? also add an indicator ui at the bottom left of the screen, that shows time until rune is available. (it's a bar similar to the halth bar with a number showing the seconds with 2 decimal places). The indicator is hidden if the runes are availalble. 
+- choose a new port please

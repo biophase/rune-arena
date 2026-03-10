@@ -54,6 +54,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"alive", player.alive},
             {"facing", player.facing},
             {"action_state", player.action_state},
+            {"melee_active_remaining", player.melee_active_remaining},
             {"rune_placing_mode", player.rune_placing_mode},
             {"selected_rune_type", player.selected_rune_type},
             {"rune_place_cooldown_remaining", player.rune_place_cooldown_remaining},
@@ -136,6 +137,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.alive = item.value("alive", true);
             player.facing = item.value("facing", 0);
             player.action_state = item.value("action_state", 0);
+            player.melee_active_remaining = item.value("melee_active_remaining", 0.0f);
             player.rune_placing_mode = item.value("rune_placing_mode", false);
             player.selected_rune_type = item.value("selected_rune_type", 0);
             player.rune_place_cooldown_remaining = item.value("rune_place_cooldown_remaining", 0.0f);

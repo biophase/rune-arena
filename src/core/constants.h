@@ -7,8 +7,8 @@ namespace Constants {
 
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
-constexpr int kDefaultPort = 7789;
-constexpr int kDiscoveryPort = 7790;
+constexpr int kDefaultPort = 7867;
+constexpr int kDiscoveryPort = 7868;
 
 constexpr double kFixedDt = 1.0 / 60.0;
 constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 30.0f;
@@ -43,7 +43,7 @@ constexpr float kMeleeRange = 32.0f;
 constexpr float kMeleeHitRadius = 14.0f;
 constexpr int kMeleeDamage = 24;
 constexpr float kMeleeAttackVisualScale = 2.0f;
-constexpr float kRunePlaceCooldownSeconds = 1.0f;
+constexpr float kRunePlaceCooldownSeconds = 0.5f;
 
 constexpr int kMatchDurationSeconds = 120;
 constexpr int kMaxHp = 100;
@@ -57,6 +57,9 @@ constexpr int kPlayerHealthBarFillB = 65;
 constexpr int kPlayerHealthBarMissingR = 200;
 constexpr int kPlayerHealthBarMissingG = 204;
 constexpr int kPlayerHealthBarMissingB = 182;
+constexpr float kRuneCooldownBarWidth = 128.0f;
+constexpr float kRuneCooldownBarHeight = 8.0f;
+constexpr int kRuneCooldownTextFontSize = 14;
 
 constexpr int kRuneCellSize = 32;
 constexpr int kPlacementPreviewRadiusCells = 3;
@@ -77,5 +80,6 @@ constexpr const char* kSpellPatternPath = "assets/spell_patterns.json";
 
 constexpr const char* kConfigFolderName = "RuneArena";
 constexpr const char* kConfigFileName = "config.json";
+constexpr const char* kControlsFileName = "controls.json";
 
 }  // namespace Constants

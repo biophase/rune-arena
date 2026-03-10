@@ -33,6 +33,7 @@ struct PlayerSnapshot {
     bool alive = true;
     int facing = 0;
     int action_state = 0;
+    float melee_active_remaining = 0.0f;
     bool rune_placing_mode = false;
     int selected_rune_type = 0;
     float rune_place_cooldown_remaining = 0.0f;
