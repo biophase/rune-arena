@@ -20,6 +20,7 @@
 
 enum class AppScreen {
     MainMenu,
+    Connecting,
     Lobby,
     InMatch,
     PostMatch,
@@ -39,6 +40,7 @@ class GameApp {
     void CaptureFrameInputEdges();
 
     void UpdateMainMenu(float dt);
+    void UpdateConnecting(float dt);
     void UpdateLobby(float dt);
     void UpdateMatch(float dt);
     void UpdatePostMatch(float dt);
@@ -85,6 +87,7 @@ class GameApp {
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
+    std::string GetClientLobbyStatusText() const;
 
     ConfigManager config_manager_;
     UserSettings settings_;
@@ -106,6 +109,7 @@ class GameApp {
 
     int local_input_tick_ = 0;
     double snapshot_accumulator_ = 0.0;
+    double lobby_broadcast_accumulator_ = 0.0;
     int winning_team_ = -1;
 
     char player_name_buffer_[64] = {};
@@ -116,6 +120,7 @@ class GameApp {
     std::string resolved_tile_mapping_path_;
     std::string resolved_sprite_metadata_path_;
     std::string resolved_spell_pattern_path_;
+    double connect_attempt_start_seconds_ = 0.0;
 
     float render_time_seconds_ = 0.0f;
     bool force_windowed_launch_ = false;

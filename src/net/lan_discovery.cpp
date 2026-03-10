@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 
 #ifdef _WIN32
@@ -23,6 +24,7 @@ using SocketLenType = socklen_t;
 namespace {
 
 constexpr const char* kDiscoveryMagic = "RUNE_ARENA";
+constexpr double kHostStaleTimeoutSeconds = 8.0;
 
 double GetNowSeconds() {
     static const auto start = std::chrono::steady_clock::now();
@@ -135,6 +137,8 @@ bool LanDiscovery::StartHostBroadcaster(const std::string& host_name, int game_p
     host_local_ip_ = DetectLocalIpv4Address();
     host_port_ = game_port;
     next_broadcast_time_seconds_ = 0.0;
+    std::printf("[DISCOVERY] Host broadcaster started as '%s' at %s:%d\n", host_name_.c_str(),
+                host_local_ip_.c_str(), host_port_);
     return true;
 }
 
@@ -164,6 +168,7 @@ bool LanDiscovery::StartClientListener() {
     }
 
     SetSocketNonBlocking(listener_socket_);
+    std::printf("[DISCOVERY] Client listener started on UDP %d\n", 7778);
     return true;
 }
 
@@ -232,11 +237,17 @@ void LanDiscovery::Update() {
             host.ip = EndpointToIpString(source);
             host.port = port;
             host.last_seen_seconds = now;
+            const bool was_known = discovered_hosts_.find(host.ip) != discovered_hosts_.end();
             discovered_hosts_[host.ip] = host;
+            if (!was_known) {
+                std::printf("[DISCOVERY] Found host '%s' at %s:%d\n", host.name.c_str(), host.ip.c_str(), host.port);
+            }
         }
 
         for (auto it = discovered_hosts_.begin(); it != discovered_hosts_.end();) {
-            if (now - it->second.last_seen_seconds > 3.0) {
+            if (now - it->second.last_seen_seconds > kHostStaleTimeoutSeconds) {
+                std::printf("[DISCOVERY] Host timed out '%s' at %s:%d\n", it->second.name.c_str(),
+                            it->second.ip.c_str(), it->second.port);
                 it = discovered_hosts_.erase(it);
             } else {
                 ++it;

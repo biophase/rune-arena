@@ -4,7 +4,7 @@
 #include <raygui.h>
 
 LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_host, const std::string& host_display_ip,
-                        int round_time_seconds, const std::string& mode_name) {
+                        int round_time_seconds, const std::string& mode_name, const std::string& connection_status) {
     LobbyUiResult result;
 
     const int panel_w = 720;
@@ -21,12 +21,17 @@ LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_ho
     DrawText(TextFormat("Mode: %s", mode_name.c_str()), panel_x + 20, panel_y + 92, 20, Color{196, 205, 228, 255});
     DrawText(TextFormat("Round Time: %d", round_time_seconds), panel_x + 20, panel_y + 122, 20,
              Color{196, 205, 228, 255});
+    DrawText(TextFormat("Status: %s", connection_status.c_str()), panel_x + 20, panel_y + 152, 18,
+             Color{168, 220, 188, 255});
 
-    DrawText("Players", panel_x + 20, panel_y + 170, 22, RAYWHITE);
+    DrawText("Players", panel_x + 20, panel_y + 188, 22, RAYWHITE);
     for (size_t i = 0; i < player_names.size(); ++i) {
-        const int y = panel_y + 202 + static_cast<int>(i) * 30;
+        const int y = panel_y + 220 + static_cast<int>(i) * 30;
         DrawRectangle(panel_x + 20, y, 460, 24, Color{39, 43, 53, 255});
         DrawText(player_names[i].c_str(), panel_x + 28, y + 4, 16, Color{230, 232, 236, 255});
+    }
+    if (player_names.empty()) {
+        DrawText("(no players yet)", panel_x + 28, panel_y + 220 + 4, 16, Color{170, 176, 190, 255});
     }
 
     if (is_host) {

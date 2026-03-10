@@ -17,6 +17,15 @@ struct RemotePlayerInfo {
     std::string name;
 };
 
+enum class ClientConnectionState {
+    Idle,
+    ConnectingTransport,
+    WaitingJoinAck,
+    WaitingLobbyState,
+    ReadyInLobby,
+    Disconnected,
+};
+
 class NetworkManager {
   public:
     NetworkManager();
@@ -32,6 +41,10 @@ class NetworkManager {
     void Poll();
     bool IsHost() const;
     bool IsConnected() const;
+    ClientConnectionState GetClientConnectionState() const;
+    bool HasReceivedJoinAck() const;
+    bool HasReceivedLobbyState() const;
+    const std::string& GetLastDebugMessage() const;
 
     void SendClientInput(const ClientInputMessage& message);
     std::vector<ClientInputMessage> ConsumeHostInputs();
@@ -75,4 +88,7 @@ class NetworkManager {
     std::optional<ServerSnapshotMessage> latest_snapshot_;
     std::optional<LobbyStateMessage> latest_lobby_state_;
     bool pending_match_start_ = false;
+    bool client_received_lobby_state_ = false;
+    ClientConnectionState client_connection_state_ = ClientConnectionState::Idle;
+    std::string last_debug_message_ = "idle";
 };

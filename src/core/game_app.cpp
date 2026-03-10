@@ -193,6 +193,9 @@ void GameApp::Update(float dt) {
         case AppScreen::MainMenu:
             UpdateMainMenu(dt);
             break;
+        case AppScreen::Connecting:
+            UpdateConnecting(dt);
+            break;
         case AppScreen::Lobby:
             UpdateLobby(dt);
             break;
@@ -209,8 +212,44 @@ void GameApp::UpdateMainMenu(float /*dt*/) {
     // Discovery keeps running so joinable hosts appear while user is in the menu.
 }
 
-void GameApp::UpdateLobby(float /*dt*/) {
+void GameApp::UpdateConnecting(float /*dt*/) {
     if (network_manager_.IsHost()) {
+        app_screen_ = AppScreen::Lobby;
+        return;
+    }
+
+    if (const auto lobby_update = network_manager_.ConsumeLobbyState(); lobby_update.has_value()) {
+        lobby_player_names_.clear();
+        for (const auto& player : lobby_update->players) {
+            lobby_player_names_.push_back(player.name);
+        }
+    }
+
+    if (network_manager_.HasReceivedJoinAck() || network_manager_.HasReceivedLobbyState()) {
+        app_screen_ = AppScreen::Lobby;
+        return;
+    }
+
+    const ClientConnectionState state = network_manager_.GetClientConnectionState();
+    const double now = GetTime();
+    if (state == ClientConnectionState::Disconnected && (now - connect_attempt_start_seconds_) > 0.4) {
+        network_manager_.Stop();
+        app_screen_ = AppScreen::MainMenu;
+        return;
+    }
+
+    constexpr double kConnectTimeoutSeconds = 10.0;
+    if ((now - connect_attempt_start_seconds_) > kConnectTimeoutSeconds) {
+        std::printf("[NET] Client connection timed out after %.1fs\n", kConnectTimeoutSeconds);
+        network_manager_.Stop();
+        app_screen_ = AppScreen::MainMenu;
+    }
+}
+
+void GameApp::UpdateLobby(float dt) {
+    if (network_manager_.IsHost()) {
+        lobby_broadcast_accumulator_ += dt;
+
         lobby_player_names_.clear();
         lobby_player_names_.push_back(player_name_buffer_);
 
@@ -223,7 +262,10 @@ void GameApp::UpdateLobby(float /*dt*/) {
             lobby_state.players.push_back({remote.player_id, remote.name});
         }
 
-        network_manager_.BroadcastLobbyState(lobby_state);
+        if (lobby_broadcast_accumulator_ >= 0.2) {
+            lobby_broadcast_accumulator_ = 0.0;
+            network_manager_.BroadcastLobbyState(lobby_state);
+        }
     } else {
         const auto lobby_update = network_manager_.ConsumeLobbyState();
         if (lobby_update.has_value()) {
@@ -293,15 +335,28 @@ void GameApp::Render() {
                 StartAsHost();
             }
             if (ui_result.request_join) {
-                const int join_port = ui_result.selected_host_port > 0 ? ui_result.selected_host_port : Constants::kDefaultPort;
+                const int join_port =
+                    ui_result.selected_host_port > 0 ? ui_result.selected_host_port : Constants::kDefaultPort;
                 StartAsClient(ui_result.selected_host_ip, join_port);
+            }
+            break;
+        }
+
+        case AppScreen::Connecting: {
+            const LobbyUiResult lobby_ui =
+                DrawLobby(lobby_player_names_, false, host_display_ip_, Constants::kMatchDurationSeconds,
+                          most_kills_mode_.GetUiName(), GetClientLobbyStatusText());
+            if (lobby_ui.request_leave) {
+                ReturnToMainMenu();
             }
             break;
         }
 
         case AppScreen::Lobby: {
             const LobbyUiResult lobby_ui = DrawLobby(lobby_player_names_, network_manager_.IsHost(), host_display_ip_,
-                                                     Constants::kMatchDurationSeconds, most_kills_mode_.GetUiName());
+                                                     Constants::kMatchDurationSeconds, most_kills_mode_.GetUiName(),
+                                                     network_manager_.IsHost() ? "hosting/listening"
+                                                                              : GetClientLobbyStatusText());
             if (lobby_ui.request_leave) {
                 ReturnToMainMenu();
             }
@@ -343,6 +398,8 @@ void GameApp::StartAsHost() {
     host_display_ip_ = TextFormat("%s:%d", lan_discovery_.GetHostLocalIp().c_str(), Constants::kDefaultPort);
     lobby_player_names_.clear();
     lobby_player_names_.push_back(settings_.player_name);
+    lobby_broadcast_accumulator_ = 0.0;
+    connect_attempt_start_seconds_ = 0.0;
 
     app_screen_ = AppScreen::Lobby;
 }
@@ -366,7 +423,9 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
 
     host_display_ip_ = TextFormat("%s:%d", ip.c_str(), port);
     lobby_player_names_.clear();
-    app_screen_ = AppScreen::Lobby;
+    lobby_broadcast_accumulator_ = 0.0;
+    connect_attempt_start_seconds_ = GetTime();
+    app_screen_ = AppScreen::Connecting;
 }
 
 void GameApp::ReturnToMainMenu() {
@@ -382,6 +441,8 @@ void GameApp::ReturnToMainMenu() {
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
+    lobby_broadcast_accumulator_ = 0.0;
+    connect_attempt_start_seconds_ = 0.0;
     winning_team_ = -1;
     app_screen_ = AppScreen::MainMenu;
 }
@@ -1324,6 +1385,24 @@ void GameApp::UpdateCameraTarget() {
 
     camera_.offset = {std::roundf(static_cast<float>(GetScreenWidth()) * 0.5f),
                       std::roundf(static_cast<float>(GetScreenHeight()) * 0.5f)};
+}
+
+std::string GameApp::GetClientLobbyStatusText() const {
+    switch (network_manager_.GetClientConnectionState()) {
+        case ClientConnectionState::ConnectingTransport:
+            return "connecting transport...";
+        case ClientConnectionState::WaitingJoinAck:
+            return "connected; waiting join_ack...";
+        case ClientConnectionState::WaitingLobbyState:
+            return "join_ack received; waiting lobby_state...";
+        case ClientConnectionState::ReadyInLobby:
+            return "connected";
+        case ClientConnectionState::Disconnected:
+            return "disconnected";
+        case ClientConnectionState::Idle:
+        default:
+            return "idle";
+    }
 }
 
 FacingDirection GameApp::AimToFacing(Vector2 aim) {

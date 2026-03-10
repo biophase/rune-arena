@@ -1,5 +1,7 @@
 #include "net/network_manager.h"
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 
 #include <enet/enet.h>
@@ -9,6 +11,20 @@ namespace {
 
 nlohmann::json WrapPacket(const std::string& type, const nlohmann::json& payload) {
     return {{"type", type}, {"payload", payload}};
+}
+
+void NetLog(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    std::vprintf(fmt, args);
+    std::printf("\n");
+    va_end(args);
+}
+
+std::string AddressToString(const ENetAddress& address) {
+    char ip[64] = {};
+    enet_address_get_host_ip(&address, ip, sizeof(ip));
+    return std::string(ip);
 }
 
 }  // namespace
@@ -48,6 +64,9 @@ bool NetworkManager::StartHost(int port) {
     is_host_ = true;
     connected_ = true;
     assigned_local_player_id_ = 0;
+    client_connection_state_ = ClientConnectionState::Idle;
+    last_debug_message_ = "host listening";
+    NetLog("[NET] Host started on UDP port %d", port);
     return true;
 }
 
@@ -64,6 +83,8 @@ bool NetworkManager::StartClient() {
 
     is_host_ = false;
     connected_ = false;
+    client_connection_state_ = ClientConnectionState::Disconnected;
+    last_debug_message_ = "client initialized";
     return true;
 }
 
@@ -75,10 +96,26 @@ bool NetworkManager::ConnectToHost(const std::string& ip, int port) {
     ENetAddress address;
     address.port = static_cast<enet_uint16>(port);
     if (enet_address_set_host(&address, ip.c_str()) != 0) {
+        last_debug_message_ = "failed to resolve host address";
+        client_connection_state_ = ClientConnectionState::Disconnected;
         return false;
     }
 
+    assigned_local_player_id_ = -1;
+    latest_lobby_state_.reset();
+    client_received_lobby_state_ = false;
+    pending_match_start_ = false;
+    client_connection_state_ = ClientConnectionState::ConnectingTransport;
+    last_debug_message_ = "connecting transport";
+
     server_peer_ = enet_host_connect(host_, &address, 2, 0);
+    if (server_peer_) {
+        NetLog("[NET] Client connecting to %s:%d", ip.c_str(), port);
+    } else {
+        NetLog("[NET] Client failed to start connect to %s:%d", ip.c_str(), port);
+        client_connection_state_ = ClientConnectionState::Disconnected;
+        last_debug_message_ = "connect start failed";
+    }
     return server_peer_ != nullptr;
 }
 
@@ -94,11 +131,14 @@ void NetworkManager::Stop() {
     latest_snapshot_.reset();
     latest_lobby_state_.reset();
     pending_match_start_ = false;
+    client_received_lobby_state_ = false;
 
     is_host_ = false;
     connected_ = false;
     assigned_local_player_id_ = -1;
     next_remote_player_id_ = 1;
+    client_connection_state_ = ClientConnectionState::Idle;
+    last_debug_message_ = "stopped";
 
     if (enet_initialized_) {
         enet_deinitialize();
@@ -122,10 +162,15 @@ void NetworkManager::Poll() {
                     info.player_id = next_remote_player_id_++;
                     info.name = "Player" + std::to_string(info.player_id);
                     peers_[event.peer] = info;
+                    NetLog("[NET] Host transport connect from %s:%u -> assigned temp id=%d",
+                           AddressToString(event.peer->address).c_str(), event.peer->address.port, info.player_id);
                 } else {
                     connected_ = true;
+                    client_connection_state_ = ClientConnectionState::WaitingJoinAck;
+                    last_debug_message_ = "transport connected, waiting join_ack";
                     nlohmann::json join_payload = {{"name", local_player_name_}};
                     SendJsonToPeer(server_peer_, WrapPacket("join", join_payload), true);
+                    NetLog("[NET] Client transport connected, sent join name='%s'", local_player_name_.c_str());
                 }
                 break;
             }
@@ -147,6 +192,9 @@ void NetworkManager::Poll() {
                             it->second.name = payload.value("name", it->second.name);
                             nlohmann::json ack_payload = {{"player_id", it->second.player_id}};
                             SendJsonToPeer(event.peer, WrapPacket("join_ack", ack_payload), true);
+                            NetLog("[NET] Host received join from '%s' (%s), sent join_ack player_id=%d",
+                                   it->second.name.c_str(), AddressToString(event.peer->address).c_str(),
+                                   it->second.player_id);
                         }
                     } else if (type == "client_input") {
                         auto input = ClientInputFromJson(payload);
@@ -157,12 +205,31 @@ void NetworkManager::Poll() {
                 } else {
                     if (type == "join_ack") {
                         assigned_local_player_id_ = payload.value("player_id", -1);
+                        client_connection_state_ =
+                            client_received_lobby_state_ ? ClientConnectionState::ReadyInLobby
+                                                         : ClientConnectionState::WaitingLobbyState;
+                        last_debug_message_ =
+                            client_received_lobby_state_ ? "join_ack + lobby_state received" : "join_ack received";
+                        NetLog("[NET] Client received join_ack player_id=%d", assigned_local_player_id_);
                     } else if (type == "snapshot") {
                         latest_snapshot_ = ServerSnapshotFromJson(payload);
                     } else if (type == "lobby_state") {
                         latest_lobby_state_ = LobbyStateFromJson(payload);
+                        client_received_lobby_state_ = latest_lobby_state_.has_value();
+                        if (assigned_local_player_id_ >= 0) {
+                            client_connection_state_ = ClientConnectionState::ReadyInLobby;
+                            last_debug_message_ = "lobby_state received";
+                        } else if (connected_) {
+                            client_connection_state_ = ClientConnectionState::WaitingJoinAck;
+                            last_debug_message_ = "lobby_state received before join_ack";
+                        }
+                        if (latest_lobby_state_.has_value()) {
+                            NetLog("[NET] Client received lobby_state with %zu players",
+                                   latest_lobby_state_->players.size());
+                        }
                     } else if (type == "match_start") {
                         pending_match_start_ = true;
+                        NetLog("[NET] Client received match_start");
                     }
                 }
 
@@ -171,10 +238,15 @@ void NetworkManager::Poll() {
             }
             case ENET_EVENT_TYPE_DISCONNECT: {
                 if (is_host_) {
+                    NetLog("[NET] Host disconnect from %s:%u", AddressToString(event.peer->address).c_str(),
+                           event.peer->address.port);
                     peers_.erase(event.peer);
                 } else {
                     connected_ = false;
                     server_peer_ = nullptr;
+                    client_connection_state_ = ClientConnectionState::Disconnected;
+                    last_debug_message_ = "disconnected";
+                    NetLog("[NET] Client disconnected from host");
                 }
                 break;
             }
@@ -192,6 +264,14 @@ bool NetworkManager::IsConnected() const {
     }
     return connected_;
 }
+
+ClientConnectionState NetworkManager::GetClientConnectionState() const { return client_connection_state_; }
+
+bool NetworkManager::HasReceivedJoinAck() const { return assigned_local_player_id_ >= 0; }
+
+bool NetworkManager::HasReceivedLobbyState() const { return client_received_lobby_state_; }
+
+const std::string& NetworkManager::GetLastDebugMessage() const { return last_debug_message_; }
 
 void NetworkManager::SendClientInput(const ClientInputMessage& message) {
     if (is_host_ || !server_peer_) {
