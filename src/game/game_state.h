@@ -5,6 +5,7 @@
 #include <raylib.h>
 
 #include "game/game_types.h"
+#include "game/explosion.h"
 #include "game/match_state.h"
 #include "game/player.h"
 #include "game/projectile.h"
@@ -42,6 +43,7 @@ struct GameState {
     std::vector<Player> players;
     std::vector<Rune> runes;
     std::vector<Projectile> projectiles;
+    std::vector<Explosion> explosions;
     std::vector<Particle> particles;
     MapData map;
 

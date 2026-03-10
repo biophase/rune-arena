@@ -8,7 +8,6 @@
 #include <limits>
 #include <random>
 #include <string>
-#include <unordered_set>
 
 #include <raygui.h>
 #include <raymath.h>
@@ -456,6 +455,7 @@ void GameApp::StartMatchAsHost() {
     state_.players.clear();
     state_.runes.clear();
     state_.projectiles.clear();
+    state_.explosions.clear();
     state_.particles.clear();
     state_.next_rune_placement_order = 1;
     latest_remote_inputs_.clear();
@@ -563,6 +563,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         projectile.alive = projectile_snapshot.alive;
         state_.projectiles.push_back(projectile);
     }
+    state_.explosions.clear();
 
     int max_order = 0;
     for (const auto& rune : state_.runes) {
@@ -685,6 +686,7 @@ void GameApp::SimulateHostGameplay(float dt) {
     }
 
     UpdateProjectiles(dt);
+    UpdateExplosions(dt);
     most_kills_mode_.Update(state_, event_queue_, dt);
     HandleEventsHost();
 
@@ -774,39 +776,140 @@ void GameApp::UpdateProjectiles(float dt) {
         projectile.vel = Vector2Scale(projectile.vel, drag_factor);
         projectile.pos = Vector2Add(projectile.pos, Vector2Scale(projectile.vel, dt));
 
+        bool destroy_projectile = false;
+        std::optional<int> excluded_target_id;
+
         const GridCoord cell = WorldToCell(projectile.pos);
         if (!state_.map.IsInside(cell)) {
+            destroy_projectile = true;
+        }
+
+        if (!destroy_projectile && IsWaterTile(state_.map.GetTile(cell))) {
+            destroy_projectile = true;
+        }
+
+        if (!destroy_projectile) {
+            for (auto& target : state_.players) {
+                if (!target.alive || target.team == projectile.owner_team || target.id == projectile.owner_player_id) {
+                    continue;
+                }
+
+                Vector2 normal = {0.0f, 0.0f};
+                float penetration = 0.0f;
+                if (!CollisionWorld::CircleVsCircle(projectile.pos, projectile.radius, target.pos, target.radius,
+                                                    normal, penetration)) {
+                    continue;
+                }
+
+                target.hp -= projectile.damage;
+                event_queue_.Push(
+                    PlayerHitEvent{projectile.owner_player_id, target.id, projectile.damage, "fire_bolt"});
+                destroy_projectile = true;
+                excluded_target_id = target.id;
+
+                if (target.hp <= 0 && target.alive) {
+                    target.alive = false;
+                    target.hp = 0;
+                    event_queue_.Push(PlayerDiedEvent{target.id, projectile.owner_player_id});
+
+                    if (Player* killer = FindPlayerById(projectile.owner_player_id)) {
+                        killer->kills += 1;
+                        if (killer->team == Constants::kTeamRed) {
+                            state_.match.red_team_kills += 1;
+                        } else {
+                            state_.match.blue_team_kills += 1;
+                        }
+                    }
+                }
+
+                break;
+            }
+        }
+
+        if (destroy_projectile) {
+            SpawnProjectileExplosion(projectile, excluded_target_id);
             projectile.alive = false;
+        }
+    }
+
+    state_.projectiles.erase(std::remove_if(state_.projectiles.begin(), state_.projectiles.end(),
+                                            [](const Projectile& projectile) { return !projectile.alive; }),
+                             state_.projectiles.end());
+}
+
+void GameApp::SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id) {
+    Explosion explosion;
+    explosion.owner_player_id = projectile.owner_player_id;
+    explosion.owner_team = projectile.owner_team;
+    explosion.pos = projectile.pos;
+    explosion.damage = projectile.damage;
+    explosion.radius = Constants::kFireBoltExplosionRadius;
+    explosion.duration_seconds = Constants::kFireBoltExplosionFallbackDuration;
+
+    if (excluded_target_id.has_value()) {
+        explosion.excluded_target_ids.push_back(*excluded_target_id);
+    }
+
+    int frame_count = 0;
+    float fps = 0.0f;
+    if (sprite_metadata_.GetAnimationStats("explosion", "default", frame_count, fps)) {
+        explosion.duration_seconds = static_cast<float>(frame_count) / std::max(0.001f, fps);
+    }
+
+    state_.explosions.push_back(explosion);
+
+    Particle explosion_vfx;
+    explosion_vfx.pos = projectile.pos;
+    explosion_vfx.vel = {0.0f, 0.0f};
+    explosion_vfx.acc = {0.0f, 0.0f};
+    explosion_vfx.drag = 0.0f;
+    explosion_vfx.animation_key = "explosion";
+    explosion_vfx.facing = "default";
+    explosion_vfx.age_seconds = 0.0f;
+    explosion_vfx.max_cycles = 1;
+    explosion_vfx.alive = true;
+    state_.particles.push_back(explosion_vfx);
+}
+
+void GameApp::UpdateExplosions(float dt) {
+    auto has_player_id = [](const std::vector<int>& ids, int player_id) {
+        return std::find(ids.begin(), ids.end(), player_id) != ids.end();
+    };
+
+    for (auto& explosion : state_.explosions) {
+        if (!explosion.alive) {
             continue;
         }
 
-        if (IsWaterTile(state_.map.GetTile(cell))) {
-            projectile.alive = false;
-            continue;
-        }
+        explosion.age_seconds += dt;
 
         for (auto& target : state_.players) {
-            if (!target.alive || target.team == projectile.owner_team || target.id == projectile.owner_player_id) {
+            if (!target.alive || target.team == explosion.owner_team || target.id == explosion.owner_player_id) {
+                continue;
+            }
+            if (has_player_id(explosion.excluded_target_ids, target.id) ||
+                has_player_id(explosion.already_hit_target_ids, target.id)) {
                 continue;
             }
 
             Vector2 normal = {0.0f, 0.0f};
             float penetration = 0.0f;
-            if (!CollisionWorld::CircleVsCircle(projectile.pos, projectile.radius, target.pos, target.radius, normal,
+            if (!CollisionWorld::CircleVsCircle(explosion.pos, explosion.radius, target.pos, target.radius, normal,
                                                 penetration)) {
                 continue;
             }
 
-            target.hp -= projectile.damage;
-            event_queue_.Push(PlayerHitEvent{projectile.owner_player_id, target.id, projectile.damage, "fire_bolt"});
-            projectile.alive = false;
+            target.hp -= explosion.damage;
+            event_queue_.Push(
+                PlayerHitEvent{explosion.owner_player_id, target.id, explosion.damage, "fire_bolt_explosion"});
+            explosion.already_hit_target_ids.push_back(target.id);
 
             if (target.hp <= 0 && target.alive) {
                 target.alive = false;
                 target.hp = 0;
-                event_queue_.Push(PlayerDiedEvent{target.id, projectile.owner_player_id});
+                event_queue_.Push(PlayerDiedEvent{target.id, explosion.owner_player_id});
 
-                if (Player* killer = FindPlayerById(projectile.owner_player_id)) {
+                if (Player* killer = FindPlayerById(explosion.owner_player_id)) {
                     killer->kills += 1;
                     if (killer->team == Constants::kTeamRed) {
                         state_.match.red_team_kills += 1;
@@ -815,14 +918,17 @@ void GameApp::UpdateProjectiles(float dt) {
                     }
                 }
             }
+        }
 
-            break;
+        if (explosion.age_seconds >= explosion.duration_seconds) {
+            explosion.alive = false;
         }
     }
 
-    state_.projectiles.erase(std::remove_if(state_.projectiles.begin(), state_.projectiles.end(),
-                                            [](const Projectile& projectile) { return !projectile.alive; }),
-                             state_.projectiles.end());
+    state_.explosions.erase(
+        std::remove_if(state_.explosions.begin(), state_.explosions.end(),
+                       [](const Explosion& explosion) { return !explosion.alive; }),
+        state_.explosions.end());
 }
 
 void GameApp::UpdateProjectileEmitters() {
@@ -1285,7 +1391,8 @@ void GameApp::RenderParticles() {
                                 Constants::kAtlasSampleInsetPixels);
             Rectangle dst = {particle.pos.x - 16.0f, particle.pos.y - 16.0f, 32.0f, 32.0f};
             dst = SnapRect(dst);
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 200});
+            const unsigned char alpha = particle.animation_key == "explosion" ? 255 : 200;
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, alpha});
         } else {
             DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
         }

@@ -57,11 +57,13 @@ class GameApp {
     void SimulateHostGameplay(float dt);
     void SimulatePlayerFromInput(Player& player, const ClientInputMessage& input, float dt);
     void UpdateProjectiles(float dt);
+    void UpdateExplosions(float dt);
     void ResolvePlayerCollisions();
     void HandleMeleeHit(Player& attacker);
     void HandleEventsHost();
     void UpdateProjectileEmitters();
     void UpdateParticles(float dt);
+    void SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id);
 
     bool TryPlaceRune(Player& player, Vector2 world_mouse);
     void CheckSpellPatterns(const RunePlacedEvent& event);

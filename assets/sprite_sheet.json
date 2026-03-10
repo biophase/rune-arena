@@ -2,6 +2,7 @@
   "texture": "sprite_sheet.png",
   "cell_width": 32,
   "cell_height": 32,
+  "num_columns" : 4,
 
   "animations": {
     "wizard_idle":{
@@ -128,6 +129,14 @@
       "facings":{
         "default":{
           "frames": [[6,0],[6,1],[6,2],[6,3]], 
+          "fps": 8
+        }
+      }
+    },
+    "explosion":{
+      "facings":{
+        "default":{
+          "frames": [[9,0],[9,1],[9,2],[9,3]], 
           "fps": 8
         }
       }
