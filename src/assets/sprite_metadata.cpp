@@ -21,6 +21,7 @@ bool SpriteMetadataLoader::LoadFromFile(const std::string& json_path) {
 
     cell_width_ = json.value("cell_width", 32);
     cell_height_ = json.value("cell_height", 32);
+    num_columns_ = json.value("num_columns", 0);
 
     const std::filesystem::path json_file_path(json_path);
     const std::filesystem::path texture_path =
@@ -32,6 +33,10 @@ bool SpriteMetadataLoader::LoadFromFile(const std::string& json_path) {
         return false;
     }
     SetTextureFilter(texture_, TEXTURE_FILTER_POINT);
+    if (num_columns_ <= 0 && cell_width_ > 0) {
+        num_columns_ = texture_.width / cell_width_;
+    }
+    const int num_rows = (cell_height_ > 0) ? (texture_.height / cell_height_) : 0;
 
     const auto animations_it = json.find("animations");
     if (animations_it == json.end() || !animations_it->is_object()) {
@@ -60,6 +65,22 @@ bool SpriteMetadataLoader::LoadFromFile(const std::string& json_path) {
                     // Frame convention: [row, col].
                     const int cell_y = frame_coord[0].get<int>();
                     const int cell_x = frame_coord[1].get<int>();
+                    if (cell_x < 0 || cell_y < 0) {
+                        TraceLog(LOG_WARNING, "Negative sprite frame index skipped: %s/%s [%d,%d]",
+                                 animation_it.key().c_str(), facing_it.key().c_str(), cell_y, cell_x);
+                        continue;
+                    }
+                    if (num_columns_ > 0 && cell_x >= num_columns_) {
+                        TraceLog(LOG_WARNING,
+                                 "Sprite frame column out of range (num_columns=%d): %s/%s [%d,%d]",
+                                 num_columns_, animation_it.key().c_str(), facing_it.key().c_str(), cell_y, cell_x);
+                        continue;
+                    }
+                    if (num_rows > 0 && cell_y >= num_rows) {
+                        TraceLog(LOG_WARNING, "Sprite frame row out of range (num_rows=%d): %s/%s [%d,%d]", num_rows,
+                                 animation_it.key().c_str(), facing_it.key().c_str(), cell_y, cell_x);
+                        continue;
+                    }
                     facing_data.frames.push_back(
                         Rectangle{static_cast<float>(cell_x * cell_width_), static_cast<float>(cell_y * cell_height_),
                                   static_cast<float>(cell_width_), static_cast<float>(cell_height_)});
@@ -87,6 +108,7 @@ void SpriteMetadataLoader::Unload() {
     }
     loaded_ = false;
     animations_.clear();
+    num_columns_ = 0;
 }
 
 bool SpriteMetadataLoader::IsLoaded() const { return loaded_; }

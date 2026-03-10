@@ -21,6 +21,8 @@ using SocketLenType = int;
 using SocketLenType = socklen_t;
 #endif
 
+#include "core/constants.h"
+
 namespace {
 
 constexpr const char* kDiscoveryMagic = "RUNE_ARENA";
@@ -159,7 +161,7 @@ bool LanDiscovery::StartClientListener() {
 
     sockaddr_in bind_addr = {};
     bind_addr.sin_family = AF_INET;
-    bind_addr.sin_port = htons(7778);
+    bind_addr.sin_port = htons(static_cast<uint16_t>(Constants::kDiscoveryPort));
     bind_addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(listener_socket_, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0) {
@@ -168,7 +170,7 @@ bool LanDiscovery::StartClientListener() {
     }
 
     SetSocketNonBlocking(listener_socket_);
-    std::printf("[DISCOVERY] Client listener started on UDP %d\n", 7778);
+    std::printf("[DISCOVERY] Client listener started on UDP %d\n", Constants::kDiscoveryPort);
     return true;
 }
 
@@ -193,7 +195,7 @@ void LanDiscovery::Update() {
     if (broadcaster_socket_ >= 0 && now >= next_broadcast_time_seconds_) {
         sockaddr_in target = {};
         target.sin_family = AF_INET;
-        target.sin_port = htons(7778);
+        target.sin_port = htons(static_cast<uint16_t>(Constants::kDiscoveryPort));
         target.sin_addr.s_addr = INADDR_BROADCAST;
 
         const std::string payload = std::string(kDiscoveryMagic) + "|" + host_name_ + "|" + std::to_string(host_port_);

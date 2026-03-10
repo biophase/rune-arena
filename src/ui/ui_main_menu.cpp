@@ -7,7 +7,8 @@
 
 MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_size, char* join_ip_buffer,
                               int join_ip_buffer_size, const std::vector<DiscoveredHost>& discovered_hosts,
-                              const std::string& config_path) {
+                              const std::string& config_path, const std::string& status_message,
+                              bool status_is_error) {
     MainMenuUiResult result;
 
     const int center_x = GetScreenWidth() / 2;
@@ -55,6 +56,11 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
     }
     if (!can_join) {
         GuiEnable();
+    }
+
+    if (!status_message.empty()) {
+        DrawText(status_message.c_str(), panel_x + 20, panel_y + 236, 14,
+                 status_is_error ? Color{255, 122, 122, 255} : Color{154, 214, 255, 255});
     }
 
     DrawText("Discovered LAN Hosts", panel_x + 20, panel_y + 254, 18, Color{190, 198, 220, 255});

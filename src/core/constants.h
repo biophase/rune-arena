@@ -7,12 +7,13 @@ namespace Constants {
 
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
-constexpr int kDefaultPort = 7777;
-constexpr int kDiscoveryPort = 7778;
+constexpr int kDefaultPort = 7789;
+constexpr int kDiscoveryPort = 7790;
 
 constexpr double kFixedDt = 1.0 / 60.0;
-constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 20.0f;
+constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 30.0f;
 constexpr float kCameraZoom = 3.0f;
+constexpr float kClientVisualSmoothing = 16.0f;
 
 constexpr float kPlayerRadius = 12.0f;
 constexpr float kPlayerAcceleration = 900.0f;
@@ -39,6 +40,16 @@ constexpr float kRunePlaceCooldownSeconds = 1.0f;
 
 constexpr int kMatchDurationSeconds = 120;
 constexpr int kMaxHp = 100;
+constexpr float kPlayerHealthBarWidth = 32.0f;
+constexpr float kPlayerHealthBarHeight = 4.0f;
+constexpr float kPlayerHealthBarOffsetY = 8.0f;
+constexpr int kPlayerHealthTextFontSize = 6;
+constexpr int kPlayerHealthBarFillR = 189;
+constexpr int kPlayerHealthBarFillG = 217;
+constexpr int kPlayerHealthBarFillB = 65;
+constexpr int kPlayerHealthBarMissingR = 200;
+constexpr int kPlayerHealthBarMissingG = 204;
+constexpr int kPlayerHealthBarMissingB = 182;
 
 constexpr int kRuneCellSize = 32;
 constexpr int kPlacementPreviewRadiusCells = 3;

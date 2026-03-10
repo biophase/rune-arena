@@ -44,6 +44,8 @@ class GameApp {
     void UpdateLobby(float dt);
     void UpdateMatch(float dt);
     void UpdatePostMatch(float dt);
+    void UpdateClientVisualSmoothing(float dt);
+    void ApplyClientLocalInputPreview(const ClientInputMessage& input, float dt);
 
     void StartAsHost();
     void StartAsClient(const std::string& ip, int port);
@@ -86,6 +88,7 @@ class GameApp {
     void RenderRunePlacementOverlay();
     void RenderDebugRuneCooldown();
     void UpdateCameraTarget();
+    Vector2 GetRenderPlayerPosition(int player_id) const;
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
@@ -108,6 +111,7 @@ class GameApp {
     AppScreen app_screen_ = AppScreen::MainMenu;
     Camera2D camera_ = {};
     std::unordered_map<int, ClientInputMessage> latest_remote_inputs_;
+    std::unordered_map<int, Vector2> render_player_positions_;
 
     int local_input_tick_ = 0;
     double snapshot_accumulator_ = 0.0;
@@ -122,6 +126,8 @@ class GameApp {
     std::string resolved_tile_mapping_path_;
     std::string resolved_sprite_metadata_path_;
     std::string resolved_spell_pattern_path_;
+    std::string main_menu_status_message_;
+    bool main_menu_status_is_error_ = false;
     double connect_attempt_start_seconds_ = 0.0;
 
     float render_time_seconds_ = 0.0f;

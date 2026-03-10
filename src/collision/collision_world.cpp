@@ -94,4 +94,40 @@ void CollisionWorld::ResolvePlayerVsWorld(const MapData& map, Player& player) {
             }
         }
     }
+
+    if (map.width <= 0 || map.height <= 0 || map.cell_size <= 0) {
+        return;
+    }
+
+    const float map_width = static_cast<float>(map.width * map.cell_size);
+    const float map_height = static_cast<float>(map.height * map.cell_size);
+
+    const float min_x = player.radius;
+    const float min_y = player.radius;
+    const float max_x = std::max(min_x, map_width - player.radius);
+    const float max_y = std::max(min_y, map_height - player.radius);
+
+    if (player.pos.x < min_x) {
+        player.pos.x = min_x;
+        if (player.vel.x < 0.0f) {
+            player.vel.x = 0.0f;
+        }
+    } else if (player.pos.x > max_x) {
+        player.pos.x = max_x;
+        if (player.vel.x > 0.0f) {
+            player.vel.x = 0.0f;
+        }
+    }
+
+    if (player.pos.y < min_y) {
+        player.pos.y = min_y;
+        if (player.vel.y < 0.0f) {
+            player.vel.y = 0.0f;
+        }
+    } else if (player.pos.y > max_y) {
+        player.pos.y = max_y;
+        if (player.vel.y > 0.0f) {
+            player.vel.y = 0.0f;
+        }
+    }
 }

@@ -49,6 +49,8 @@ bool NetworkManager::EnsureEnetInitialized() {
 bool NetworkManager::StartHost(int port) {
     Stop();
     if (!EnsureEnetInitialized()) {
+        last_debug_message_ = "enet initialization failed";
+        NetLog("[NET] Host start failed: %s", last_debug_message_.c_str());
         return false;
     }
 
@@ -58,6 +60,8 @@ bool NetworkManager::StartHost(int port) {
 
     host_ = enet_host_create(&address, 16, 2, 0, 0);
     if (!host_) {
+        last_debug_message_ = "failed to bind/listen on UDP port (in use or blocked)";
+        NetLog("[NET] Host start failed on UDP %d: %s", port, last_debug_message_.c_str());
         return false;
     }
 
@@ -73,11 +77,15 @@ bool NetworkManager::StartHost(int port) {
 bool NetworkManager::StartClient() {
     Stop();
     if (!EnsureEnetInitialized()) {
+        last_debug_message_ = "enet initialization failed";
+        NetLog("[NET] Client start failed: %s", last_debug_message_.c_str());
         return false;
     }
 
     host_ = enet_host_create(nullptr, 1, 2, 0, 0);
     if (!host_) {
+        last_debug_message_ = "failed to create ENet client host";
+        NetLog("[NET] Client start failed: %s", last_debug_message_.c_str());
         return false;
     }
 

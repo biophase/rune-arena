@@ -38,5 +38,6 @@ class SpriteMetadataLoader {
     bool loaded_ = false;
     int cell_width_ = 32;
     int cell_height_ = 32;
+    int num_columns_ = 0;
     std::unordered_map<std::string, SpriteAnimationData> animations_;
 };

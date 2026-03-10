@@ -23,8 +23,6 @@ namespace {
 
 float ClampDt(float dt) { return std::min(dt, 0.1f); }
 
-bool IsWaterTile(const TileType tile) { return tile == TileType::Water; }
-
 int DetermineWinningTeam(const MatchState& match) {
     if (match.red_team_kills > match.blue_team_kills) {
         return Constants::kTeamRed;
@@ -295,8 +293,10 @@ void GameApp::UpdateMatch(float dt) {
             snapshot_accumulator_ = 0.0;
             network_manager_.BroadcastSnapshot(BuildHostSnapshot());
         }
+        UpdateClientVisualSmoothing(dt);
     } else {
         ClientInputMessage local_input = BuildLocalInput(network_manager_.GetAssignedLocalPlayerId());
+        ApplyClientLocalInputPreview(local_input, dt);
         network_manager_.SendClientInput(local_input);
 
         const auto snapshot = network_manager_.ConsumeLatestSnapshot();
@@ -307,6 +307,7 @@ void GameApp::UpdateMatch(float dt) {
                 app_screen_ = AppScreen::PostMatch;
             }
         }
+        UpdateClientVisualSmoothing(dt);
     }
 
     UpdateProjectileEmitters();
@@ -320,6 +321,64 @@ void GameApp::UpdatePostMatch(float /*dt*/) {
     }
 }
 
+void GameApp::UpdateClientVisualSmoothing(float dt) {
+    if (state_.players.empty()) {
+        render_player_positions_.clear();
+        return;
+    }
+
+    const float alpha = std::clamp(1.0f - std::exp(-Constants::kClientVisualSmoothing * dt), 0.0f, 1.0f);
+    std::unordered_map<int, Vector2> updated_positions;
+    updated_positions.reserve(state_.players.size());
+    for (const auto& player : state_.players) {
+        const Vector2 target = player.pos;
+        auto it = render_player_positions_.find(player.id);
+        if (it == render_player_positions_.end()) {
+            updated_positions[player.id] = target;
+            continue;
+        }
+        updated_positions[player.id] = Vector2Lerp(it->second, target, alpha);
+    }
+    render_player_positions_.swap(updated_positions);
+}
+
+void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, float dt) {
+    if (network_manager_.IsHost()) {
+        return;
+    }
+    if (state_.local_player_id < 0) {
+        return;
+    }
+
+    Player* local_player = FindPlayerById(state_.local_player_id);
+    if (!local_player || !local_player->alive) {
+        return;
+    }
+
+    local_player->rune_place_cooldown_remaining = std::max(0.0f, local_player->rune_place_cooldown_remaining - dt);
+
+    if (input.select_fire) {
+        local_player->selected_rune_type = RuneType::Fire;
+        local_player->rune_placing_mode = true;
+    }
+    if (input.select_water) {
+        local_player->selected_rune_type = RuneType::Water;
+        local_player->rune_placing_mode = true;
+    }
+
+    Vector2 aim_vector = {input.aim_x - local_player->pos.x, input.aim_y - local_player->pos.y};
+    if (Vector2LengthSqr(aim_vector) > 0.0001f) {
+        local_player->aim_dir = Vector2Normalize(aim_vector);
+        local_player->facing = AimToFacing(local_player->aim_dir);
+    }
+
+    if (input.primary_pressed && local_player->rune_placing_mode &&
+        local_player->rune_place_cooldown_remaining <= 0.0f) {
+        local_player->rune_placing_mode = false;
+        local_player->rune_place_cooldown_remaining = local_player->rune_place_cooldown_duration;
+    }
+}
+
 void GameApp::Render() {
     BeginDrawing();
     ClearBackground(Color{16, 18, 22, 255});
@@ -328,7 +387,8 @@ void GameApp::Render() {
         case AppScreen::MainMenu: {
             const MainMenuUiResult ui_result =
                 DrawMainMenu(player_name_buffer_, sizeof(player_name_buffer_), join_ip_buffer_, sizeof(join_ip_buffer_),
-                             lan_discovery_.GetHosts(), config_manager_.GetConfigPath());
+                             lan_discovery_.GetHosts(), config_manager_.GetConfigPath(), main_menu_status_message_,
+                             main_menu_status_is_error_);
 
             if (ui_result.request_host) {
                 StartAsHost();
@@ -380,6 +440,8 @@ void GameApp::Render() {
 }
 
 void GameApp::StartAsHost() {
+    std::printf("[UI] Host Game pressed\n");
+
     std::string saved_name(player_name_buffer_);
     if (!saved_name.empty()) {
         settings_.player_name = saved_name;
@@ -388,8 +450,14 @@ void GameApp::StartAsHost() {
 
     network_manager_.SetLocalPlayerName(settings_.player_name);
     if (!network_manager_.StartHost(Constants::kDefaultPort)) {
+        main_menu_status_message_ = "Host start failed: " + network_manager_.GetLastDebugMessage();
+        main_menu_status_is_error_ = true;
+        std::printf("[UI] %s\n", main_menu_status_message_.c_str());
         return;
     }
+
+    main_menu_status_message_ = TextFormat("Host started on UDP %d", Constants::kDefaultPort);
+    main_menu_status_is_error_ = false;
 
     lan_discovery_.Stop();
     lan_discovery_.StartHostBroadcaster(settings_.player_name, Constants::kDefaultPort);
@@ -397,6 +465,7 @@ void GameApp::StartAsHost() {
     host_display_ip_ = TextFormat("%s:%d", lan_discovery_.GetHostLocalIp().c_str(), Constants::kDefaultPort);
     lobby_player_names_.clear();
     lobby_player_names_.push_back(settings_.player_name);
+    render_player_positions_.clear();
     lobby_broadcast_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
 
@@ -412,16 +481,24 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
 
     network_manager_.SetLocalPlayerName(settings_.player_name);
     if (!network_manager_.StartClient()) {
+        main_menu_status_message_ = "Client start failed: " + network_manager_.GetLastDebugMessage();
+        main_menu_status_is_error_ = true;
         return;
     }
 
     if (!network_manager_.ConnectToHost(ip, port)) {
+        main_menu_status_message_ = "Connect failed: " + network_manager_.GetLastDebugMessage();
+        main_menu_status_is_error_ = true;
         network_manager_.Stop();
         return;
     }
 
+    main_menu_status_message_.clear();
+    main_menu_status_is_error_ = false;
+
     host_display_ip_ = TextFormat("%s:%d", ip.c_str(), port);
     lobby_player_names_.clear();
+    render_player_positions_.clear();
     lobby_broadcast_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = GetTime();
     app_screen_ = AppScreen::Connecting;
@@ -437,12 +514,15 @@ void GameApp::ReturnToMainMenu() {
 
     event_queue_.Clear();
     latest_remote_inputs_.clear();
+    render_player_positions_.clear();
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
     lobby_broadcast_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
     winning_team_ = -1;
+    main_menu_status_message_.clear();
+    main_menu_status_is_error_ = false;
     app_screen_ = AppScreen::MainMenu;
 }
 
@@ -459,6 +539,7 @@ void GameApp::StartMatchAsHost() {
     state_.particles.clear();
     state_.next_rune_placement_order = 1;
     latest_remote_inputs_.clear();
+    render_player_positions_.clear();
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
@@ -489,6 +570,7 @@ void GameApp::StartMatchAsHost() {
     for (size_t i = 0; i < state_.players.size(); ++i) {
         const GridCoord spawn = spawns[i % spawns.size()];
         state_.players[i].pos = CellToWorldCenter(spawn);
+        render_player_positions_[state_.players[i].id] = state_.players[i].pos;
     }
 
     state_.local_player_id = 0;
@@ -500,40 +582,36 @@ void GameApp::StartMatchAsHost() {
 }
 
 void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) {
-    std::unordered_map<int, Vector2> previous_positions;
-    for (const auto& player : state_.players) {
-        previous_positions[player.id] = player.pos;
-    }
-
     state_.match.time_remaining = snapshot.time_remaining;
     state_.match.match_running = snapshot.match_running;
     state_.match.match_finished = snapshot.match_finished;
     state_.match.red_team_kills = snapshot.red_team_kills;
     state_.match.blue_team_kills = snapshot.blue_team_kills;
 
+    std::unordered_map<int, Vector2> updated_render_positions;
     state_.players.clear();
     for (const auto& player_snapshot : snapshot.players) {
         Player player;
         player.id = player_snapshot.id;
         player.name = player_snapshot.name;
         player.team = player_snapshot.team;
-
-        Vector2 target_pos = {player_snapshot.pos_x, player_snapshot.pos_y};
-        auto prev_it = previous_positions.find(player.id);
-        if (prev_it != previous_positions.end()) {
-            player.pos = Vector2Lerp(prev_it->second, target_pos, 0.65f);
-        } else {
-            player.pos = target_pos;
-        }
-
+        player.pos = {player_snapshot.pos_x, player_snapshot.pos_y};
         player.vel = {player_snapshot.vel_x, player_snapshot.vel_y};
         player.hp = player_snapshot.hp;
         player.kills = player_snapshot.kills;
         player.alive = player_snapshot.alive;
         player.facing = static_cast<FacingDirection>(player_snapshot.facing);
         player.action_state = static_cast<PlayerActionState>(player_snapshot.action_state);
+        player.rune_placing_mode = player_snapshot.rune_placing_mode;
+        player.selected_rune_type = static_cast<RuneType>(player_snapshot.selected_rune_type);
+        player.rune_place_cooldown_remaining = player_snapshot.rune_place_cooldown_remaining;
         state_.players.push_back(player);
+
+        auto render_it = render_player_positions_.find(player.id);
+        updated_render_positions[player.id] = (render_it == render_player_positions_.end()) ? player.pos
+                                                                                            : render_it->second;
     }
+    render_player_positions_.swap(updated_render_positions);
 
     state_.runes.clear();
     for (const auto& rune_snapshot : snapshot.runes) {
@@ -598,6 +676,9 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         player_snapshot.alive = player.alive;
         player_snapshot.facing = static_cast<int>(player.facing);
         player_snapshot.action_state = static_cast<int>(player.action_state);
+        player_snapshot.rune_placing_mode = player.rune_placing_mode;
+        player_snapshot.selected_rune_type = static_cast<int>(player.selected_rune_type);
+        player_snapshot.rune_place_cooldown_remaining = player.rune_place_cooldown_remaining;
         snapshot.players.push_back(player_snapshot);
     }
 
@@ -781,10 +862,6 @@ void GameApp::UpdateProjectiles(float dt) {
 
         const GridCoord cell = WorldToCell(projectile.pos);
         if (!state_.map.IsInside(cell)) {
-            destroy_projectile = true;
-        }
-
-        if (!destroy_projectile && IsWaterTile(state_.map.GetTile(cell))) {
             destroy_projectile = true;
         }
 
@@ -1305,8 +1382,10 @@ void GameApp::RenderPlayers() {
     const Texture2D texture = sprite_metadata_.GetTexture();
 
     for (const auto& player : state_.players) {
+        const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+
         if (!player.alive) {
-            DrawCircleV(player.pos, player.radius, Color{70, 70, 70, 180});
+            DrawCircleV(draw_pos, player.radius, Color{70, 70, 70, 180});
             continue;
         }
 
@@ -1321,13 +1400,15 @@ void GameApp::RenderPlayers() {
         }
 
         const char* facing = FacingToSpriteFacing(player.facing);
+        Rectangle dst = {draw_pos.x - 16.0f, draw_pos.y - 16.0f, 32.0f, 32.0f};
+        dst = SnapRect(dst);
+        const Rectangle sprite_rect = dst;
+
         if (has_texture && sprite_metadata_.HasAnimation(animation)) {
             Rectangle src = sprite_metadata_.GetFrame(animation, facing, render_time_seconds_);
             src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
             const bool mirror = player.facing == FacingDirection::Left;
 
-            Rectangle dst = {player.pos.x - 16.0f, player.pos.y - 16.0f, 32.0f, 32.0f};
-            dst = SnapRect(dst);
             Color tint = WHITE;
             if (player.team == Constants::kTeamRed) {
                 tint = Color{255, 215, 215, 255};
@@ -1336,17 +1417,43 @@ void GameApp::RenderPlayers() {
             }
 
             if (mirror) {
-                src.x += src.width;
-                src.width = -src.width;
+                dst.x += dst.width;
+                dst.width = -dst.width;
             }
             DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
         } else {
             const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
-            DrawCircleV(player.pos, player.radius, fallback);
+            DrawCircleV(draw_pos, player.radius, fallback);
         }
 
-        DrawText(TextFormat("%d", player.hp), static_cast<int>(player.pos.x - 8), static_cast<int>(player.pos.y - 28),
-                 12, Color{255, 220, 220, 255});
+        const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
+                                static_cast<unsigned char>(Constants::kPlayerHealthBarFillG),
+                                static_cast<unsigned char>(Constants::kPlayerHealthBarFillB), 255};
+        const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
+                                   static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
+                                   static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
+
+        Rectangle health_bar = {sprite_rect.x, sprite_rect.y - Constants::kPlayerHealthBarOffsetY, Constants::kPlayerHealthBarWidth,
+                                Constants::kPlayerHealthBarHeight};
+        health_bar = SnapRect(health_bar);
+        DrawRectangleRec(health_bar, bar_missing);
+
+        const float hp_ratio = std::clamp(static_cast<float>(player.hp) / static_cast<float>(Constants::kMaxHp), 0.0f, 1.0f);
+        if (hp_ratio > 0.0f) {
+            Rectangle fill = health_bar;
+            fill.width = std::roundf(fill.width * hp_ratio);
+            if (fill.width > 0.0f) {
+                DrawRectangleRec(fill, bar_fill);
+            }
+        }
+
+        const int font_size = Constants::kPlayerHealthTextFontSize;
+        const char* hp_text = TextFormat("%d", std::max(0, player.hp));
+        const int text_width = MeasureText(hp_text, font_size);
+        const int text_x = static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(text_width)) * 0.5f);
+        const int text_y =
+            static_cast<int>(health_bar.y + (health_bar.height - static_cast<float>(font_size)) * 0.5f);
+        DrawText(hp_text, text_x, text_y, font_size, BLACK);
     }
 }
 
@@ -1487,11 +1594,23 @@ void GameApp::UpdateCameraTarget() {
     }
 
     if (local_player) {
-        camera_.target = {std::roundf(local_player->pos.x), std::roundf(local_player->pos.y)};
+        const Vector2 render_pos = GetRenderPlayerPosition(local_player->id);
+        camera_.target = {std::roundf(render_pos.x), std::roundf(render_pos.y)};
     }
 
     camera_.offset = {std::roundf(static_cast<float>(GetScreenWidth()) * 0.5f),
                       std::roundf(static_cast<float>(GetScreenHeight()) * 0.5f)};
+}
+
+Vector2 GameApp::GetRenderPlayerPosition(int player_id) const {
+    auto it = render_player_positions_.find(player_id);
+    if (it != render_player_positions_.end()) {
+        return it->second;
+    }
+    if (const Player* player = FindPlayerById(player_id)) {
+        return player->pos;
+    }
+    return {0.0f, 0.0f};
 }
 
 std::string GameApp::GetClientLobbyStatusText() const {
