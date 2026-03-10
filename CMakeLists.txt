@@ -37,3 +37,9 @@ if(WIN32)
     target_link_libraries(rune_arena PRIVATE ws2_32)
     target_compile_definitions(rune_arena PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
+
+add_custom_command(TARGET rune_arena POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/assets
+            $<TARGET_FILE_DIR:rune_arena>/assets
+)

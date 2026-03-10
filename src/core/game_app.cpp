@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <random>
 #include <string>
@@ -64,6 +65,22 @@ Rectangle InsetSourceRect(Rectangle src, float inset_pixels) {
     return src;
 }
 
+std::string ResolveRuntimePath(const char* relative_path) {
+    namespace fs = std::filesystem;
+    const fs::path direct(relative_path);
+    if (fs::exists(direct)) {
+        return direct.string();
+    }
+
+    const fs::path app_dir(GetApplicationDirectory());
+    const fs::path near_exe = app_dir / direct;
+    if (fs::exists(near_exe)) {
+        return near_exe.string();
+    }
+
+    return direct.string();
+}
+
 }  // namespace
 
 GameApp::GameApp(bool force_windowed_launch) : force_windowed_launch_(force_windowed_launch) {}
@@ -91,7 +108,12 @@ bool GameApp::Initialize() {
     GuiSetStyle(DEFAULT, BASE_COLOR_NORMAL, ColorToInt(Color{42, 47, 57, 255}));
     GuiSetStyle(DEFAULT, BASE_COLOR_FOCUSED, ColorToInt(Color{54, 62, 75, 255}));
 
-    if (!map_loader_.Load(Constants::kDefaultMapPath, Constants::kTileMappingPath, state_.map)) {
+    resolved_map_path_ = ResolveRuntimePath(Constants::kDefaultMapPath);
+    resolved_tile_mapping_path_ = ResolveRuntimePath(Constants::kTileMappingPath);
+    resolved_sprite_metadata_path_ = ResolveRuntimePath(Constants::kSpriteMetadataPath);
+    resolved_spell_pattern_path_ = ResolveRuntimePath(Constants::kSpellPatternPath);
+
+    if (!map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, state_.map)) {
         // Fallback: small grass-only map.
         state_.map.width = 24;
         state_.map.height = 16;
@@ -100,8 +122,8 @@ bool GameApp::Initialize() {
         state_.map.spawn_points = {{2, 2}, {state_.map.width - 3, state_.map.height - 3}};
     }
 
-    sprite_metadata_.LoadFromFile(Constants::kSpriteMetadataPath);
-    spell_patterns_.LoadFromFile(Constants::kSpellPatternPath);
+    sprite_metadata_.LoadFromFile(resolved_sprite_metadata_path_);
+    spell_patterns_.LoadFromFile(resolved_spell_pattern_path_);
     camera_.target = {0.0f, 0.0f};
     camera_.offset = {static_cast<float>(settings_.window_width) * 0.5f,
                       static_cast<float>(settings_.window_height) * 0.5f};
@@ -271,7 +293,8 @@ void GameApp::Render() {
                 StartAsHost();
             }
             if (ui_result.request_join) {
-                StartAsClient(join_ip_buffer_);
+                const int join_port = ui_result.selected_host_port > 0 ? ui_result.selected_host_port : Constants::kDefaultPort;
+                StartAsClient(ui_result.selected_host_ip, join_port);
             }
             break;
         }
@@ -317,14 +340,14 @@ void GameApp::StartAsHost() {
     lan_discovery_.Stop();
     lan_discovery_.StartHostBroadcaster(settings_.player_name, Constants::kDefaultPort);
 
-    host_display_ip_ = TextFormat("%s:%d", "(broadcast)", Constants::kDefaultPort);
+    host_display_ip_ = TextFormat("%s:%d", lan_discovery_.GetHostLocalIp().c_str(), Constants::kDefaultPort);
     lobby_player_names_.clear();
     lobby_player_names_.push_back(settings_.player_name);
 
     app_screen_ = AppScreen::Lobby;
 }
 
-void GameApp::StartAsClient(const std::string& ip) {
+void GameApp::StartAsClient(const std::string& ip, int port) {
     std::string saved_name(player_name_buffer_);
     if (!saved_name.empty()) {
         settings_.player_name = saved_name;
@@ -336,12 +359,12 @@ void GameApp::StartAsClient(const std::string& ip) {
         return;
     }
 
-    if (!network_manager_.ConnectToHost(ip, Constants::kDefaultPort)) {
+    if (!network_manager_.ConnectToHost(ip, port)) {
         network_manager_.Stop();
         return;
     }
 
-    host_display_ip_ = TextFormat("%s:%d", ip.c_str(), Constants::kDefaultPort);
+    host_display_ip_ = TextFormat("%s:%d", ip.c_str(), port);
     lobby_player_names_.clear();
     app_screen_ = AppScreen::Lobby;
 }
@@ -352,7 +375,7 @@ void GameApp::ReturnToMainMenu() {
     lan_discovery_.StartClientListener();
 
     state_ = GameState{};
-    map_loader_.Load(Constants::kDefaultMapPath, Constants::kTileMappingPath, state_.map);
+    map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, state_.map);
 
     event_queue_.Clear();
     latest_remote_inputs_.clear();

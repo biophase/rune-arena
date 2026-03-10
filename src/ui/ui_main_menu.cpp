@@ -25,7 +25,10 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
     Rectangle join_box = {static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 138), 320, 32};
 
     static bool edit_name = false;
-    static bool edit_join_ip = false;
+    static int selected_host_index = -1;
+    if (selected_host_index >= static_cast<int>(discovered_hosts.size())) {
+        selected_host_index = -1;
+    }
 
     GuiLabel({name_box.x, name_box.y - 22, 180, 20}, "Player Name");
     GuiTextBox(name_box, player_name_buffer, player_name_buffer_size, edit_name);
@@ -33,31 +36,47 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         edit_name = !edit_name;
     }
 
-    GuiLabel({join_box.x, join_box.y - 22, 180, 20}, "Host IP");
-    GuiTextBox(join_box, join_ip_buffer, join_ip_buffer_size, edit_join_ip);
-    if (GuiButton({join_box.x + join_box.width + 10, join_box.y, 84, 32}, edit_join_ip ? "Lock" : "Edit")) {
-        edit_join_ip = !edit_join_ip;
-    }
+    GuiLabel({join_box.x, join_box.y - 22, 240, 20}, "Selected Host IP");
+    GuiTextBox(join_box, join_ip_buffer, join_ip_buffer_size, false);
 
     if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 190), 180, 40}, "Host Game")) {
         result.request_host = true;
     }
 
-    if (GuiButton({static_cast<float>(panel_x + 220), static_cast<float>(panel_y + 190), 180, 40}, "Join Game")) {
+    const bool can_join = selected_host_index >= 0 && selected_host_index < static_cast<int>(discovered_hosts.size());
+    if (!can_join) {
+        GuiDisable();
+    }
+    if (GuiButton({static_cast<float>(panel_x + 220), static_cast<float>(panel_y + 190), 180, 40}, "Join Game") &&
+        can_join) {
         result.request_join = true;
+        result.selected_host_ip = discovered_hosts[static_cast<size_t>(selected_host_index)].ip;
+        result.selected_host_port = discovered_hosts[static_cast<size_t>(selected_host_index)].port;
+    }
+    if (!can_join) {
+        GuiEnable();
     }
 
     DrawText("Discovered LAN Hosts", panel_x + 20, panel_y + 254, 18, Color{190, 198, 220, 255});
+    DrawText("Select one host, then press Join Game.", panel_x + 230, panel_y + 194, 13,
+             can_join ? Color{150, 210, 150, 255} : Color{210, 180, 120, 255});
     int row = 0;
     for (const DiscoveredHost& host : discovered_hosts) {
         if (row >= 4) {
             break;
         }
         const int y = panel_y + 282 + row * 28;
-        DrawRectangle(panel_x + 20, y, 470, 24, Color{40, 44, 53, 255});
-        DrawRectangleLines(panel_x + 20, y, 470, 24, Color{66, 72, 84, 255});
+        const Rectangle row_rect = {static_cast<float>(panel_x + 20), static_cast<float>(y), 470.0f, 24.0f};
+        const bool selected = row == selected_host_index;
+        DrawRectangleRec(row_rect, selected ? Color{63, 78, 101, 255} : Color{40, 44, 53, 255});
+        DrawRectangleLinesEx(row_rect, 1.0f, selected ? Color{122, 165, 219, 255} : Color{66, 72, 84, 255});
         const std::string row_text = host.name + "  " + host.ip + ":" + std::to_string(host.port);
         DrawText(row_text.c_str(), panel_x + 28, y + 5, 14, RAYWHITE);
+
+        if (CheckCollisionPointRec(GetMousePosition(), row_rect) && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+            selected_host_index = row;
+            std::snprintf(join_ip_buffer, static_cast<size_t>(join_ip_buffer_size), "%s", host.ip.c_str());
+        }
         ++row;
     }
 

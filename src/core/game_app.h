@@ -44,7 +44,7 @@ class GameApp {
     void UpdatePostMatch(float dt);
 
     void StartAsHost();
-    void StartAsClient(const std::string& ip);
+    void StartAsClient(const std::string& ip, int port);
     void ReturnToMainMenu();
 
     void StartMatchAsHost();
@@ -112,6 +112,10 @@ class GameApp {
     char join_ip_buffer_[64] = "127.0.0.1";
     std::vector<std::string> lobby_player_names_;
     std::string host_display_ip_ = "127.0.0.1";
+    std::string resolved_map_path_;
+    std::string resolved_tile_mapping_path_;
+    std::string resolved_sprite_metadata_path_;
+    std::string resolved_spell_pattern_path_;
 
     float render_time_seconds_ = 0.0f;
     bool force_windowed_launch_ = false;

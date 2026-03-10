@@ -13,6 +13,7 @@ using SocketLenType = int;
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -49,6 +50,46 @@ void SetSocketNonBlocking(int socket_fd) {
     const int current_flags = fcntl(socket_fd, F_GETFL, 0);
     fcntl(socket_fd, F_SETFL, current_flags | O_NONBLOCK);
 #endif
+}
+
+std::string DetectLocalIpv4Address() {
+    char hostname[256] = {};
+    if (gethostname(hostname, sizeof(hostname) - 1) != 0) {
+        return "127.0.0.1";
+    }
+
+    addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+
+    addrinfo* result = nullptr;
+    if (getaddrinfo(hostname, nullptr, &hints, &result) != 0 || !result) {
+        return "127.0.0.1";
+    }
+
+    std::string fallback = "127.0.0.1";
+    for (addrinfo* it = result; it != nullptr; it = it->ai_next) {
+        if (!it->ai_addr || it->ai_family != AF_INET) {
+            continue;
+        }
+
+        const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(it->ai_addr);
+        char buffer[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, reinterpret_cast<const void*>(&ipv4->sin_addr), buffer, sizeof(buffer));
+        if (buffer[0] == '\0') {
+            continue;
+        }
+
+        const std::string ip(buffer);
+        if (ip.rfind("127.", 0) != 0) {
+            freeaddrinfo(result);
+            return ip;
+        }
+        fallback = ip;
+    }
+
+    freeaddrinfo(result);
+    return fallback;
 }
 
 }  // namespace
@@ -91,6 +132,7 @@ bool LanDiscovery::StartHostBroadcaster(const std::string& host_name, int game_p
     SetSocketNonBlocking(broadcaster_socket_);
 
     host_name_ = host_name;
+    host_local_ip_ = DetectLocalIpv4Address();
     host_port_ = game_port;
     next_broadcast_time_seconds_ = 0.0;
     return true;
@@ -137,6 +179,7 @@ void LanDiscovery::Stop() {
 #endif
 
     socket_api_initialized_ = false;
+    host_local_ip_ = "127.0.0.1";
 }
 
 void LanDiscovery::Update() {
@@ -214,6 +257,8 @@ std::vector<DiscoveredHost> LanDiscovery::GetHosts() const {
     });
     return result;
 }
+
+const std::string& LanDiscovery::GetHostLocalIp() const { return host_local_ip_; }
 
 std::string LanDiscovery::EndpointToIpString(const struct sockaddr_in& endpoint) {
     char buffer[INET_ADDRSTRLEN] = {0};

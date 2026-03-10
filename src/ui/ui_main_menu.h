@@ -8,6 +8,8 @@
 struct MainMenuUiResult {
     bool request_host = false;
     bool request_join = false;
+    std::string selected_host_ip;
+    int selected_host_port = 0;
 };
 
 MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_size, char* join_ip_buffer,

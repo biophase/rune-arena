@@ -22,6 +22,7 @@ class LanDiscovery {
 
     void Update();
     std::vector<DiscoveredHost> GetHosts() const;
+    const std::string& GetHostLocalIp() const;
 
   private:
     bool EnsureSocketApiInitialized();
@@ -33,6 +34,7 @@ class LanDiscovery {
     int listener_socket_ = -1;
 
     std::string host_name_;
+    std::string host_local_ip_ = "127.0.0.1";
     int host_port_ = 0;
     double next_broadcast_time_seconds_ = 0.0;
 
