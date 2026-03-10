@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -27,6 +28,14 @@ namespace {
 
 constexpr const char* kDiscoveryMagic = "RUNE_ARENA";
 constexpr double kHostStaleTimeoutSeconds = 8.0;
+
+void LogSocketError(const char* context) {
+#ifdef _WIN32
+    std::printf("[DISCOVERY] %s failed (WSA error=%d)\n", context, WSAGetLastError());
+#else
+    std::printf("[DISCOVERY] %s failed (%s)\n", context, std::strerror(errno));
+#endif
+}
 
 double GetNowSeconds() {
     static const auto start = std::chrono::steady_clock::now();
@@ -120,6 +129,7 @@ bool LanDiscovery::EnsureSocketApiInitialized() {
 
 bool LanDiscovery::StartHostBroadcaster(const std::string& host_name, int game_port) {
     if (!EnsureSocketApiInitialized()) {
+        std::printf("[DISCOVERY] Host broadcaster failed: socket API init failed\n");
         return false;
     }
 
@@ -127,6 +137,7 @@ bool LanDiscovery::StartHostBroadcaster(const std::string& host_name, int game_p
 
     broadcaster_socket_ = static_cast<int>(socket(AF_INET, SOCK_DGRAM, 0));
     if (broadcaster_socket_ < 0) {
+        LogSocketError("Host broadcaster socket()");
         return false;
     }
 
@@ -146,6 +157,7 @@ bool LanDiscovery::StartHostBroadcaster(const std::string& host_name, int game_p
 
 bool LanDiscovery::StartClientListener() {
     if (!EnsureSocketApiInitialized()) {
+        std::printf("[DISCOVERY] Client listener failed: socket API init failed\n");
         return false;
     }
 
@@ -153,6 +165,7 @@ bool LanDiscovery::StartClientListener() {
 
     listener_socket_ = static_cast<int>(socket(AF_INET, SOCK_DGRAM, 0));
     if (listener_socket_ < 0) {
+        LogSocketError("Client listener socket()");
         return false;
     }
 
@@ -165,6 +178,8 @@ bool LanDiscovery::StartClientListener() {
     bind_addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(listener_socket_, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0) {
+        LogSocketError("Client listener bind()");
+        std::printf("[DISCOVERY] Bind target UDP port was %d\n", Constants::kDiscoveryPort);
         CloseSocketSafe(listener_socket_);
         return false;
     }

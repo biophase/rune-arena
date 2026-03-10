@@ -128,7 +128,10 @@ bool GameApp::Initialize() {
     camera_.zoom = Constants::kCameraZoom;
 
     app_screen_ = AppScreen::MainMenu;
-    lan_discovery_.StartClientListener();
+    if (!lan_discovery_.StartClientListener()) {
+        main_menu_status_message_ = TextFormat("Discovery listener failed on UDP %d", Constants::kDiscoveryPort);
+        main_menu_status_is_error_ = true;
+    }
     return true;
 }
 
@@ -460,7 +463,9 @@ void GameApp::StartAsHost() {
     main_menu_status_is_error_ = false;
 
     lan_discovery_.Stop();
-    lan_discovery_.StartHostBroadcaster(settings_.player_name, Constants::kDefaultPort);
+    if (!lan_discovery_.StartHostBroadcaster(settings_.player_name, Constants::kDefaultPort)) {
+        std::printf("[UI] Warning: LAN discovery broadcaster failed to start\n");
+    }
 
     host_display_ip_ = TextFormat("%s:%d", lan_discovery_.GetHostLocalIp().c_str(), Constants::kDefaultPort);
     lobby_player_names_.clear();
@@ -507,7 +512,10 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
 void GameApp::ReturnToMainMenu() {
     network_manager_.Stop();
     lan_discovery_.Stop();
-    lan_discovery_.StartClientListener();
+    if (!lan_discovery_.StartClientListener()) {
+        main_menu_status_message_ = TextFormat("Discovery listener failed on UDP %d", Constants::kDiscoveryPort);
+        main_menu_status_is_error_ = true;
+    }
 
     state_ = GameState{};
     map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, state_.map);
