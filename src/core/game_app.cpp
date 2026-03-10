@@ -1,0 +1,1338 @@
+#include "core/game_app.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <random>
+#include <string>
+#include <unordered_set>
+
+#include <raygui.h>
+#include <raymath.h>
+
+#include "collision/collision_world.h"
+#include "core/constants.h"
+#include "spells/fire_bolt_spell.h"
+#include "ui/ui_lobby.h"
+#include "ui/ui_main_menu.h"
+#include "ui/ui_match.h"
+
+namespace {
+
+float ClampDt(float dt) { return std::min(dt, 0.1f); }
+
+bool IsWaterTile(const TileType tile) { return tile == TileType::Water; }
+
+int DetermineWinningTeam(const MatchState& match) {
+    if (match.red_team_kills > match.blue_team_kills) {
+        return Constants::kTeamRed;
+    }
+    if (match.blue_team_kills > match.red_team_kills) {
+        return Constants::kTeamBlue;
+    }
+    return -1;
+}
+
+Rectangle SnapRect(Rectangle rect) {
+    rect.x = std::roundf(rect.x);
+    rect.y = std::roundf(rect.y);
+    rect.width = std::roundf(rect.width);
+    rect.height = std::roundf(rect.height);
+    return rect;
+}
+
+Rectangle InsetSourceRect(Rectangle src, float inset_pixels) {
+    if (inset_pixels <= 0.0f) {
+        return src;
+    }
+
+    const float sign_w = src.width >= 0.0f ? 1.0f : -1.0f;
+    const float sign_h = src.height >= 0.0f ? 1.0f : -1.0f;
+    const float abs_w = std::fabs(src.width);
+    const float abs_h = std::fabs(src.height);
+
+    if (abs_w > inset_pixels * 2.0f) {
+        src.x += inset_pixels * sign_w;
+        src.width = sign_w * (abs_w - inset_pixels * 2.0f);
+    }
+    if (abs_h > inset_pixels * 2.0f) {
+        src.y += inset_pixels * sign_h;
+        src.height = sign_h * (abs_h - inset_pixels * 2.0f);
+    }
+    return src;
+}
+
+}  // namespace
+
+GameApp::GameApp(bool force_windowed_launch) : force_windowed_launch_(force_windowed_launch) {}
+
+bool GameApp::Initialize() {
+    const bool loaded_settings = config_manager_.Load(settings_);
+    if (!loaded_settings) {
+        settings_.fullscreen = true;
+    }
+    initial_fullscreen_setting_ = settings_.fullscreen;
+
+    std::snprintf(player_name_buffer_, sizeof(player_name_buffer_), "%s", settings_.player_name.c_str());
+    std::snprintf(join_ip_buffer_, sizeof(join_ip_buffer_), "%s", "127.0.0.1");
+
+    InitWindow(settings_.window_width, settings_.window_height, "Rune Arena");
+    SetTargetFPS(144);
+    const bool launch_fullscreen = !force_windowed_launch_;
+    if (launch_fullscreen && !IsWindowFullscreen()) {
+        ToggleFullscreen();
+    }
+
+    // Basic dark UI look.
+    GuiSetStyle(DEFAULT, BACKGROUND_COLOR, ColorToInt(Color{25, 28, 34, 255}));
+    GuiSetStyle(DEFAULT, TEXT_COLOR_NORMAL, ColorToInt(Color{221, 228, 245, 255}));
+    GuiSetStyle(DEFAULT, BASE_COLOR_NORMAL, ColorToInt(Color{42, 47, 57, 255}));
+    GuiSetStyle(DEFAULT, BASE_COLOR_FOCUSED, ColorToInt(Color{54, 62, 75, 255}));
+
+    if (!map_loader_.Load(Constants::kDefaultMapPath, Constants::kTileMappingPath, state_.map)) {
+        // Fallback: small grass-only map.
+        state_.map.width = 24;
+        state_.map.height = 16;
+        state_.map.cell_size = Constants::kRuneCellSize;
+        state_.map.tiles.assign(static_cast<size_t>(state_.map.width * state_.map.height), TileType::Grass);
+        state_.map.spawn_points = {{2, 2}, {state_.map.width - 3, state_.map.height - 3}};
+    }
+
+    sprite_metadata_.LoadFromFile(Constants::kSpriteMetadataPath);
+    spell_patterns_.LoadFromFile(Constants::kSpellPatternPath);
+    mirrored_side_frame_ = LoadRenderTexture(32, 32);
+
+    camera_.target = {0.0f, 0.0f};
+    camera_.offset = {static_cast<float>(settings_.window_width) * 0.5f,
+                      static_cast<float>(settings_.window_height) * 0.5f};
+    camera_.rotation = 0.0f;
+    camera_.zoom = Constants::kCameraZoom;
+
+    app_screen_ = AppScreen::MainMenu;
+    lan_discovery_.StartClientListener();
+    return true;
+}
+
+void GameApp::Run() {
+    double previous_time = GetTime();
+    double accumulator = 0.0;
+
+    while (!WindowShouldClose()) {
+        const double now = GetTime();
+        double frame_dt = now - previous_time;
+        previous_time = now;
+
+        frame_dt = std::min(frame_dt, 0.25);
+        accumulator += frame_dt;
+        render_time_seconds_ += static_cast<float>(frame_dt);
+        CaptureFrameInputEdges();
+
+        network_manager_.Poll();
+        lan_discovery_.Update();
+
+        while (accumulator >= Constants::kFixedDt) {
+            Update(static_cast<float>(Constants::kFixedDt));
+            accumulator -= Constants::kFixedDt;
+        }
+
+        Render();
+    }
+}
+
+void GameApp::CaptureFrameInputEdges() {
+    pending_primary_pressed_ = pending_primary_pressed_ || IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+    pending_select_fire_ = pending_select_fire_ || IsKeyPressed(KEY_ONE);
+    pending_select_water_ = pending_select_water_ || IsKeyPressed(KEY_TWO);
+}
+
+void GameApp::Shutdown() {
+    std::string saved_name(player_name_buffer_);
+    if (!saved_name.empty()) {
+        settings_.player_name = saved_name;
+    }
+    settings_.window_width = GetScreenWidth();
+    settings_.window_height = GetScreenHeight();
+    if (force_windowed_launch_) {
+        settings_.fullscreen = initial_fullscreen_setting_;
+    } else {
+        settings_.fullscreen = IsWindowFullscreen();
+    }
+    config_manager_.Save(settings_);
+
+    lan_discovery_.Stop();
+    network_manager_.Stop();
+    if (mirrored_side_frame_.id != 0) {
+        UnloadRenderTexture(mirrored_side_frame_);
+        mirrored_side_frame_ = {};
+    }
+    sprite_metadata_.Unload();
+    CloseWindow();
+}
+
+void GameApp::Update(float dt) {
+    dt = ClampDt(dt);
+    switch (app_screen_) {
+        case AppScreen::MainMenu:
+            UpdateMainMenu(dt);
+            break;
+        case AppScreen::Lobby:
+            UpdateLobby(dt);
+            break;
+        case AppScreen::InMatch:
+            UpdateMatch(dt);
+            break;
+        case AppScreen::PostMatch:
+            UpdatePostMatch(dt);
+            break;
+    }
+}
+
+void GameApp::UpdateMainMenu(float /*dt*/) {
+    // Discovery keeps running so joinable hosts appear while user is in the menu.
+}
+
+void GameApp::UpdateLobby(float /*dt*/) {
+    if (network_manager_.IsHost()) {
+        lobby_player_names_.clear();
+        lobby_player_names_.push_back(player_name_buffer_);
+
+        LobbyStateMessage lobby_state;
+        lobby_state.host_can_start = true;
+        lobby_state.players.push_back({0, player_name_buffer_});
+
+        for (const auto& remote : network_manager_.GetRemotePlayers()) {
+            lobby_player_names_.push_back(remote.name);
+            lobby_state.players.push_back({remote.player_id, remote.name});
+        }
+
+        network_manager_.BroadcastLobbyState(lobby_state);
+    } else {
+        const auto lobby_update = network_manager_.ConsumeLobbyState();
+        if (lobby_update.has_value()) {
+            lobby_player_names_.clear();
+            for (const auto& player : lobby_update->players) {
+                lobby_player_names_.push_back(player.name);
+            }
+        }
+
+        if (network_manager_.ConsumeMatchStart()) {
+            state_.match.match_running = true;
+            state_.match.match_finished = false;
+            state_.match.time_remaining = static_cast<float>(Constants::kMatchDurationSeconds);
+            app_screen_ = AppScreen::InMatch;
+            state_.local_player_id = network_manager_.GetAssignedLocalPlayerId();
+            pending_primary_pressed_ = false;
+            pending_select_fire_ = false;
+            pending_select_water_ = false;
+        }
+    }
+}
+
+void GameApp::UpdateMatch(float dt) {
+    if (network_manager_.IsHost()) {
+        SimulateHostGameplay(dt);
+        snapshot_accumulator_ += dt;
+        if (snapshot_accumulator_ >= Constants::kNetworkSnapshotIntervalSeconds) {
+            snapshot_accumulator_ = 0.0;
+            network_manager_.BroadcastSnapshot(BuildHostSnapshot());
+        }
+    } else {
+        ClientInputMessage local_input = BuildLocalInput(network_manager_.GetAssignedLocalPlayerId());
+        network_manager_.SendClientInput(local_input);
+
+        const auto snapshot = network_manager_.ConsumeLatestSnapshot();
+        if (snapshot.has_value()) {
+            ApplySnapshotToClientState(*snapshot);
+            if (state_.match.match_finished) {
+                winning_team_ = DetermineWinningTeam(state_.match);
+                app_screen_ = AppScreen::PostMatch;
+            }
+        }
+    }
+
+    UpdateProjectileEmitters();
+    UpdateParticles(dt);
+    UpdateCameraTarget();
+}
+
+void GameApp::UpdatePostMatch(float /*dt*/) {
+    if (IsKeyPressed(KEY_ENTER)) {
+        ReturnToMainMenu();
+    }
+}
+
+void GameApp::Render() {
+    BeginDrawing();
+    ClearBackground(Color{16, 18, 22, 255});
+
+    switch (app_screen_) {
+        case AppScreen::MainMenu: {
+            const MainMenuUiResult ui_result =
+                DrawMainMenu(player_name_buffer_, sizeof(player_name_buffer_), join_ip_buffer_, sizeof(join_ip_buffer_),
+                             lan_discovery_.GetHosts(), config_manager_.GetConfigPath());
+
+            if (ui_result.request_host) {
+                StartAsHost();
+            }
+            if (ui_result.request_join) {
+                StartAsClient(join_ip_buffer_);
+            }
+            break;
+        }
+
+        case AppScreen::Lobby: {
+            const LobbyUiResult lobby_ui = DrawLobby(lobby_player_names_, network_manager_.IsHost(), host_display_ip_,
+                                                     Constants::kMatchDurationSeconds, most_kills_mode_.GetUiName());
+            if (lobby_ui.request_leave) {
+                ReturnToMainMenu();
+            }
+            if (lobby_ui.request_start_match && network_manager_.IsHost()) {
+                StartMatchAsHost();
+            }
+            break;
+        }
+
+        case AppScreen::InMatch:
+            RenderWorld();
+            DrawMatchHud(state_, state_.local_player_id);
+            RenderDebugRuneCooldown();
+            break;
+
+        case AppScreen::PostMatch:
+            DrawPostMatch(state_, winning_team_);
+            break;
+    }
+
+    EndDrawing();
+}
+
+void GameApp::StartAsHost() {
+    std::string saved_name(player_name_buffer_);
+    if (!saved_name.empty()) {
+        settings_.player_name = saved_name;
+        config_manager_.Save(settings_);
+    }
+
+    network_manager_.SetLocalPlayerName(settings_.player_name);
+    if (!network_manager_.StartHost(Constants::kDefaultPort)) {
+        return;
+    }
+
+    lan_discovery_.Stop();
+    lan_discovery_.StartHostBroadcaster(settings_.player_name, Constants::kDefaultPort);
+
+    host_display_ip_ = TextFormat("%s:%d", "(broadcast)", Constants::kDefaultPort);
+    lobby_player_names_.clear();
+    lobby_player_names_.push_back(settings_.player_name);
+
+    app_screen_ = AppScreen::Lobby;
+}
+
+void GameApp::StartAsClient(const std::string& ip) {
+    std::string saved_name(player_name_buffer_);
+    if (!saved_name.empty()) {
+        settings_.player_name = saved_name;
+        config_manager_.Save(settings_);
+    }
+
+    network_manager_.SetLocalPlayerName(settings_.player_name);
+    if (!network_manager_.StartClient()) {
+        return;
+    }
+
+    if (!network_manager_.ConnectToHost(ip, Constants::kDefaultPort)) {
+        network_manager_.Stop();
+        return;
+    }
+
+    host_display_ip_ = TextFormat("%s:%d", ip.c_str(), Constants::kDefaultPort);
+    lobby_player_names_.clear();
+    app_screen_ = AppScreen::Lobby;
+}
+
+void GameApp::ReturnToMainMenu() {
+    network_manager_.Stop();
+    lan_discovery_.Stop();
+    lan_discovery_.StartClientListener();
+
+    state_ = GameState{};
+    map_loader_.Load(Constants::kDefaultMapPath, Constants::kTileMappingPath, state_.map);
+
+    event_queue_.Clear();
+    latest_remote_inputs_.clear();
+    pending_primary_pressed_ = false;
+    pending_select_fire_ = false;
+    pending_select_water_ = false;
+    winning_team_ = -1;
+    app_screen_ = AppScreen::MainMenu;
+}
+
+void GameApp::StartMatchAsHost() {
+    state_.match = MatchState{};
+    state_.match.match_running = true;
+    state_.match.match_finished = false;
+    state_.match.time_remaining = static_cast<float>(Constants::kMatchDurationSeconds);
+
+    state_.players.clear();
+    state_.runes.clear();
+    state_.projectiles.clear();
+    state_.particles.clear();
+    state_.next_rune_placement_order = 1;
+    latest_remote_inputs_.clear();
+    pending_primary_pressed_ = false;
+    pending_select_fire_ = false;
+    pending_select_water_ = false;
+
+    Player host_player;
+    host_player.id = 0;
+    host_player.name = settings_.player_name;
+    host_player.team = Constants::kTeamRed;
+    state_.players.push_back(host_player);
+
+    for (const auto& remote : network_manager_.GetRemotePlayers()) {
+        Player player;
+        player.id = remote.player_id;
+        player.name = remote.name;
+        player.team = (static_cast<int>(state_.players.size()) % 2 == 0) ? Constants::kTeamRed : Constants::kTeamBlue;
+        state_.players.push_back(player);
+    }
+
+    std::vector<GridCoord> spawns = state_.map.spawn_points;
+    if (spawns.empty()) {
+        spawns.push_back({2, 2});
+        spawns.push_back({state_.map.width - 3, state_.map.height - 3});
+    }
+
+    std::mt19937 rng(static_cast<unsigned int>(GetTime() * 1000.0));
+    std::shuffle(spawns.begin(), spawns.end(), rng);
+
+    for (size_t i = 0; i < state_.players.size(); ++i) {
+        const GridCoord spawn = spawns[i % spawns.size()];
+        state_.players[i].pos = CellToWorldCenter(spawn);
+    }
+
+    state_.local_player_id = 0;
+
+    network_manager_.BroadcastMatchStart(MatchStartMessage{});
+    network_manager_.BroadcastSnapshot(BuildHostSnapshot());
+
+    app_screen_ = AppScreen::InMatch;
+}
+
+void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) {
+    std::unordered_map<int, Vector2> previous_positions;
+    for (const auto& player : state_.players) {
+        previous_positions[player.id] = player.pos;
+    }
+
+    state_.match.time_remaining = snapshot.time_remaining;
+    state_.match.match_running = snapshot.match_running;
+    state_.match.match_finished = snapshot.match_finished;
+    state_.match.red_team_kills = snapshot.red_team_kills;
+    state_.match.blue_team_kills = snapshot.blue_team_kills;
+
+    state_.players.clear();
+    for (const auto& player_snapshot : snapshot.players) {
+        Player player;
+        player.id = player_snapshot.id;
+        player.name = player_snapshot.name;
+        player.team = player_snapshot.team;
+
+        Vector2 target_pos = {player_snapshot.pos_x, player_snapshot.pos_y};
+        auto prev_it = previous_positions.find(player.id);
+        if (prev_it != previous_positions.end()) {
+            player.pos = Vector2Lerp(prev_it->second, target_pos, 0.65f);
+        } else {
+            player.pos = target_pos;
+        }
+
+        player.vel = {player_snapshot.vel_x, player_snapshot.vel_y};
+        player.hp = player_snapshot.hp;
+        player.kills = player_snapshot.kills;
+        player.alive = player_snapshot.alive;
+        player.facing = static_cast<FacingDirection>(player_snapshot.facing);
+        player.action_state = static_cast<PlayerActionState>(player_snapshot.action_state);
+        state_.players.push_back(player);
+    }
+
+    state_.runes.clear();
+    for (const auto& rune_snapshot : snapshot.runes) {
+        Rune rune;
+        rune.owner_player_id = rune_snapshot.owner_player_id;
+        rune.owner_team = rune_snapshot.owner_team;
+        rune.cell = {rune_snapshot.x, rune_snapshot.y};
+        rune.rune_type = static_cast<RuneType>(rune_snapshot.rune_type);
+        rune.placement_order = rune_snapshot.placement_order;
+        rune.active = rune_snapshot.active;
+        state_.runes.push_back(rune);
+    }
+
+    state_.projectiles.clear();
+    for (const auto& projectile_snapshot : snapshot.projectiles) {
+        Projectile projectile;
+        projectile.owner_player_id = projectile_snapshot.owner_player_id;
+        projectile.owner_team = projectile_snapshot.owner_team;
+        projectile.pos = {projectile_snapshot.pos_x, projectile_snapshot.pos_y};
+        projectile.vel = {projectile_snapshot.vel_x, projectile_snapshot.vel_y};
+        projectile.radius = projectile_snapshot.radius;
+        projectile.damage = projectile_snapshot.damage;
+        projectile.animation_key = projectile_snapshot.animation_key;
+        projectile.emitter_enabled = projectile_snapshot.emitter_enabled;
+        projectile.emitter_emit_every_frames = projectile_snapshot.emitter_emit_every_frames;
+        projectile.emitter_frame_counter = projectile_snapshot.emitter_frame_counter;
+        projectile.alive = projectile_snapshot.alive;
+        state_.projectiles.push_back(projectile);
+    }
+
+    int max_order = 0;
+    for (const auto& rune : state_.runes) {
+        max_order = std::max(max_order, rune.placement_order);
+    }
+    state_.next_rune_placement_order = max_order + 1;
+
+    if (state_.local_player_id < 0) {
+        state_.local_player_id = network_manager_.GetAssignedLocalPlayerId();
+    }
+}
+
+ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
+    ServerSnapshotMessage snapshot;
+    snapshot.time_remaining = state_.match.time_remaining;
+    snapshot.match_running = state_.match.match_running;
+    snapshot.match_finished = state_.match.match_finished;
+    snapshot.red_team_kills = state_.match.red_team_kills;
+    snapshot.blue_team_kills = state_.match.blue_team_kills;
+
+    for (const auto& player : state_.players) {
+        PlayerSnapshot player_snapshot;
+        player_snapshot.id = player.id;
+        player_snapshot.name = player.name;
+        player_snapshot.team = player.team;
+        player_snapshot.pos_x = player.pos.x;
+        player_snapshot.pos_y = player.pos.y;
+        player_snapshot.vel_x = player.vel.x;
+        player_snapshot.vel_y = player.vel.y;
+        player_snapshot.hp = player.hp;
+        player_snapshot.kills = player.kills;
+        player_snapshot.alive = player.alive;
+        player_snapshot.facing = static_cast<int>(player.facing);
+        player_snapshot.action_state = static_cast<int>(player.action_state);
+        snapshot.players.push_back(player_snapshot);
+    }
+
+    for (const auto& rune : state_.runes) {
+        RuneSnapshot rune_snapshot;
+        rune_snapshot.owner_player_id = rune.owner_player_id;
+        rune_snapshot.owner_team = rune.owner_team;
+        rune_snapshot.x = rune.cell.x;
+        rune_snapshot.y = rune.cell.y;
+        rune_snapshot.rune_type = static_cast<int>(rune.rune_type);
+        rune_snapshot.placement_order = rune.placement_order;
+        rune_snapshot.active = rune.active;
+        snapshot.runes.push_back(rune_snapshot);
+    }
+
+    for (const auto& projectile : state_.projectiles) {
+        ProjectileSnapshot projectile_snapshot;
+        projectile_snapshot.owner_player_id = projectile.owner_player_id;
+        projectile_snapshot.owner_team = projectile.owner_team;
+        projectile_snapshot.pos_x = projectile.pos.x;
+        projectile_snapshot.pos_y = projectile.pos.y;
+        projectile_snapshot.vel_x = projectile.vel.x;
+        projectile_snapshot.vel_y = projectile.vel.y;
+        projectile_snapshot.radius = projectile.radius;
+        projectile_snapshot.damage = projectile.damage;
+        projectile_snapshot.animation_key = projectile.animation_key;
+        projectile_snapshot.emitter_enabled = projectile.emitter_enabled;
+        projectile_snapshot.emitter_emit_every_frames = projectile.emitter_emit_every_frames;
+        projectile_snapshot.emitter_frame_counter = projectile.emitter_frame_counter;
+        projectile_snapshot.alive = projectile.alive;
+        snapshot.projectiles.push_back(projectile_snapshot);
+    }
+
+    return snapshot;
+}
+
+ClientInputMessage GameApp::BuildLocalInput(int local_player_id) {
+    ClientInputMessage input;
+    input.player_id = local_player_id;
+    input.tick = ++local_input_tick_;
+
+    input.move_x = 0.0f;
+    input.move_y = 0.0f;
+    if (IsKeyDown(KEY_A)) input.move_x -= 1.0f;
+    if (IsKeyDown(KEY_D)) input.move_x += 1.0f;
+    if (IsKeyDown(KEY_W)) input.move_y -= 1.0f;
+    if (IsKeyDown(KEY_S)) input.move_y += 1.0f;
+
+    Vector2 mouse_world = GetScreenToWorld2D(GetMousePosition(), camera_);
+    input.aim_x = mouse_world.x;
+    input.aim_y = mouse_world.y;
+
+    // Use frame-latched edge inputs to avoid missing events when fixed-step updates
+    // do not run on every render frame.
+    input.primary_pressed = pending_primary_pressed_;
+    input.select_fire = pending_select_fire_;
+    input.select_water = pending_select_water_;
+    pending_primary_pressed_ = false;
+    pending_select_fire_ = false;
+    pending_select_water_ = false;
+    return input;
+}
+
+void GameApp::SimulateHostGameplay(float dt) {
+    const ClientInputMessage host_input = BuildLocalInput(0);
+    latest_remote_inputs_[0] = host_input;
+
+    for (const auto& input : network_manager_.ConsumeHostInputs()) {
+        latest_remote_inputs_[input.player_id] = input;
+    }
+
+    for (auto& player : state_.players) {
+        auto input_it = latest_remote_inputs_.find(player.id);
+        if (input_it == latest_remote_inputs_.end()) {
+            continue;
+        }
+        SimulatePlayerFromInput(player, input_it->second, dt);
+    }
+
+    ResolvePlayerCollisions();
+
+    for (auto& player : state_.players) {
+        if (player.melee_active_remaining > 0.0f && player.alive && !player.melee_hit_consumed) {
+            HandleMeleeHit(player);
+        }
+    }
+
+    UpdateProjectiles(dt);
+    most_kills_mode_.Update(state_, event_queue_, dt);
+    HandleEventsHost();
+
+    if (state_.match.match_finished) {
+        winning_team_ = DetermineWinningTeam(state_.match);
+        app_screen_ = AppScreen::PostMatch;
+    }
+}
+
+void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& input, float dt) {
+    if (!player.alive) {
+        player.vel = {0.0f, 0.0f};
+        return;
+    }
+
+    player.last_input_tick = input.tick;
+
+    if (input.select_fire) {
+        player.selected_rune_type = RuneType::Fire;
+        player.rune_placing_mode = true;
+    }
+    if (input.select_water) {
+        player.selected_rune_type = RuneType::Water;
+        player.rune_placing_mode = true;
+    }
+    Vector2 aim_vector = {input.aim_x - player.pos.x, input.aim_y - player.pos.y};
+    if (Vector2LengthSqr(aim_vector) > 0.0001f) {
+        player.aim_dir = Vector2Normalize(aim_vector);
+        player.facing = AimToFacing(player.aim_dir);
+    }
+
+    player.melee_cooldown_remaining = std::max(0.0f, player.melee_cooldown_remaining - dt);
+    player.melee_active_remaining = std::max(0.0f, player.melee_active_remaining - dt);
+    player.rune_place_cooldown_remaining = std::max(0.0f, player.rune_place_cooldown_remaining - dt);
+
+    if (input.primary_pressed) {
+        if (player.rune_placing_mode) {
+            if (TryPlaceRune(player, Vector2{input.aim_x, input.aim_y})) {
+                player.action_state = PlayerActionState::RunePlacing;
+            }
+        } else if (player.melee_cooldown_remaining <= 0.0f) {
+            player.melee_cooldown_remaining = Constants::kMeleeCooldownSeconds;
+            player.melee_active_remaining = Constants::kMeleeActiveWindowSeconds;
+            player.melee_hit_consumed = false;
+            player.action_state = PlayerActionState::Slashing;
+        }
+    }
+
+    Vector2 movement = {input.move_x, input.move_y};
+    if (Vector2LengthSqr(movement) > 0.0001f) {
+        movement = Vector2Normalize(movement);
+    }
+
+    Vector2 acceleration = Vector2Scale(movement, Constants::kPlayerAcceleration);
+    player.vel = Vector2Add(player.vel, Vector2Scale(acceleration, dt));
+
+    const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * dt);
+    player.vel = Vector2Scale(player.vel, damping);
+
+    const float speed = Vector2Length(player.vel);
+    if (speed > Constants::kPlayerMaxSpeed) {
+        player.vel = Vector2Scale(Vector2Normalize(player.vel), Constants::kPlayerMaxSpeed);
+    }
+
+    player.pos = Vector2Add(player.pos, Vector2Scale(player.vel, dt));
+    CollisionWorld::ResolvePlayerVsWorld(state_.map, player);
+
+    if (player.melee_active_remaining > 0.0f) {
+        player.action_state = PlayerActionState::Slashing;
+    } else if (player.rune_placing_mode) {
+        player.action_state = PlayerActionState::RunePlacing;
+    } else if (Vector2LengthSqr(player.vel) > 8.0f) {
+        player.action_state = PlayerActionState::Walking;
+    } else {
+        player.action_state = PlayerActionState::Idle;
+    }
+}
+
+void GameApp::UpdateProjectiles(float dt) {
+    for (auto& projectile : state_.projectiles) {
+        if (!projectile.alive) {
+            continue;
+        }
+
+        projectile.vel = Vector2Add(projectile.vel, Vector2Scale(projectile.acc, dt));
+        const float drag_factor = std::max(0.0f, 1.0f - projectile.drag * dt);
+        projectile.vel = Vector2Scale(projectile.vel, drag_factor);
+        projectile.pos = Vector2Add(projectile.pos, Vector2Scale(projectile.vel, dt));
+
+        const GridCoord cell = WorldToCell(projectile.pos);
+        if (!state_.map.IsInside(cell)) {
+            projectile.alive = false;
+            continue;
+        }
+
+        if (IsWaterTile(state_.map.GetTile(cell))) {
+            projectile.alive = false;
+            continue;
+        }
+
+        for (auto& target : state_.players) {
+            if (!target.alive || target.team == projectile.owner_team || target.id == projectile.owner_player_id) {
+                continue;
+            }
+
+            Vector2 normal = {0.0f, 0.0f};
+            float penetration = 0.0f;
+            if (!CollisionWorld::CircleVsCircle(projectile.pos, projectile.radius, target.pos, target.radius, normal,
+                                                penetration)) {
+                continue;
+            }
+
+            target.hp -= projectile.damage;
+            event_queue_.Push(PlayerHitEvent{projectile.owner_player_id, target.id, projectile.damage, "fire_bolt"});
+            projectile.alive = false;
+
+            if (target.hp <= 0 && target.alive) {
+                target.alive = false;
+                target.hp = 0;
+                event_queue_.Push(PlayerDiedEvent{target.id, projectile.owner_player_id});
+
+                if (Player* killer = FindPlayerById(projectile.owner_player_id)) {
+                    killer->kills += 1;
+                    if (killer->team == Constants::kTeamRed) {
+                        state_.match.red_team_kills += 1;
+                    } else {
+                        state_.match.blue_team_kills += 1;
+                    }
+                }
+            }
+
+            break;
+        }
+    }
+
+    state_.projectiles.erase(std::remove_if(state_.projectiles.begin(), state_.projectiles.end(),
+                                            [](const Projectile& projectile) { return !projectile.alive; }),
+                             state_.projectiles.end());
+}
+
+void GameApp::UpdateProjectileEmitters() {
+    for (auto& projectile : state_.projectiles) {
+        smoke_emitter_.UpdateAndEmit(projectile, state_.particles);
+    }
+}
+
+void GameApp::UpdateParticles(float dt) {
+    for (auto& particle : state_.particles) {
+        if (!particle.alive) {
+            continue;
+        }
+
+        particle.vel = Vector2Add(particle.vel, Vector2Scale(particle.acc, dt));
+        const float drag_factor = std::max(0.0f, 1.0f - particle.drag * dt);
+        particle.vel = Vector2Scale(particle.vel, drag_factor);
+        particle.pos = Vector2Add(particle.pos, Vector2Scale(particle.vel, dt));
+        particle.age_seconds += dt;
+
+        int frame_count = 0;
+        float fps = 1.0f;
+        float lifetime_seconds = 0.33f * static_cast<float>(std::max(1, particle.max_cycles));
+        if (sprite_metadata_.GetAnimationStats(particle.animation_key, particle.facing, frame_count, fps)) {
+            const float cycle_seconds = static_cast<float>(frame_count) / std::max(0.001f, fps);
+            lifetime_seconds = cycle_seconds * static_cast<float>(std::max(1, particle.max_cycles));
+        }
+        if (particle.age_seconds >= lifetime_seconds) {
+            particle.alive = false;
+        }
+    }
+
+    state_.particles.erase(std::remove_if(state_.particles.begin(), state_.particles.end(),
+                                          [](const Particle& particle) { return !particle.alive; }),
+                           state_.particles.end());
+}
+
+void GameApp::ResolvePlayerCollisions() {
+    for (size_t i = 0; i < state_.players.size(); ++i) {
+        for (size_t j = i + 1; j < state_.players.size(); ++j) {
+            Player& a = state_.players[i];
+            Player& b = state_.players[j];
+            if (!a.alive || !b.alive) {
+                continue;
+            }
+
+            Vector2 normal = {0.0f, 0.0f};
+            float penetration = 0.0f;
+            if (!CollisionWorld::CircleVsCircle(a.pos, a.radius, b.pos, b.radius, normal, penetration)) {
+                continue;
+            }
+
+            const Vector2 separation = Vector2Scale(normal, penetration * 0.5f);
+            a.pos = Vector2Subtract(a.pos, separation);
+            b.pos = Vector2Add(b.pos, separation);
+
+            const float a_dot = Vector2DotProduct(a.vel, normal);
+            if (a_dot > 0.0f) {
+                a.vel = Vector2Subtract(a.vel, Vector2Scale(normal, a_dot));
+            }
+
+            const float b_dot = Vector2DotProduct(b.vel, normal);
+            if (b_dot < 0.0f) {
+                b.vel = Vector2Subtract(b.vel, Vector2Scale(normal, b_dot));
+            }
+        }
+    }
+}
+
+void GameApp::HandleMeleeHit(Player& attacker) {
+    const Vector2 hit_center = Vector2Add(
+        attacker.pos,
+        Vector2Scale(attacker.aim_dir, attacker.radius + Constants::kMeleeRange));
+
+    for (auto& target : state_.players) {
+        if (!target.alive || target.team == attacker.team || target.id == attacker.id) {
+            continue;
+        }
+
+        Vector2 normal = {0.0f, 0.0f};
+        float penetration = 0.0f;
+        if (!CollisionWorld::CircleVsCircle(hit_center, Constants::kMeleeHitRadius, target.pos, target.radius, normal,
+                                            penetration)) {
+            continue;
+        }
+
+        target.hp -= Constants::kMeleeDamage;
+        event_queue_.Push(PlayerHitEvent{attacker.id, target.id, Constants::kMeleeDamage, "melee"});
+        attacker.melee_hit_consumed = true;
+
+        if (target.hp <= 0 && target.alive) {
+            target.alive = false;
+            target.hp = 0;
+            attacker.kills += 1;
+            if (attacker.team == Constants::kTeamRed) {
+                state_.match.red_team_kills += 1;
+            } else {
+                state_.match.blue_team_kills += 1;
+            }
+            event_queue_.Push(PlayerDiedEvent{target.id, attacker.id});
+        }
+        return;
+    }
+}
+
+void GameApp::HandleEventsHost() {
+    size_t index = 0;
+    while (index < event_queue_.GetEvents().size()) {
+        const Event event = event_queue_.GetEvents()[index];
+        if (std::holds_alternative<RunePlacedEvent>(event)) {
+            CheckSpellPatterns(std::get<RunePlacedEvent>(event));
+        } else if (std::holds_alternative<MatchEndedEvent>(event)) {
+            winning_team_ = std::get<MatchEndedEvent>(event).winning_team;
+        }
+        ++index;
+    }
+
+    event_queue_.Clear();
+
+    state_.runes.erase(std::remove_if(state_.runes.begin(), state_.runes.end(),
+                                      [](const Rune& rune) { return !rune.active; }),
+                       state_.runes.end());
+}
+
+bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
+    if (player.rune_place_cooldown_remaining > 0.0f) {
+        return false;
+    }
+
+    const GridCoord cell = WorldToCell(world_mouse);
+    if (!IsTileRunePlaceable(cell) || IsCellOccupiedByRune(cell)) {
+        return false;
+    }
+
+    Rune rune;
+    rune.owner_player_id = player.id;
+    rune.owner_team = player.team;
+    rune.cell = cell;
+    rune.rune_type = player.selected_rune_type;
+    rune.placement_order = state_.next_rune_placement_order++;
+    rune.active = true;
+    state_.runes.push_back(rune);
+
+    event_queue_.Push(RunePlacedEvent{player.id, player.team, cell, player.selected_rune_type, rune.placement_order});
+    player.rune_place_cooldown_remaining = player.rune_place_cooldown_duration;
+    player.rune_placing_mode = false;
+    return true;
+}
+
+void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
+    const auto& patterns = spell_patterns_.GetPatterns();
+    for (const auto& pattern : patterns) {
+        for (const auto& directional : pattern.directional_patterns) {
+            const int rows = static_cast<int>(directional.rows.size());
+            if (rows <= 0) {
+                continue;
+            }
+            const int cols = static_cast<int>(directional.rows[0].size());
+            if (cols <= 0) {
+                continue;
+            }
+
+            std::vector<GridCoord> anchor_cells;
+            for (int y = 0; y < rows; ++y) {
+                for (int x = 0; x < cols; ++x) {
+                    const auto info = spell_patterns_.GetSymbolInfo(directional.rows[y][x]);
+                    if (!info.has_value()) {
+                        continue;
+                    }
+                    if (info->placement_constraint == PlacementConstraint::Latest &&
+                        info->rune_type == event.rune_type) {
+                        anchor_cells.push_back({x, y});
+                    }
+                }
+            }
+            if (anchor_cells.empty()) {
+                for (int y = 0; y < rows; ++y) {
+                    for (int x = 0; x < cols; ++x) {
+                        anchor_cells.push_back({x, y});
+                    }
+                }
+            }
+
+            for (const GridCoord& anchor : anchor_cells) {
+                const GridCoord top_left = {event.cell.x - anchor.x, event.cell.y - anchor.y};
+
+                std::vector<GridCoord> matched_cells;
+                bool is_match = true;
+                for (int y = 0; y < rows && is_match; ++y) {
+                    for (int x = 0; x < cols && is_match; ++x) {
+                        const std::string& symbol = directional.rows[y][x];
+                        const auto info = spell_patterns_.GetSymbolInfo(symbol);
+                        if (!info.has_value()) {
+                            is_match = false;
+                            break;
+                        }
+
+                        const GridCoord cell = {top_left.x + x, top_left.y + y};
+                        if (!state_.map.IsInside(cell)) {
+                            is_match = false;
+                            break;
+                        }
+
+                        const auto rune_it = std::find_if(state_.runes.begin(), state_.runes.end(),
+                                                          [&](const Rune& rune) {
+                                                              if (!rune.active || !(rune.cell == cell) ||
+                                                                  rune.rune_type != info->rune_type) {
+                                                                  return false;
+                                                              }
+
+                                                              if (info->placement_constraint ==
+                                                                  PlacementConstraint::Latest) {
+                                                                  return rune.placement_order ==
+                                                                         event.placement_order;
+                                                              }
+                                                              if (info->placement_constraint ==
+                                                                  PlacementConstraint::Old) {
+                                                                  return rune.placement_order <
+                                                                         event.placement_order;
+                                                              }
+                                                              return true;
+                                                          });
+
+                        if (rune_it == state_.runes.end()) {
+                            is_match = false;
+                            break;
+                        }
+
+                        matched_cells.push_back(cell);
+                    }
+                }
+
+                if (!is_match) {
+                    continue;
+                }
+
+                event_queue_.Push(
+                    RunePatternCompletedEvent{pattern.spell_name, directional.direction, event.cell, matched_cells});
+
+                if (pattern.spell_name == "fire_bolt") {
+                    FireBoltSpell spell(CellToWorldCenter(event.cell), event.player_id, directional.direction);
+                    spell.Cast(state_, event_queue_);
+                }
+
+                for (auto& rune : state_.runes) {
+                    for (const auto& matched_cell : matched_cells) {
+                        if (rune.active && rune.cell == matched_cell) {
+                            rune.active = false;
+                            break;
+                        }
+                    }
+                }
+
+                return;
+            }
+        }
+    }
+}
+
+bool GameApp::IsTileRunePlaceable(const GridCoord& cell) const {
+    if (!state_.map.IsInside(cell)) {
+        return false;
+    }
+
+    const TileType tile = state_.map.GetTile(cell);
+    return tile == TileType::Grass || tile == TileType::SpawnPoint;
+}
+
+bool GameApp::IsCellOccupiedByRune(const GridCoord& cell) const {
+    return std::any_of(state_.runes.begin(), state_.runes.end(),
+                       [&](const Rune& rune) { return rune.active && rune.cell == cell; });
+}
+
+GridCoord GameApp::WorldToCell(Vector2 world) const {
+    return {static_cast<int>(std::floor(world.x / state_.map.cell_size)),
+            static_cast<int>(std::floor(world.y / state_.map.cell_size))};
+}
+
+Vector2 GameApp::CellToWorldCenter(const GridCoord& cell) const { return state_.map.CellCenterWorld(cell); }
+
+Player* GameApp::FindPlayerById(int id) {
+    auto it = std::find_if(state_.players.begin(), state_.players.end(),
+                           [&](const Player& player) { return player.id == id; });
+    return it == state_.players.end() ? nullptr : &(*it);
+}
+
+const Player* GameApp::FindPlayerById(int id) const {
+    auto it = std::find_if(state_.players.begin(), state_.players.end(),
+                           [&](const Player& player) { return player.id == id; });
+    return it == state_.players.end() ? nullptr : &(*it);
+}
+
+void GameApp::RenderWorld() {
+    UpdateCameraTarget();
+
+    BeginMode2D(camera_);
+    RenderMap();
+    RenderRunes();
+    RenderProjectiles();
+    RenderParticles();
+    RenderPlayers();
+    RenderRunePlacementOverlay();
+    EndMode2D();
+}
+
+void GameApp::RenderMap() {
+    if (state_.map.width <= 0 || state_.map.height <= 0) {
+        return;
+    }
+
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+
+    for (int y = 0; y < state_.map.height; ++y) {
+        for (int x = 0; x < state_.map.width; ++x) {
+            const TileType tile = state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)];
+            const Rectangle dst = SnapRect(
+                {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
+                 static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
+
+            if (has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
+                const Rectangle src = InsetSourceRect(
+                    sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
+                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+                if (tile == TileType::SpawnPoint) {
+                    DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
+                                Color{240, 240, 240, 180});
+                }
+            } else if (has_texture && tile == TileType::Water) {
+                const Rectangle src = InsetSourceRect(
+                    sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
+                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+            } else {
+                Color fallback = Color{34, 120, 34, 255};
+                if (tile == TileType::Water) fallback = Color{26, 96, 152, 255};
+                DrawRectangleRec(dst, fallback);
+            }
+        }
+    }
+}
+
+void GameApp::RenderRunes() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+
+    for (const auto& rune : state_.runes) {
+        if (!rune.active) {
+            continue;
+        }
+
+        const Vector2 center = CellToWorldCenter(rune.cell);
+        const char* animation_name = rune.rune_type == RuneType::Fire ? "fire_rune" : "water_rune";
+
+        if (has_texture && sprite_metadata_.HasAnimation(animation_name)) {
+            const Rectangle src = InsetSourceRect(
+                sprite_metadata_.GetFrame(animation_name, "default", render_time_seconds_ + rune.placement_order * 0.05f),
+                Constants::kAtlasSampleInsetPixels);
+            Rectangle dst = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
+            dst = SnapRect(dst);
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+        } else {
+            const Color color =
+                (rune.rune_type == RuneType::Fire) ? Color{255, 140, 44, 220} : Color{66, 180, 255, 220};
+            DrawCircleV(center, 8.0f, color);
+            DrawCircleLinesV(center, 8.0f, Color{20, 24, 32, 255});
+        }
+    }
+}
+
+void GameApp::RenderPlayers() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+
+    for (const auto& player : state_.players) {
+        if (!player.alive) {
+            DrawCircleV(player.pos, player.radius, Color{70, 70, 70, 180});
+            continue;
+        }
+
+        const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
+        std::string animation = "wizard_idle";
+        if (player.action_state == PlayerActionState::Slashing) {
+            animation = "wizard_slash";
+        } else if (player.action_state == PlayerActionState::RunePlacing) {
+            animation = "wizard_create_rune";
+        } else if (is_moving) {
+            animation = "wizard_walking";
+        }
+
+        const char* facing = FacingToSpriteFacing(player.facing);
+        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
+            Rectangle src = sprite_metadata_.GetFrame(animation, facing, render_time_seconds_);
+            src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
+            const bool mirror = player.facing == FacingDirection::Left;
+
+            Rectangle dst = {player.pos.x - 16.0f, player.pos.y - 16.0f, 32.0f, 32.0f};
+            dst = SnapRect(dst);
+            Color tint = WHITE;
+            if (player.team == Constants::kTeamRed) {
+                tint = Color{255, 215, 215, 255};
+            } else {
+                tint = Color{215, 230, 255, 255};
+            }
+
+            if (mirror && mirrored_side_frame_.id != 0) {
+                // Workflow: crop side frame -> mirror within 32x32 tile -> animate using same side coords.
+                BeginTextureMode(mirrored_side_frame_);
+                ClearBackground(Color{0, 0, 0, 0});
+                const Rectangle mirror_dst = {32.0f, 0.0f, -32.0f, 32.0f};
+                DrawTexturePro(texture, src, mirror_dst, {0, 0}, 0.0f, WHITE);
+                EndTextureMode();
+
+                const Rectangle cache_src = {0.0f, 0.0f, 32.0f, -32.0f};
+                DrawTexturePro(mirrored_side_frame_.texture, cache_src, dst, {0, 0}, 0.0f, tint);
+            } else {
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+            }
+        } else {
+            const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
+            DrawCircleV(player.pos, player.radius, fallback);
+        }
+
+        DrawText(TextFormat("%d", player.hp), static_cast<int>(player.pos.x - 8), static_cast<int>(player.pos.y - 28),
+                 12, Color{255, 220, 220, 255});
+    }
+}
+
+void GameApp::RenderProjectiles() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+
+    for (const auto& projectile : state_.projectiles) {
+        if (!projectile.alive) {
+            continue;
+        }
+
+        if (has_texture && sprite_metadata_.HasAnimation(projectile.animation_key)) {
+            const Rectangle src =
+                InsetSourceRect(sprite_metadata_.GetFrame(projectile.animation_key, "default", render_time_seconds_),
+                                Constants::kAtlasSampleInsetPixels);
+            Rectangle dst = {projectile.pos.x - 16.0f, projectile.pos.y - 16.0f, 32.0f, 32.0f};
+            dst = SnapRect(dst);
+            const Color tint = projectile.owner_team == Constants::kTeamRed ? Color{255, 215, 215, 255}
+                                                                            : Color{215, 230, 255, 255};
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+        } else {
+            DrawCircleV(projectile.pos, projectile.radius,
+                        projectile.owner_team == Constants::kTeamRed ? Color{255, 92, 48, 255}
+                                                                     : Color{80, 180, 255, 255});
+        }
+    }
+}
+
+void GameApp::RenderParticles() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+
+    for (const auto& particle : state_.particles) {
+        if (!particle.alive) {
+            continue;
+        }
+
+        if (has_texture && sprite_metadata_.HasAnimation(particle.animation_key)) {
+            const Rectangle src =
+                InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
+                                Constants::kAtlasSampleInsetPixels);
+            Rectangle dst = {particle.pos.x - 16.0f, particle.pos.y - 16.0f, 32.0f, 32.0f};
+            dst = SnapRect(dst);
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 200});
+        } else {
+            DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
+        }
+    }
+}
+
+void GameApp::RenderRunePlacementOverlay() {
+    const Player* local_player = FindPlayerById(state_.local_player_id);
+    if (!local_player || !local_player->rune_placing_mode) {
+        return;
+    }
+
+    const GridCoord mouse_cell = WorldToCell(GetScreenToWorld2D(GetMousePosition(), camera_));
+
+    for (int y = mouse_cell.y - Constants::kPlacementPreviewRadiusCells;
+         y <= mouse_cell.y + Constants::kPlacementPreviewRadiusCells; ++y) {
+        for (int x = mouse_cell.x - Constants::kPlacementPreviewRadiusCells;
+             x <= mouse_cell.x + Constants::kPlacementPreviewRadiusCells; ++x) {
+            const GridCoord cell = {x, y};
+            if (!state_.map.IsInside(cell)) {
+                continue;
+            }
+            if (!IsTileRunePlaceable(cell)) {
+                continue;
+            }
+
+            const Rectangle dst = {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
+                                   static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)};
+
+            if (sprite_metadata_.IsLoaded() && sprite_metadata_.HasAnimation("grid_overlay")) {
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame("grid_overlay", "default", render_time_seconds_),
+                                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(sprite_metadata_.GetTexture(), src, SnapRect(dst), {0, 0}, 0.0f,
+                               Color{255, 255, 255, 128});
+            } else {
+                DrawRectangleLinesEx(dst, 1.0f, Color{190, 205, 255, 130});
+            }
+        }
+    }
+
+    if (!state_.map.IsInside(mouse_cell)) {
+        return;
+    }
+
+    const Vector2 center = CellToWorldCenter(mouse_cell);
+    const bool valid = !IsCellOccupiedByRune(mouse_cell) && IsTileRunePlaceable(mouse_cell);
+    const char* animation_name = local_player->selected_rune_type == RuneType::Fire ? "fire_rune" : "water_rune";
+    if (sprite_metadata_.IsLoaded() && sprite_metadata_.HasAnimation(animation_name)) {
+        const Rectangle src =
+            InsetSourceRect(sprite_metadata_.GetFrame(animation_name, "default", render_time_seconds_),
+                            Constants::kAtlasSampleInsetPixels);
+        Rectangle dst = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
+        dst = SnapRect(dst);
+        const Color tint = valid ? Color{255, 255, 255, 160} : Color{255, 96, 96, 160};
+        DrawTexturePro(sprite_metadata_.GetTexture(), src, dst, {0, 0}, 0.0f, tint);
+    } else {
+        Color preview = local_player->selected_rune_type == RuneType::Fire ? Color{255, 130, 64, 160}
+                                                                            : Color{80, 180, 255, 160};
+        if (!valid) {
+            preview = Color{220, 60, 60, 160};
+        }
+        DrawCircleV(center, 10.0f, preview);
+        DrawCircleLinesV(center, 10.0f, Color{20, 26, 32, 255});
+    }
+}
+
+void GameApp::RenderDebugRuneCooldown() {
+    const Player* local_player = FindPlayerById(state_.local_player_id);
+    if (!local_player) {
+        return;
+    }
+
+    const float cooldown = local_player->rune_place_cooldown_remaining;
+    const bool ready = cooldown <= 0.0f;
+    const int x = 16;
+    const int y = GetScreenHeight() - 54;
+    DrawRectangle(x - 8, y - 8, 260, 42, Color{0, 0, 0, 150});
+    char cooldown_text[64] = {};
+    if (ready) {
+        std::snprintf(cooldown_text, sizeof(cooldown_text), "Rune Place CD: READY");
+    } else {
+        std::snprintf(cooldown_text, sizeof(cooldown_text), "Rune Place CD: %.2fs", cooldown);
+    }
+    DrawText(cooldown_text, x, y, 20, ready ? Color{120, 240, 140, 255} : Color{255, 210, 120, 255});
+}
+
+void GameApp::UpdateCameraTarget() {
+    const Player* local_player = FindPlayerById(state_.local_player_id);
+    if (!local_player && !state_.players.empty()) {
+        local_player = &state_.players.front();
+    }
+
+    if (local_player) {
+        camera_.target = {std::roundf(local_player->pos.x), std::roundf(local_player->pos.y)};
+    }
+
+    camera_.offset = {std::roundf(static_cast<float>(GetScreenWidth()) * 0.5f),
+                      std::roundf(static_cast<float>(GetScreenHeight()) * 0.5f)};
+}
+
+FacingDirection GameApp::AimToFacing(Vector2 aim) {
+    if (std::fabs(aim.x) > std::fabs(aim.y)) {
+        return aim.x >= 0.0f ? FacingDirection::Right : FacingDirection::Left;
+    }
+    return aim.y >= 0.0f ? FacingDirection::Bottom : FacingDirection::Top;
+}
+
+const char* GameApp::FacingToSpriteFacing(FacingDirection facing) {
+    switch (facing) {
+        case FacingDirection::Top:
+            return "top";
+        case FacingDirection::Bottom:
+            return "bot";
+        case FacingDirection::Left:
+        case FacingDirection::Right:
+        default:
+            return "side";
+    }
+}

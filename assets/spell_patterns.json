@@ -1,0 +1,34 @@
+{
+    "abbreviations":{
+        "fire_rune" :{
+            "old":"f",
+            "latest":"F"
+        },
+            "old":"w",
+            "latest":"W"
+    },
+    "spell_patterns":{
+        "fire_bolt":{
+            "directions":{
+                "right":
+                [
+                    ["F","f"]
+                ],
+                "left":
+                [
+                    ["f","F"]
+                ],
+                "top":
+                [
+                    ["f"],
+                    ["F"]
+                ],
+                "bot":
+                [
+                    ["F"],
+                    ["f"]
+                ]
+            }
+        }
+    }
+}

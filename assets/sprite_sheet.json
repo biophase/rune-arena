@@ -1,0 +1,139 @@
+{
+  "texture": "sprite_sheet.png",
+  "cell_width": 32,
+  "cell_height": 32,
+
+  "animations": {
+    "wizard_idle":{
+      "facings":{
+        "side":{
+          "frames": [[0,0]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[1,0]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[2,0]], 
+          "fps": 3
+        }
+      }
+    },
+
+    "wizard_walking":{
+      "facings":{
+        "side":{
+          "frames": [[0,0],[0,1]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[1,0],[1,1]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[2,0],[2,1]], 
+          "fps": 3
+        }
+      }
+    },
+
+    "wizard_slash":{
+      "facings":{
+        "side":{
+          "frames": [[0,0],[0,1]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[1,0],[1,1]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[2,0],[2,1]], 
+          "fps": 3
+        }
+      }
+    },
+
+    "wizard_create_rune":{
+      "facings":{
+        "side":{
+          "frames": [[0,0],[0,1]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[1,0],[1,1]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[2,0],[2,1]], 
+          "fps": 3
+        }
+      }
+    },
+
+    "grid_overlay":{
+      "facings":{
+        "default":{
+          "frames": [[4,0],[4,1],[4,2],[4,3]],
+          "fps":8
+        }
+      }
+    },
+
+
+    "tile_grass":{
+      "facings":{
+        "default":{
+          "frames": [[3,0],[3,1]],
+          "fps":8
+        }
+      }
+    },
+    "tile_water":{
+      "facings":{
+        "default":{
+          "frames": [[3,2],[3,3]],
+          "fps":8
+        }
+      }
+    },
+
+    "projectile_fire_bolt":{
+      "facings":{
+        "default":{
+          "frames": [[7,0],[7,1]], 
+          "fps": 24
+        }
+      }
+    },
+    "particle_smoke":{
+      "facings":{
+        "default":{
+          "frames": [[8,0],[8,1],[8,2],[8,3]], 
+          "fps": 24
+        }
+      }
+    },
+
+    "fire_rune":{
+      "facings":{
+        "default":{
+          "frames": [[5,0],[5,1],[5,2],[5,3]], 
+          "fps": 8
+        }
+      }
+    },
+    "water_rune":{
+      "facings":{
+        "default":{
+          "frames": [[6,0],[6,1],[6,2],[6,3]], 
+          "fps": 8
+        }
+      }
+    }
+
+
+  }
+}
+
