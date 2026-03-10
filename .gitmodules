@@ -1,0 +1,15 @@
+[submodule "external/raylib"]
+	path = external/raylib
+	url = https://github.com/raysan5/raylib.git
+[submodule "external/raygui"]
+	path = external/raygui
+	url = https://github.com/raysan5/raygui.git
+[submodule "external/enet"]
+	path = external/enet
+	url = https://github.com/lsalzman/enet.git
+[submodule "external/PlatformFolders"]
+	path = external/PlatformFolders
+	url = https://github.com/sago007/PlatformFolders.git
+[submodule "external/json"]
+	path = external/json
+	url = https://github.com/nlohmann/json.git
