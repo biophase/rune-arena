@@ -1,5 +1,6 @@
 #include "assets/sprite_metadata.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -27,12 +28,32 @@ bool SpriteMetadataLoader::LoadFromFile(const std::string& json_path) {
     const std::filesystem::path texture_path =
         json_file_path.parent_path() / json.value("texture", std::string("sprite_sheet.png"));
 
-    texture_ = LoadTexture(texture_path.string().c_str());
-    if (texture_.id == 0) {
-        TraceLog(LOG_ERROR, "Failed to load sprite sheet texture: %s", texture_path.string().c_str());
+    Image source_image = LoadImage(texture_path.string().c_str());
+    if (source_image.data == nullptr) {
+        TraceLog(LOG_ERROR, "Failed to load sprite sheet image: %s", texture_path.string().c_str());
         return false;
     }
+
+    texture_ = LoadTextureFromImage(source_image);
+    if (texture_.id == 0) {
+        TraceLog(LOG_ERROR, "Failed to create sprite sheet texture: %s", texture_path.string().c_str());
+        UnloadImage(source_image);
+        return false;
+    }
+
+    Image mirrored_image = ImageCopy(source_image);
+    ImageFlipHorizontal(&mirrored_image);
+    mirrored_texture_ = LoadTextureFromImage(mirrored_image);
+
+    UnloadImage(mirrored_image);
+    UnloadImage(source_image);
+
     SetTextureFilter(texture_, TEXTURE_FILTER_POINT);
+    if (mirrored_texture_.id != 0) {
+        SetTextureFilter(mirrored_texture_, TEXTURE_FILTER_POINT);
+    } else {
+        TraceLog(LOG_WARNING, "Failed to create mirrored sprite sheet texture, falling back to default texture");
+    }
     if (num_columns_ <= 0 && cell_width_ > 0) {
         num_columns_ = texture_.width / cell_width_;
     }
@@ -106,6 +127,10 @@ void SpriteMetadataLoader::Unload() {
         UnloadTexture(texture_);
         texture_ = {};
     }
+    if (mirrored_texture_.id != 0) {
+        UnloadTexture(mirrored_texture_);
+        mirrored_texture_ = {};
+    }
     loaded_ = false;
     animations_.clear();
     num_columns_ = 0;
@@ -113,7 +138,12 @@ void SpriteMetadataLoader::Unload() {
 
 bool SpriteMetadataLoader::IsLoaded() const { return loaded_; }
 
-const Texture2D& SpriteMetadataLoader::GetTexture() const { return texture_; }
+const Texture2D& SpriteMetadataLoader::GetTexture(bool use_mirrored) const {
+    if (use_mirrored && mirrored_texture_.id != 0) {
+        return mirrored_texture_;
+    }
+    return texture_;
+}
 
 bool SpriteMetadataLoader::HasAnimation(const std::string& animation_name) const {
     return animations_.find(animation_name) != animations_.end();
@@ -154,6 +184,25 @@ Rectangle SpriteMetadataLoader::GetFrame(const std::string& animation_name, cons
     const float fps = facing_data->fps > 0.0f ? facing_data->fps : 1.0f;
     const int index = static_cast<int>(time_seconds * fps) % static_cast<int>(facing_data->frames.size());
     return facing_data->frames[static_cast<size_t>(index)];
+}
+
+Rectangle SpriteMetadataLoader::GetMirroredFrameRect(const Rectangle& source_rect) const {
+    if (num_columns_ <= 0 || cell_width_ <= 0) {
+        return source_rect;
+    }
+
+    const float cell_width = static_cast<float>(cell_width_);
+    const int source_col = static_cast<int>(std::floor(source_rect.x / cell_width));
+    if (source_col < 0 || source_col >= num_columns_) {
+        return source_rect;
+    }
+
+    const int mirrored_col = num_columns_ - 1 - source_col;
+    const float source_local_x = source_rect.x - (static_cast<float>(source_col) * cell_width);
+
+    Rectangle mirrored = source_rect;
+    mirrored.x = static_cast<float>(mirrored_col) * cell_width + source_local_x;
+    return mirrored;
 }
 
 bool SpriteMetadataLoader::GetAnimationStats(const std::string& animation_name, const std::string& facing,

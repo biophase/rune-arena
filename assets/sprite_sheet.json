@@ -140,9 +140,32 @@
           "fps": 8
         }
       }
+    },
+
+    "ice_wall_born":{
+      "facings":{
+        "default":{
+          "frames": [[10,0],[10,1],[10,2],[10,3]], 
+          "fps": 3
+        }
+      }
+    },
+    "ice_wall_idle":{
+      "facings":{
+        "default":{
+          "frames": [[10,3]], 
+          "fps": 3
+        }
+      }
+    },
+    "ice_wall_death":{
+      "facings":{
+        "default":{
+          "frames": [[10,3],[10,2],[10,1],[10,0]], 
+          "fps": 3
+        }
+      }
     }
-
-
   }
 }
 

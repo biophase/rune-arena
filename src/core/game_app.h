@@ -58,9 +58,12 @@ class GameApp {
     ClientInputMessage BuildLocalInput(int local_player_id);
     void SimulateHostGameplay(float dt);
     void SimulatePlayerFromInput(Player& player, const ClientInputMessage& input, float dt);
+    void UpdateIceWalls(float dt);
     void UpdateProjectiles(float dt);
     void UpdateExplosions(float dt);
     void ResolvePlayerCollisions();
+    void ResolvePlayerVsIceWalls(Player& player);
+    void PushPlayersOutOfIceWall(const GridCoord& cell);
     void HandleMeleeHit(Player& attacker);
     void HandleEventsHost();
     void UpdateProjectileEmitters();
@@ -82,6 +85,7 @@ class GameApp {
     void RenderWorld();
     void RenderMap();
     void RenderRunes();
+    void RenderIceWalls();
     void RenderPlayers();
     void RenderProjectiles();
     void RenderParticles();

@@ -4,8 +4,10 @@
             "old":"f",
             "latest":"F"
         },
+        "water_rune" :{
             "old":"w",
             "latest":"W"
+        }
     },
     "spell_patterns":{
         "fire_bolt":{
@@ -28,6 +30,25 @@
                     ["F"],
                     ["f"]
                 ]
+            }
+        },
+        "ice_wall":{
+            "directions":{
+                "horizontal":[
+                    [
+                        [["W","w","w"]],
+                        [["w","W","w"]],
+                        [["w","w","W"]]
+                    ]
+                ],
+                "vertical":[
+                    [
+                        [["W"],["w"],["w"]],
+                        [["w"],["W"],["w"]],
+                        [["w"],["w"],["W"]]
+                    ]
+                ]
+
             }
         }
     }

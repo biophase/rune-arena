@@ -62,6 +62,17 @@ struct ProjectileSnapshot {
     bool alive = true;
 };
 
+struct IceWallSnapshot {
+    int owner_player_id = -1;
+    int owner_team = 0;
+    int cell_x = 0;
+    int cell_y = 0;
+    int state = 0;
+    float state_time = 0.0f;
+    float hp = 0.0f;
+    bool alive = true;
+};
+
 struct ServerSnapshotMessage {
     int server_tick = 0;
     float time_remaining = 0.0f;
@@ -73,6 +84,7 @@ struct ServerSnapshotMessage {
     std::vector<PlayerSnapshot> players;
     std::vector<RuneSnapshot> runes;
     std::vector<ProjectileSnapshot> projectiles;
+    std::vector<IceWallSnapshot> ice_walls;
 };
 
 struct LobbyPlayerInfo {

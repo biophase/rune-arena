@@ -5,6 +5,65 @@
 
 #include <nlohmann/json.hpp>
 
+namespace {
+
+bool ParsePatternGrid(const nlohmann::json& node, std::vector<std::vector<std::string>>& out_grid) {
+    if (!node.is_array() || node.empty()) {
+        return false;
+    }
+
+    std::vector<std::vector<std::string>> parsed;
+    int expected_cols = -1;
+    for (const auto& row_json : node) {
+        if (!row_json.is_array() || row_json.empty()) {
+            return false;
+        }
+
+        std::vector<std::string> row;
+        row.reserve(row_json.size());
+        for (const auto& cell_json : row_json) {
+            if (!cell_json.is_string()) {
+                return false;
+            }
+            row.push_back(cell_json.get<std::string>());
+        }
+
+        if (expected_cols < 0) {
+            expected_cols = static_cast<int>(row.size());
+        } else if (static_cast<int>(row.size()) != expected_cols) {
+            return false;
+        }
+
+        parsed.push_back(std::move(row));
+    }
+
+    if (parsed.empty() || expected_cols <= 0) {
+        return false;
+    }
+
+    out_grid = std::move(parsed);
+    return true;
+}
+
+void CollectPatternVariants(const nlohmann::json& node,
+                            std::vector<std::vector<std::vector<std::string>>>& out_variants) {
+    std::vector<std::vector<std::string>> grid;
+    if (ParsePatternGrid(node, grid)) {
+        out_variants.push_back(std::move(grid));
+        return;
+    }
+
+    if (!node.is_array()) {
+        return;
+    }
+
+    for (const auto& child : node) {
+        CollectPatternVariants(child, out_variants);
+    }
+}
+
+}  // namespace
+
 bool SpellPatternLoader::LoadFromFile(const std::string& path) {
     std::ifstream input(path);
     if (!input.is_open()) {
@@ -76,20 +135,8 @@ bool SpellPatternLoader::LoadFromFile(const std::string& path) {
             DirectionalPattern directional_pattern;
             directional_pattern.direction = ParseDirection(dir_it.key());
 
-            if (dir_it.value().is_array()) {
-                for (const auto& row_json : dir_it.value()) {
-                    std::vector<std::string> row;
-                    if (!row_json.is_array()) {
-                        continue;
-                    }
-                    for (const auto& cell : row_json) {
-                        row.push_back(cell.get<std::string>());
-                    }
-                    directional_pattern.rows.push_back(row);
-                }
-            }
-
-            if (!directional_pattern.rows.empty()) {
+            CollectPatternVariants(dir_it.value(), directional_pattern.variants);
+            if (!directional_pattern.variants.empty()) {
                 definition.directional_patterns.push_back(directional_pattern);
             }
         }
@@ -121,11 +168,20 @@ SpellDirection SpellPatternLoader::ParseDirection(const std::string& text) const
     if (text == "left") {
         return SpellDirection::Left;
     }
+    if (text == "right") {
+        return SpellDirection::Right;
+    }
     if (text == "top") {
         return SpellDirection::Top;
     }
     if (text == "bot") {
         return SpellDirection::Bottom;
+    }
+    if (text == "horizontal") {
+        return SpellDirection::Horizontal;
+    }
+    if (text == "vertical") {
+        return SpellDirection::Vertical;
     }
     return SpellDirection::Right;
 }

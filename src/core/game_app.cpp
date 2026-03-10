@@ -15,6 +15,7 @@
 #include "collision/collision_world.h"
 #include "core/constants.h"
 #include "spells/fire_bolt_spell.h"
+#include "spells/ice_wall_spell.h"
 #include "ui/ui_lobby.h"
 #include "ui/ui_main_menu.h"
 #include "ui/ui_match.h"
@@ -31,6 +32,11 @@ int DetermineWinningTeam(const MatchState& match) {
         return Constants::kTeamBlue;
     }
     return -1;
+}
+
+bool IsHorizontalDirection(SpellDirection direction) {
+    return direction == SpellDirection::Horizontal || direction == SpellDirection::Left ||
+           direction == SpellDirection::Right;
 }
 
 Rectangle SnapRect(Rectangle rect) {
@@ -544,6 +550,7 @@ void GameApp::StartMatchAsHost() {
     state_.runes.clear();
     state_.projectiles.clear();
     state_.explosions.clear();
+    state_.ice_walls.clear();
     state_.particles.clear();
     state_.next_rune_placement_order = 1;
     latest_remote_inputs_.clear();
@@ -649,6 +656,19 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         projectile.alive = projectile_snapshot.alive;
         state_.projectiles.push_back(projectile);
     }
+
+    state_.ice_walls.clear();
+    for (const auto& wall_snapshot : snapshot.ice_walls) {
+        IceWallPiece wall;
+        wall.owner_player_id = wall_snapshot.owner_player_id;
+        wall.owner_team = wall_snapshot.owner_team;
+        wall.cell = {wall_snapshot.cell_x, wall_snapshot.cell_y};
+        wall.state = static_cast<IceWallState>(wall_snapshot.state);
+        wall.state_time = wall_snapshot.state_time;
+        wall.hp = wall_snapshot.hp;
+        wall.alive = wall_snapshot.alive;
+        state_.ice_walls.push_back(wall);
+    }
     state_.explosions.clear();
 
     int max_order = 0;
@@ -720,6 +740,19 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         snapshot.projectiles.push_back(projectile_snapshot);
     }
 
+    for (const auto& wall : state_.ice_walls) {
+        IceWallSnapshot wall_snapshot;
+        wall_snapshot.owner_player_id = wall.owner_player_id;
+        wall_snapshot.owner_team = wall.owner_team;
+        wall_snapshot.cell_x = wall.cell.x;
+        wall_snapshot.cell_y = wall.cell.y;
+        wall_snapshot.state = static_cast<int>(wall.state);
+        wall_snapshot.state_time = wall.state_time;
+        wall_snapshot.hp = wall.hp;
+        wall_snapshot.alive = wall.alive;
+        snapshot.ice_walls.push_back(wall_snapshot);
+    }
+
     return snapshot;
 }
 
@@ -767,6 +800,7 @@ void GameApp::SimulateHostGameplay(float dt) {
     }
 
     ResolvePlayerCollisions();
+    UpdateIceWalls(dt);
 
     for (auto& player : state_.players) {
         if (player.melee_active_remaining > 0.0f && player.alive && !player.melee_hit_consumed) {
@@ -842,6 +876,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
 
     player.pos = Vector2Add(player.pos, Vector2Scale(player.vel, dt));
     CollisionWorld::ResolvePlayerVsWorld(state_.map, player);
+    ResolvePlayerVsIceWalls(player);
 
     if (player.melee_active_remaining > 0.0f) {
         player.action_state = PlayerActionState::Slashing;
@@ -851,6 +886,109 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         player.action_state = PlayerActionState::Walking;
     } else {
         player.action_state = PlayerActionState::Idle;
+    }
+}
+
+void GameApp::UpdateIceWalls(float dt) {
+    int death_frame_count = 0;
+    float death_fps = 1.0f;
+    float death_duration = 0.5f;
+    if (sprite_metadata_.GetAnimationStats("ice_wall_death", "default", death_frame_count, death_fps)) {
+        death_duration = static_cast<float>(death_frame_count) / std::max(0.001f, death_fps);
+    }
+
+    for (auto& wall : state_.ice_walls) {
+        if (!wall.alive) {
+            continue;
+        }
+
+        wall.state_time += dt;
+        switch (wall.state) {
+            case IceWallState::Materializing:
+                if (wall.state_time >= Constants::kIceWallMaterializeSeconds) {
+                    wall.state = IceWallState::Active;
+                    wall.state_time = 0.0f;
+                    PushPlayersOutOfIceWall(wall.cell);
+                }
+                break;
+            case IceWallState::Active:
+                wall.hp = std::max(0.0f, wall.hp - Constants::kIceWallHpDecayPerSecond * dt);
+                if (wall.hp <= 0.0f) {
+                    wall.state = IceWallState::Dying;
+                    wall.state_time = 0.0f;
+                }
+                break;
+            case IceWallState::Dying:
+                if (wall.state_time >= death_duration) {
+                    wall.alive = false;
+                }
+                break;
+        }
+    }
+
+    state_.ice_walls.erase(
+        std::remove_if(state_.ice_walls.begin(), state_.ice_walls.end(),
+                       [](const IceWallPiece& wall) { return !wall.alive; }),
+        state_.ice_walls.end());
+}
+
+void GameApp::ResolvePlayerVsIceWalls(Player& player) {
+    if (!player.alive) {
+        return;
+    }
+
+    const int cell_size = state_.map.cell_size;
+    for (const auto& wall : state_.ice_walls) {
+        if (!wall.alive || wall.state != IceWallState::Active) {
+            continue;
+        }
+
+        const Rectangle aabb = {static_cast<float>(wall.cell.x * cell_size), static_cast<float>(wall.cell.y * cell_size),
+                                static_cast<float>(cell_size), static_cast<float>(cell_size)};
+        Vector2 normal = {0.0f, 0.0f};
+        float penetration = 0.0f;
+        if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+            continue;
+        }
+
+        player.pos = Vector2Add(player.pos, Vector2Scale(normal, penetration));
+        const float velocity_dot = Vector2DotProduct(player.vel, normal);
+        if (velocity_dot < 0.0f) {
+            player.vel = Vector2Subtract(player.vel, Vector2Scale(normal, velocity_dot));
+        }
+    }
+}
+
+void GameApp::PushPlayersOutOfIceWall(const GridCoord& cell) {
+    const int cell_size = state_.map.cell_size;
+    const Rectangle aabb = {static_cast<float>(cell.x * cell_size), static_cast<float>(cell.y * cell_size),
+                            static_cast<float>(cell_size), static_cast<float>(cell_size)};
+    const Vector2 centroid = {aabb.x + aabb.width * 0.5f, aabb.y + aabb.height * 0.5f};
+
+    for (auto& player : state_.players) {
+        if (!player.alive) {
+            continue;
+        }
+
+        Vector2 normal = {0.0f, 0.0f};
+        float penetration = 0.0f;
+        if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+            continue;
+        }
+
+        Vector2 push_dir = Vector2Subtract(player.pos, centroid);
+        if (Vector2LengthSqr(push_dir) <= 0.0001f) {
+            push_dir = normal;
+        } else {
+            push_dir = Vector2Normalize(push_dir);
+        }
+        player.pos = Vector2Add(player.pos, Vector2Scale(push_dir, penetration + 0.5f));
+
+        const float velocity_dot = Vector2DotProduct(player.vel, push_dir);
+        if (velocity_dot < 0.0f) {
+            player.vel = Vector2Subtract(player.vel, Vector2Scale(push_dir, velocity_dot));
+        }
+        CollisionWorld::ResolvePlayerVsWorld(state_.map, player);
     }
 }
 
@@ -871,6 +1009,25 @@ void GameApp::UpdateProjectiles(float dt) {
         const GridCoord cell = WorldToCell(projectile.pos);
         if (!state_.map.IsInside(cell)) {
             destroy_projectile = true;
+        }
+
+        if (!destroy_projectile) {
+            const int wall_cell_size = state_.map.cell_size;
+            for (const auto& wall : state_.ice_walls) {
+                if (!wall.alive || wall.state != IceWallState::Active) {
+                    continue;
+                }
+
+                const Rectangle aabb = {static_cast<float>(wall.cell.x * wall_cell_size),
+                                        static_cast<float>(wall.cell.y * wall_cell_size),
+                                        static_cast<float>(wall_cell_size), static_cast<float>(wall_cell_size)};
+                Vector2 normal = {0.0f, 0.0f};
+                float penetration = 0.0f;
+                if (CollisionWorld::CircleVsAabb(projectile.pos, projectile.radius, aabb, normal, penetration)) {
+                    destroy_projectile = true;
+                    break;
+                }
+            }
         }
 
         if (!destroy_projectile) {
@@ -1081,6 +1238,10 @@ void GameApp::ResolvePlayerCollisions() {
             }
         }
     }
+
+    for (auto& player : state_.players) {
+        ResolvePlayerVsIceWalls(player);
+    }
 }
 
 void GameApp::HandleMeleeHit(Player& attacker) {
@@ -1167,107 +1328,129 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
     const auto& patterns = spell_patterns_.GetPatterns();
     for (const auto& pattern : patterns) {
         for (const auto& directional : pattern.directional_patterns) {
-            const int rows = static_cast<int>(directional.rows.size());
-            if (rows <= 0) {
-                continue;
-            }
-            const int cols = static_cast<int>(directional.rows[0].size());
-            if (cols <= 0) {
-                continue;
-            }
-
-            std::vector<GridCoord> anchor_cells;
-            for (int y = 0; y < rows; ++y) {
-                for (int x = 0; x < cols; ++x) {
-                    const auto info = spell_patterns_.GetSymbolInfo(directional.rows[y][x]);
-                    if (!info.has_value()) {
-                        continue;
-                    }
-                    if (info->placement_constraint == PlacementConstraint::Latest &&
-                        info->rune_type == event.rune_type) {
-                        anchor_cells.push_back({x, y});
-                    }
+            for (const auto& variant : directional.variants) {
+                const int rows = static_cast<int>(variant.size());
+                if (rows <= 0) {
+                    continue;
                 }
-            }
-            if (anchor_cells.empty()) {
-                for (int y = 0; y < rows; ++y) {
-                    for (int x = 0; x < cols; ++x) {
-                        anchor_cells.push_back({x, y});
-                    }
-                }
-            }
-
-            for (const GridCoord& anchor : anchor_cells) {
-                const GridCoord top_left = {event.cell.x - anchor.x, event.cell.y - anchor.y};
-
-                std::vector<GridCoord> matched_cells;
-                bool is_match = true;
-                for (int y = 0; y < rows && is_match; ++y) {
-                    for (int x = 0; x < cols && is_match; ++x) {
-                        const std::string& symbol = directional.rows[y][x];
-                        const auto info = spell_patterns_.GetSymbolInfo(symbol);
-                        if (!info.has_value()) {
-                            is_match = false;
-                            break;
-                        }
-
-                        const GridCoord cell = {top_left.x + x, top_left.y + y};
-                        if (!state_.map.IsInside(cell)) {
-                            is_match = false;
-                            break;
-                        }
-
-                        const auto rune_it = std::find_if(state_.runes.begin(), state_.runes.end(),
-                                                          [&](const Rune& rune) {
-                                                              if (!rune.active || !(rune.cell == cell) ||
-                                                                  rune.rune_type != info->rune_type) {
-                                                                  return false;
-                                                              }
-
-                                                              if (info->placement_constraint ==
-                                                                  PlacementConstraint::Latest) {
-                                                                  return rune.placement_order ==
-                                                                         event.placement_order;
-                                                              }
-                                                              if (info->placement_constraint ==
-                                                                  PlacementConstraint::Old) {
-                                                                  return rune.placement_order <
-                                                                         event.placement_order;
-                                                              }
-                                                              return true;
-                                                          });
-
-                        if (rune_it == state_.runes.end()) {
-                            is_match = false;
-                            break;
-                        }
-
-                        matched_cells.push_back(cell);
-                    }
-                }
-
-                if (!is_match) {
+                const int cols = static_cast<int>(variant[0].size());
+                if (cols <= 0) {
                     continue;
                 }
 
-                event_queue_.Push(
-                    RunePatternCompletedEvent{pattern.spell_name, directional.direction, event.cell, matched_cells});
-
-                if (pattern.spell_name == "fire_bolt") {
-                    FireBoltSpell spell(CellToWorldCenter(event.cell), event.player_id, directional.direction);
-                    spell.Cast(state_, event_queue_);
+                std::vector<GridCoord> anchor_cells;
+                for (int y = 0; y < rows; ++y) {
+                    for (int x = 0; x < cols; ++x) {
+                        const auto info = spell_patterns_.GetSymbolInfo(variant[y][x]);
+                        if (!info.has_value()) {
+                            continue;
+                        }
+                        if (info->placement_constraint == PlacementConstraint::Latest &&
+                            info->rune_type == event.rune_type) {
+                            anchor_cells.push_back({x, y});
+                        }
+                    }
                 }
-
-                for (auto& rune : state_.runes) {
-                    for (const auto& matched_cell : matched_cells) {
-                        if (rune.active && rune.cell == matched_cell) {
-                            rune.active = false;
-                            break;
+                if (anchor_cells.empty()) {
+                    for (int y = 0; y < rows; ++y) {
+                        for (int x = 0; x < cols; ++x) {
+                            anchor_cells.push_back({x, y});
                         }
                     }
                 }
 
-                return;
+                for (const GridCoord& anchor : anchor_cells) {
+                    const GridCoord top_left = {event.cell.x - anchor.x, event.cell.y - anchor.y};
+
+                    std::vector<GridCoord> matched_cells;
+                    bool is_match = true;
+                    for (int y = 0; y < rows && is_match; ++y) {
+                        for (int x = 0; x < cols && is_match; ++x) {
+                            const std::string& symbol = variant[y][x];
+                            const auto info = spell_patterns_.GetSymbolInfo(symbol);
+                            if (!info.has_value()) {
+                                is_match = false;
+                                break;
+                            }
+
+                            const GridCoord cell = {top_left.x + x, top_left.y + y};
+                            if (!state_.map.IsInside(cell)) {
+                                is_match = false;
+                                break;
+                            }
+
+                            const auto rune_it = std::find_if(state_.runes.begin(), state_.runes.end(),
+                                                              [&](const Rune& rune) {
+                                                                  if (!rune.active || !(rune.cell == cell) ||
+                                                                      rune.rune_type != info->rune_type) {
+                                                                      return false;
+                                                                  }
+
+                                                                  if (info->placement_constraint ==
+                                                                      PlacementConstraint::Latest) {
+                                                                      return rune.placement_order ==
+                                                                             event.placement_order;
+                                                                  }
+                                                                  if (info->placement_constraint ==
+                                                                      PlacementConstraint::Old) {
+                                                                      return rune.placement_order <
+                                                                             event.placement_order;
+                                                                  }
+                                                                  return true;
+                                                              });
+
+                            if (rune_it == state_.runes.end()) {
+                                is_match = false;
+                                break;
+                            }
+
+                            matched_cells.push_back(cell);
+                        }
+                    }
+
+                    if (!is_match) {
+                        continue;
+                    }
+
+                    GridCoord cast_origin = event.cell;
+                    if (pattern.spell_name == "ice_wall" && !matched_cells.empty()) {
+                        std::vector<GridCoord> ordered = matched_cells;
+                        if (IsHorizontalDirection(directional.direction)) {
+                            std::sort(ordered.begin(), ordered.end(),
+                                      [](const GridCoord& a, const GridCoord& b) {
+                                          return (a.x == b.x) ? (a.y < b.y) : (a.x < b.x);
+                                      });
+                        } else {
+                            std::sort(ordered.begin(), ordered.end(),
+                                      [](const GridCoord& a, const GridCoord& b) {
+                                          return (a.y == b.y) ? (a.x < b.x) : (a.y < b.y);
+                                      });
+                        }
+                        cast_origin = ordered[ordered.size() / 2];
+                    }
+
+                    event_queue_.Push(
+                        RunePatternCompletedEvent{pattern.spell_name, directional.direction, cast_origin, matched_cells});
+
+                    if (pattern.spell_name == "fire_bolt") {
+                        FireBoltSpell spell(CellToWorldCenter(cast_origin), event.player_id, directional.direction);
+                        spell.Cast(state_, event_queue_);
+                    } else if (pattern.spell_name == "ice_wall") {
+                        IceWallSpell spell(cast_origin, event.player_id, directional.direction);
+                        spell.Cast(state_, event_queue_);
+                    }
+
+                    for (auto& rune : state_.runes) {
+                        for (const auto& matched_cell : matched_cells) {
+                            if (rune.active && rune.cell == matched_cell) {
+                                rune.active = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    return;
+                }
             }
         }
     }
@@ -1312,6 +1495,7 @@ void GameApp::RenderWorld() {
     BeginMode2D(camera_);
     RenderMap();
     RenderRunes();
+    RenderIceWalls();
     RenderProjectiles();
     RenderParticles();
     RenderPlayers();
@@ -1385,9 +1569,44 @@ void GameApp::RenderRunes() {
     }
 }
 
-void GameApp::RenderPlayers() {
+void GameApp::RenderIceWalls() {
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
+
+    for (const auto& wall : state_.ice_walls) {
+        if (!wall.alive) {
+            continue;
+        }
+
+        const Vector2 center = CellToWorldCenter(wall.cell);
+        Rectangle dst = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
+        dst = SnapRect(dst);
+
+        const char* animation_name = "ice_wall_idle";
+        float animation_time = render_time_seconds_;
+        if (wall.state == IceWallState::Materializing) {
+            animation_name = "ice_wall_born";
+            animation_time = wall.state_time;
+        } else if (wall.state == IceWallState::Dying) {
+            animation_name = "ice_wall_death";
+            animation_time = wall.state_time;
+        }
+
+        if (has_texture && sprite_metadata_.HasAnimation(animation_name)) {
+            const Rectangle src = InsetSourceRect(sprite_metadata_.GetFrame(animation_name, "default", animation_time),
+                                                  Constants::kAtlasSampleInsetPixels);
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+        } else {
+            const Color fallback =
+                (wall.state == IceWallState::Dying) ? Color{140, 180, 230, 180} : Color{180, 220, 255, 255};
+            DrawRectangleRec(dst, fallback);
+            DrawRectangleLinesEx(dst, 1.0f, Color{60, 95, 140, 255});
+        }
+    }
+}
+
+void GameApp::RenderPlayers() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
 
     for (const auto& player : state_.players) {
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
@@ -1413,9 +1632,12 @@ void GameApp::RenderPlayers() {
         const Rectangle sprite_rect = dst;
 
         if (has_texture && sprite_metadata_.HasAnimation(animation)) {
-            Rectangle src = sprite_metadata_.GetFrame(animation, facing, render_time_seconds_);
-            src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
             const bool mirror = player.facing == FacingDirection::Left;
+            Rectangle src = sprite_metadata_.GetFrame(animation, facing, render_time_seconds_);
+            if (mirror) {
+                src = sprite_metadata_.GetMirroredFrameRect(src);
+            }
+            src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
 
             Color tint = WHITE;
             if (player.team == Constants::kTeamRed) {
@@ -1424,11 +1646,8 @@ void GameApp::RenderPlayers() {
                 tint = Color{215, 230, 255, 255};
             }
 
-            if (mirror) {
-                dst.x += dst.width;
-                dst.width = -dst.width;
-            }
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+            const Texture2D draw_texture = sprite_metadata_.GetTexture(mirror);
+            DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, tint);
         } else {
             const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
             DrawCircleV(draw_pos, player.radius, fallback);

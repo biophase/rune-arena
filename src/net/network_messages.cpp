@@ -90,6 +90,20 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
         });
     }
 
+    out["ice_walls"] = nlohmann::json::array();
+    for (const auto& wall : message.ice_walls) {
+        out["ice_walls"].push_back({
+            {"owner_player_id", wall.owner_player_id},
+            {"owner_team", wall.owner_team},
+            {"cell_x", wall.cell_x},
+            {"cell_y", wall.cell_y},
+            {"state", wall.state},
+            {"state_time", wall.state_time},
+            {"hp", wall.hp},
+            {"alive", wall.alive},
+        });
+    }
+
     return out;
 }
 
@@ -158,6 +172,22 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             projectile.emitter_frame_counter = item.value("emitter_frame_counter", 0);
             projectile.alive = item.value("alive", true);
             out.projectiles.push_back(projectile);
+        }
+    }
+
+    const auto walls_it = json.find("ice_walls");
+    if (walls_it != json.end() && walls_it->is_array()) {
+        for (const auto& item : *walls_it) {
+            IceWallSnapshot wall;
+            wall.owner_player_id = item.value("owner_player_id", -1);
+            wall.owner_team = item.value("owner_team", 0);
+            wall.cell_x = item.value("cell_x", 0);
+            wall.cell_y = item.value("cell_y", 0);
+            wall.state = item.value("state", 0);
+            wall.state_time = item.value("state_time", 0.0f);
+            wall.hp = item.value("hp", 0.0f);
+            wall.alive = item.value("alive", true);
+            out.ice_walls.push_back(wall);
         }
     }
 

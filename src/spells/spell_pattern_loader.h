@@ -9,7 +9,7 @@
 
 struct DirectionalPattern {
     SpellDirection direction = SpellDirection::Right;
-    std::vector<std::vector<std::string>> rows;
+    std::vector<std::vector<std::vector<std::string>>> variants;
 };
 
 enum class PlacementConstraint {

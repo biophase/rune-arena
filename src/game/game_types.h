@@ -31,6 +31,8 @@ enum class SpellDirection {
     Right,
     Top,
     Bottom,
+    Horizontal,
+    Vertical,
 };
 
 struct GridCoord {
