@@ -1,5 +1,13 @@
 #include "net/network_messages.h"
 
+#include <cmath>
+
+namespace {
+
+float Quantize2(float value) { return std::round(value * 100.0f) / 100.0f; }
+
+}  // namespace
+
 nlohmann::json ToJson(const ClientInputMessage& message) {
     return {
         {"player_id", message.player_id},
@@ -11,6 +19,7 @@ nlohmann::json ToJson(const ClientInputMessage& message) {
         {"primary_pressed", message.primary_pressed},
         {"select_fire", message.select_fire},
         {"select_water", message.select_water},
+        {"seq", message.seq},
     };
 }
 
@@ -22,6 +31,47 @@ std::optional<ClientInputMessage> ClientInputFromJson(const nlohmann::json& json
     out.move_y = json.value("move_y", 0.0f);
     out.aim_x = json.value("aim_x", 0.0f);
     out.aim_y = json.value("aim_y", 0.0f);
+    out.primary_pressed = json.value("primary_pressed", false);
+    out.select_fire = json.value("select_fire", false);
+    out.select_water = json.value("select_water", false);
+    out.seq = json.value("seq", 0);
+    return out;
+}
+
+nlohmann::json ToJson(const ClientMoveMessage& message) {
+    return {
+        {"player_id", message.player_id}, {"seq", message.seq}, {"tick", message.tick},
+        {"move_x", Quantize2(message.move_x)}, {"move_y", Quantize2(message.move_y)},
+        {"aim_x", Quantize2(message.aim_x)},   {"aim_y", Quantize2(message.aim_y)},
+    };
+}
+
+std::optional<ClientMoveMessage> ClientMoveFromJson(const nlohmann::json& json) {
+    ClientMoveMessage out;
+    out.player_id = json.value("player_id", -1);
+    out.seq = json.value("seq", 0);
+    out.tick = json.value("tick", 0);
+    out.move_x = json.value("move_x", 0.0f);
+    out.move_y = json.value("move_y", 0.0f);
+    out.aim_x = json.value("aim_x", 0.0f);
+    out.aim_y = json.value("aim_y", 0.0f);
+    return out;
+}
+
+nlohmann::json ToJson(const ClientActionMessage& message) {
+    return {
+        {"player_id", message.player_id},
+        {"seq", message.seq},
+        {"primary_pressed", message.primary_pressed},
+        {"select_fire", message.select_fire},
+        {"select_water", message.select_water},
+    };
+}
+
+std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& json) {
+    ClientActionMessage out;
+    out.player_id = json.value("player_id", -1);
+    out.seq = json.value("seq", 0);
     out.primary_pressed = json.value("primary_pressed", false);
     out.select_fire = json.value("select_fire", false);
     out.select_water = json.value("select_water", false);
@@ -47,14 +97,13 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     for (const auto& player : message.players) {
         out["players"].push_back({
             {"id", player.id},
-            {"name", player.name},
             {"team", player.team},
-            {"pos_x", player.pos_x},
-            {"pos_y", player.pos_y},
-            {"vel_x", player.vel_x},
-            {"vel_y", player.vel_y},
-            {"aim_dir_x", player.aim_dir_x},
-            {"aim_dir_y", player.aim_dir_y},
+            {"pos_x", Quantize2(player.pos_x)},
+            {"pos_y", Quantize2(player.pos_y)},
+            {"vel_x", Quantize2(player.vel_x)},
+            {"vel_y", Quantize2(player.vel_y)},
+            {"aim_dir_x", Quantize2(player.aim_dir_x)},
+            {"aim_dir_y", Quantize2(player.aim_dir_y)},
             {"hp", player.hp},
             {"kills", player.kills},
             {"alive", player.alive},
@@ -66,6 +115,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"rune_place_cooldown_remaining", player.rune_place_cooldown_remaining},
             {"awaiting_respawn", player.awaiting_respawn},
             {"respawn_remaining", player.respawn_remaining},
+            {"last_processed_move_seq", player.last_processed_move_seq},
         });
     }
 
@@ -87,11 +137,11 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
         out["projectiles"].push_back({
             {"owner_player_id", projectile.owner_player_id},
             {"owner_team", projectile.owner_team},
-            {"pos_x", projectile.pos_x},
-            {"pos_y", projectile.pos_y},
-            {"vel_x", projectile.vel_x},
-            {"vel_y", projectile.vel_y},
-            {"radius", projectile.radius},
+            {"pos_x", Quantize2(projectile.pos_x)},
+            {"pos_y", Quantize2(projectile.pos_y)},
+            {"vel_x", Quantize2(projectile.vel_x)},
+            {"vel_y", Quantize2(projectile.vel_y)},
+            {"radius", Quantize2(projectile.radius)},
             {"damage", projectile.damage},
             {"animation_key", projectile.animation_key},
             {"emitter_enabled", projectile.emitter_enabled},
@@ -109,22 +159,9 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"cell_x", wall.cell_x},
             {"cell_y", wall.cell_y},
             {"state", wall.state},
-            {"state_time", wall.state_time},
-            {"hp", wall.hp},
+            {"state_time", Quantize2(wall.state_time)},
+            {"hp", Quantize2(wall.hp)},
             {"alive", wall.alive},
-        });
-    }
-
-    out["damage_popups"] = nlohmann::json::array();
-    for (const auto& popup : message.damage_popups) {
-        out["damage_popups"].push_back({
-            {"pos_x", popup.pos_x},
-            {"pos_y", popup.pos_y},
-            {"amount", popup.amount},
-            {"age_seconds", popup.age_seconds},
-            {"lifetime_seconds", popup.lifetime_seconds},
-            {"rise_per_second", popup.rise_per_second},
-            {"alive", popup.alive},
         });
     }
 
@@ -151,7 +188,6 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
         for (const auto& item : *players_it) {
             PlayerSnapshot player;
             player.id = item.value("id", -1);
-            player.name = item.value("name", std::string{});
             player.team = item.value("team", 0);
             player.pos_x = item.value("pos_x", 0.0f);
             player.pos_y = item.value("pos_y", 0.0f);
@@ -170,6 +206,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.rune_place_cooldown_remaining = item.value("rune_place_cooldown_remaining", 0.0f);
             player.awaiting_respawn = item.value("awaiting_respawn", false);
             player.respawn_remaining = item.value("respawn_remaining", 0.0f);
+            player.last_processed_move_seq = item.value("last_processed_move_seq", 0);
             out.players.push_back(player);
         }
     }
@@ -223,21 +260,6 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             wall.hp = item.value("hp", 0.0f);
             wall.alive = item.value("alive", true);
             out.ice_walls.push_back(wall);
-        }
-    }
-
-    const auto popups_it = json.find("damage_popups");
-    if (popups_it != json.end() && popups_it->is_array()) {
-        for (const auto& item : *popups_it) {
-            DamagePopupSnapshot popup;
-            popup.pos_x = item.value("pos_x", 0.0f);
-            popup.pos_y = item.value("pos_y", 0.0f);
-            popup.amount = item.value("amount", 0);
-            popup.age_seconds = item.value("age_seconds", 0.0f);
-            popup.lifetime_seconds = item.value("lifetime_seconds", 0.0f);
-            popup.rise_per_second = item.value("rise_per_second", 0.0f);
-            popup.alive = item.value("alive", true);
-            out.damage_popups.push_back(popup);
         }
     }
 

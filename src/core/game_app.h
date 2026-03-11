@@ -5,6 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <deque>
 
 #include <raylib.h>
 
@@ -54,7 +55,7 @@ class GameApp {
 
     void StartMatchAsHost();
     void ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot);
-    ServerSnapshotMessage BuildHostSnapshot() const;
+    ServerSnapshotMessage BuildHostSnapshot();
 
     ClientInputMessage BuildLocalInput(int local_player_id);
     void SimulateHostGameplay(float dt);
@@ -131,8 +132,18 @@ class GameApp {
     Camera2D camera_ = {};
     std::unordered_map<int, ClientInputMessage> latest_remote_inputs_;
     std::unordered_map<int, Vector2> render_player_positions_;
+    std::unordered_map<int, std::string> known_player_names_;
+
+    struct RemotePositionSample {
+        double time_seconds = 0.0;
+        Vector2 pos = {0.0f, 0.0f};
+    };
+    std::unordered_map<int, std::deque<RemotePositionSample>> remote_position_samples_;
+    std::deque<ClientInputMessage> pending_local_prediction_inputs_;
 
     int local_input_tick_ = 0;
+    int local_input_seq_ = 0;
+    int host_server_tick_ = 0;
     double snapshot_accumulator_ = 0.0;
     double lobby_broadcast_accumulator_ = 0.0;
     int winning_team_ = -1;

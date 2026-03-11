@@ -272,6 +272,7 @@ void GameApp::UpdateLobby(float dt) {
 
         lobby_player_names_.clear();
         lobby_player_names_.push_back(player_name_buffer_);
+        known_player_names_[0] = player_name_buffer_;
 
         LobbyStateMessage lobby_state;
         lobby_state.host_can_start = true;
@@ -281,6 +282,7 @@ void GameApp::UpdateLobby(float dt) {
 
         for (const auto& remote : network_manager_.GetRemotePlayers()) {
             lobby_player_names_.push_back(remote.name);
+            known_player_names_[remote.player_id] = remote.name;
             lobby_state.players.push_back({remote.player_id, remote.name});
         }
 
@@ -294,6 +296,7 @@ void GameApp::UpdateLobby(float dt) {
             lobby_player_names_.clear();
             for (const auto& player : lobby_update->players) {
                 lobby_player_names_.push_back(player.name);
+                known_player_names_[player.player_id] = player.name;
             }
             lobby_shrink_tiles_per_second_ = lobby_update->shrink_tiles_per_second;
             lobby_min_arena_radius_tiles_ = lobby_update->min_arena_radius_tiles;
@@ -324,7 +327,26 @@ void GameApp::UpdateMatch(float dt) {
     } else {
         ClientInputMessage local_input = BuildLocalInput(network_manager_.GetAssignedLocalPlayerId());
         ApplyClientLocalInputPreview(local_input, dt);
-        network_manager_.SendClientInput(local_input);
+
+        ClientMoveMessage move_message;
+        move_message.player_id = local_input.player_id;
+        move_message.seq = local_input.seq;
+        move_message.tick = local_input.tick;
+        move_message.move_x = local_input.move_x;
+        move_message.move_y = local_input.move_y;
+        move_message.aim_x = local_input.aim_x;
+        move_message.aim_y = local_input.aim_y;
+        network_manager_.SendClientMove(move_message);
+
+        if (local_input.primary_pressed || local_input.select_fire || local_input.select_water) {
+            ClientActionMessage action_message;
+            action_message.player_id = local_input.player_id;
+            action_message.seq = local_input.seq;
+            action_message.primary_pressed = local_input.primary_pressed;
+            action_message.select_fire = local_input.select_fire;
+            action_message.select_water = local_input.select_water;
+            network_manager_.SendClientAction(action_message);
+        }
 
         const auto snapshot = network_manager_.ConsumeLatestSnapshot();
         if (snapshot.has_value()) {
@@ -350,22 +372,51 @@ void GameApp::UpdatePostMatch(float /*dt*/) {
 }
 
 void GameApp::UpdateClientVisualSmoothing(float dt) {
+    (void)dt;
     if (state_.players.empty()) {
         render_player_positions_.clear();
         return;
     }
 
-    const float alpha = std::clamp(1.0f - std::exp(-Constants::kClientVisualSmoothing * dt), 0.0f, 1.0f);
     std::unordered_map<int, Vector2> updated_positions;
     updated_positions.reserve(state_.players.size());
+
+    if (network_manager_.IsHost()) {
+        for (const auto& player : state_.players) {
+            updated_positions[player.id] = player.pos;
+        }
+        render_player_positions_.swap(updated_positions);
+        return;
+    }
+
+    const double target_time = GetTime() - static_cast<double>(Constants::kRemoteInterpolationDelaySeconds);
     for (const auto& player : state_.players) {
-        const Vector2 target = player.pos;
-        auto it = render_player_positions_.find(player.id);
-        if (it == render_player_positions_.end()) {
-            updated_positions[player.id] = target;
+        if (player.id == state_.local_player_id) {
+            updated_positions[player.id] = player.pos;
             continue;
         }
-        updated_positions[player.id] = Vector2Lerp(it->second, target, alpha);
+
+        auto samples_it = remote_position_samples_.find(player.id);
+        if (samples_it == remote_position_samples_.end() || samples_it->second.empty()) {
+            updated_positions[player.id] = player.pos;
+            continue;
+        }
+
+        auto& samples = samples_it->second;
+        while (samples.size() > 2 && samples[1].time_seconds <= target_time) {
+            samples.pop_front();
+        }
+
+        if (samples.size() >= 2 && samples.front().time_seconds <= target_time &&
+            samples[1].time_seconds >= target_time) {
+            const double t0 = samples.front().time_seconds;
+            const double t1 = samples[1].time_seconds;
+            const float alpha =
+                static_cast<float>(std::clamp((target_time - t0) / std::max(0.00001, t1 - t0), 0.0, 1.0));
+            updated_positions[player.id] = Vector2Lerp(samples.front().pos, samples[1].pos, alpha);
+        } else {
+            updated_positions[player.id] = samples.back().pos;
+        }
     }
     render_player_positions_.swap(updated_positions);
 }
@@ -404,6 +455,39 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
         local_player->rune_place_cooldown_remaining <= 0.0f) {
         local_player->rune_placing_mode = false;
         local_player->rune_place_cooldown_remaining = local_player->rune_place_cooldown_duration;
+    }
+
+    // Movement/facing prediction for client feel; authoritative state is reconciled on snapshots.
+    Vector2 movement = {input.move_x, input.move_y};
+    if (Vector2LengthSqr(movement) > 0.0001f) {
+        movement = Vector2Normalize(movement);
+    }
+
+    const Vector2 acceleration = Vector2Scale(movement, Constants::kPlayerAcceleration);
+    local_player->vel = Vector2Add(local_player->vel, Vector2Scale(acceleration, dt));
+    const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * dt);
+    local_player->vel = Vector2Scale(local_player->vel, damping);
+    const float speed = Vector2Length(local_player->vel);
+    if (speed > Constants::kPlayerMaxSpeed) {
+        local_player->vel = Vector2Scale(Vector2Normalize(local_player->vel), Constants::kPlayerMaxSpeed);
+    }
+    local_player->pos = Vector2Add(local_player->pos, Vector2Scale(local_player->vel, dt));
+    CollisionWorld::ResolvePlayerVsWorld(state_.map, *local_player);
+    ResolvePlayerVsIceWalls(*local_player);
+
+    if (local_player->melee_active_remaining > 0.0f) {
+        local_player->action_state = PlayerActionState::Slashing;
+    } else if (local_player->rune_placing_mode) {
+        local_player->action_state = PlayerActionState::RunePlacing;
+    } else if (Vector2LengthSqr(local_player->vel) > 8.0f) {
+        local_player->action_state = PlayerActionState::Walking;
+    } else {
+        local_player->action_state = PlayerActionState::Idle;
+    }
+
+    pending_local_prediction_inputs_.push_back(input);
+    while (pending_local_prediction_inputs_.size() > static_cast<size_t>(Constants::kMoveInputBufferSize)) {
+        pending_local_prediction_inputs_.pop_front();
     }
 }
 
@@ -536,6 +620,10 @@ void GameApp::StartAsHost() {
     lobby_player_names_.clear();
     lobby_player_names_.push_back(settings_.player_name);
     render_player_positions_.clear();
+    remote_position_samples_.clear();
+    pending_local_prediction_inputs_.clear();
+    known_player_names_.clear();
+    known_player_names_[0] = settings_.player_name;
     lobby_broadcast_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
 
@@ -569,6 +657,8 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
     host_display_ip_ = TextFormat("%s:%d", ip.c_str(), port);
     lobby_player_names_.clear();
     render_player_positions_.clear();
+    remote_position_samples_.clear();
+    pending_local_prediction_inputs_.clear();
     lobby_broadcast_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = GetTime();
     app_screen_ = AppScreen::Connecting;
@@ -588,12 +678,17 @@ void GameApp::ReturnToMainMenu() {
     event_queue_.Clear();
     latest_remote_inputs_.clear();
     render_player_positions_.clear();
+    remote_position_samples_.clear();
+    pending_local_prediction_inputs_.clear();
+    known_player_names_.clear();
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
     lobby_broadcast_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
     winning_team_ = -1;
+    host_server_tick_ = 0;
+    local_input_seq_ = 0;
     main_menu_status_message_.clear();
     main_menu_status_is_error_ = false;
     lobby_shrink_tiles_per_second_ = settings_.lobby_shrink_tiles_per_second;
@@ -624,6 +719,9 @@ void GameApp::StartMatchAsHost() {
     state_.next_rune_placement_order = 1;
     latest_remote_inputs_.clear();
     render_player_positions_.clear();
+    remote_position_samples_.clear();
+    pending_local_prediction_inputs_.clear();
+    host_server_tick_ = 0;
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
@@ -671,6 +769,23 @@ void GameApp::StartMatchAsHost() {
 }
 
 void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) {
+    std::unordered_map<int, int> previous_hp;
+    previous_hp.reserve(state_.players.size());
+    for (const auto& player : state_.players) {
+        previous_hp[player.id] = player.hp;
+    }
+
+    Vector2 previous_local_pos = {0.0f, 0.0f};
+    Vector2 previous_local_vel = {0.0f, 0.0f};
+    bool has_previous_local = false;
+    if (state_.local_player_id >= 0) {
+        if (const Player* previous_local = FindPlayerById(state_.local_player_id)) {
+            previous_local_pos = previous_local->pos;
+            previous_local_vel = previous_local->vel;
+            has_previous_local = true;
+        }
+    }
+
     state_.match.time_remaining = snapshot.time_remaining;
     state_.match.shrink_tiles_per_second = snapshot.shrink_tiles_per_second;
     state_.match.min_arena_radius_tiles = snapshot.min_arena_radius_tiles;
@@ -682,12 +797,15 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     state_.match.red_team_kills = snapshot.red_team_kills;
     state_.match.blue_team_kills = snapshot.blue_team_kills;
 
+    const double now_seconds = GetTime();
     std::unordered_map<int, Vector2> updated_render_positions;
     state_.players.clear();
     for (const auto& player_snapshot : snapshot.players) {
         Player player;
         player.id = player_snapshot.id;
-        player.name = player_snapshot.name;
+        auto known_name_it = known_player_names_.find(player.id);
+        player.name = known_name_it != known_player_names_.end() ? known_name_it->second
+                                                                 : TextFormat("Player%d", player.id);
         player.team = player_snapshot.team;
         player.pos = {player_snapshot.pos_x, player_snapshot.pos_y};
         player.vel = {player_snapshot.vel_x, player_snapshot.vel_y};
@@ -703,11 +821,19 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         player.rune_place_cooldown_remaining = player_snapshot.rune_place_cooldown_remaining;
         player.awaiting_respawn = player_snapshot.awaiting_respawn;
         player.respawn_remaining = player_snapshot.respawn_remaining;
+        player.last_processed_move_seq = player_snapshot.last_processed_move_seq;
         state_.players.push_back(player);
 
-        auto render_it = render_player_positions_.find(player.id);
-        updated_render_positions[player.id] = (render_it == render_player_positions_.end()) ? player.pos
-                                                                                            : render_it->second;
+        if (!network_manager_.IsHost() && player.id != state_.local_player_id) {
+            auto& samples = remote_position_samples_[player.id];
+            samples.push_back(RemotePositionSample{now_seconds, player.pos});
+            while (samples.size() > 32) {
+                samples.pop_front();
+            }
+            updated_render_positions[player.id] = player.pos;
+        } else {
+            updated_render_positions[player.id] = player.pos;
+        }
     }
     render_player_positions_.swap(updated_render_positions);
 
@@ -754,16 +880,72 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     state_.explosions.clear();
 
-    state_.damage_popups.clear();
-    for (const auto& popup_snapshot : snapshot.damage_popups) {
-        DamagePopup popup;
-        popup.pos = {popup_snapshot.pos_x, popup_snapshot.pos_y};
-        popup.amount = popup_snapshot.amount;
-        popup.age_seconds = popup_snapshot.age_seconds;
-        popup.lifetime_seconds = popup_snapshot.lifetime_seconds;
-        popup.rise_per_second = popup_snapshot.rise_per_second;
-        popup.alive = popup_snapshot.alive;
-        state_.damage_popups.push_back(popup);
+    if (!network_manager_.IsHost()) {
+        for (const auto& player : state_.players) {
+            auto previous_hp_it = previous_hp.find(player.id);
+            if (previous_hp_it == previous_hp.end()) {
+                continue;
+            }
+            if (previous_hp_it->second > player.hp) {
+                SpawnDamagePopup(player.pos, previous_hp_it->second - player.hp);
+            }
+        }
+    }
+
+    if (!network_manager_.IsHost() && state_.local_player_id >= 0) {
+        Player* local_player = FindPlayerById(state_.local_player_id);
+        if (local_player != nullptr) {
+            while (!pending_local_prediction_inputs_.empty() &&
+                   pending_local_prediction_inputs_.front().seq <= local_player->last_processed_move_seq) {
+                pending_local_prediction_inputs_.pop_front();
+            }
+
+            Player replay = *local_player;
+            for (const auto& pending_input : pending_local_prediction_inputs_) {
+                Vector2 aim_vector = {pending_input.aim_x - replay.pos.x, pending_input.aim_y - replay.pos.y};
+                if (Vector2LengthSqr(aim_vector) > 0.0001f) {
+                    replay.aim_dir = Vector2Normalize(aim_vector);
+                    replay.facing = AimToFacing(replay.aim_dir);
+                }
+
+                Vector2 movement = {pending_input.move_x, pending_input.move_y};
+                if (Vector2LengthSqr(movement) > 0.0001f) {
+                    movement = Vector2Normalize(movement);
+                }
+                const Vector2 acceleration = Vector2Scale(movement, Constants::kPlayerAcceleration);
+                replay.vel = Vector2Add(replay.vel, Vector2Scale(acceleration, static_cast<float>(Constants::kFixedDt)));
+                const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * static_cast<float>(Constants::kFixedDt));
+                replay.vel = Vector2Scale(replay.vel, damping);
+                const float speed = Vector2Length(replay.vel);
+                if (speed > Constants::kPlayerMaxSpeed) {
+                    replay.vel = Vector2Scale(Vector2Normalize(replay.vel), Constants::kPlayerMaxSpeed);
+                }
+                replay.pos = Vector2Add(replay.pos, Vector2Scale(replay.vel, static_cast<float>(Constants::kFixedDt)));
+                CollisionWorld::ResolvePlayerVsWorld(state_.map, replay);
+                ResolvePlayerVsIceWalls(replay);
+            }
+
+            const Vector2 base_pos = has_previous_local ? previous_local_pos : local_player->pos;
+            const Vector2 base_vel = has_previous_local ? previous_local_vel : local_player->vel;
+            const float error = Vector2Distance(base_pos, replay.pos);
+            if (error > Constants::kPredictionHardSnapThresholdPx) {
+                local_player->pos = replay.pos;
+                local_player->vel = replay.vel;
+            } else {
+                const float alpha = std::clamp(Constants::kPredictionReconcileGain *
+                                                   Constants::kNetworkSnapshotIntervalSeconds,
+                                               0.0f, 1.0f);
+                local_player->pos = Vector2Lerp(base_pos, replay.pos, alpha);
+                local_player->vel = Vector2Lerp(base_vel, replay.vel, alpha);
+            }
+            local_player->aim_dir = replay.aim_dir;
+            local_player->facing = replay.facing;
+
+            if (error > 0.01f) {
+                network_manager_.AddReconciliationCorrection();
+            }
+            render_player_positions_[local_player->id] = local_player->pos;
+        }
     }
 
     int max_order = 0;
@@ -775,10 +957,21 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     if (state_.local_player_id < 0) {
         state_.local_player_id = network_manager_.GetAssignedLocalPlayerId();
     }
+
+    for (auto it = remote_position_samples_.begin(); it != remote_position_samples_.end();) {
+        const bool exists = std::any_of(state_.players.begin(), state_.players.end(),
+                                        [&](const Player& player) { return player.id == it->first; });
+        if (!exists) {
+            it = remote_position_samples_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
-ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
+ServerSnapshotMessage GameApp::BuildHostSnapshot() {
     ServerSnapshotMessage snapshot;
+    snapshot.server_tick = ++host_server_tick_;
     snapshot.time_remaining = state_.match.time_remaining;
     snapshot.shrink_tiles_per_second = state_.match.shrink_tiles_per_second;
     snapshot.min_arena_radius_tiles = state_.match.min_arena_radius_tiles;
@@ -794,7 +987,6 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
     for (const auto& player : state_.players) {
         PlayerSnapshot player_snapshot;
         player_snapshot.id = player.id;
-        player_snapshot.name = player.name;
         player_snapshot.team = player.team;
         player_snapshot.pos_x = player.pos.x;
         player_snapshot.pos_y = player.pos.y;
@@ -813,6 +1005,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         player_snapshot.rune_place_cooldown_remaining = player.rune_place_cooldown_remaining;
         player_snapshot.awaiting_respawn = player.awaiting_respawn;
         player_snapshot.respawn_remaining = player.respawn_remaining;
+        player_snapshot.last_processed_move_seq = player.last_processed_move_seq;
         snapshot.players.push_back(player_snapshot);
     }
 
@@ -859,18 +1052,6 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         snapshot.ice_walls.push_back(wall_snapshot);
     }
 
-    for (const auto& popup : state_.damage_popups) {
-        DamagePopupSnapshot popup_snapshot;
-        popup_snapshot.pos_x = popup.pos.x;
-        popup_snapshot.pos_y = popup.pos.y;
-        popup_snapshot.amount = popup.amount;
-        popup_snapshot.age_seconds = popup.age_seconds;
-        popup_snapshot.lifetime_seconds = popup.lifetime_seconds;
-        popup_snapshot.rise_per_second = popup.rise_per_second;
-        popup_snapshot.alive = popup.alive;
-        snapshot.damage_popups.push_back(popup_snapshot);
-    }
-
     return snapshot;
 }
 
@@ -878,6 +1059,7 @@ ClientInputMessage GameApp::BuildLocalInput(int local_player_id) {
     ClientInputMessage input;
     input.player_id = local_player_id;
     input.tick = ++local_input_tick_;
+    input.seq = ++local_input_seq_;
 
     input.move_x = 0.0f;
     input.move_y = 0.0f;
@@ -905,8 +1087,24 @@ void GameApp::SimulateHostGameplay(float dt) {
     const ClientInputMessage host_input = BuildLocalInput(0);
     latest_remote_inputs_[0] = host_input;
 
-    for (const auto& input : network_manager_.ConsumeHostInputs()) {
-        latest_remote_inputs_[input.player_id] = input;
+    for (const auto& move : network_manager_.ConsumeHostMoveInputs()) {
+        ClientInputMessage& input = latest_remote_inputs_[move.player_id];
+        input.player_id = move.player_id;
+        input.seq = move.seq;
+        input.tick = move.tick;
+        input.move_x = move.move_x;
+        input.move_y = move.move_y;
+        input.aim_x = move.aim_x;
+        input.aim_y = move.aim_y;
+    }
+
+    for (const auto& action : network_manager_.ConsumeHostActionInputs()) {
+        ClientInputMessage& input = latest_remote_inputs_[action.player_id];
+        input.player_id = action.player_id;
+        input.seq = std::max(input.seq, action.seq);
+        input.primary_pressed = input.primary_pressed || action.primary_pressed;
+        input.select_fire = input.select_fire || action.select_fire;
+        input.select_water = input.select_water || action.select_water;
     }
 
     for (auto& player : state_.players) {
@@ -915,6 +1113,12 @@ void GameApp::SimulateHostGameplay(float dt) {
             continue;
         }
         SimulatePlayerFromInput(player, input_it->second, dt);
+    }
+
+    for (auto& [_, input] : latest_remote_inputs_) {
+        input.primary_pressed = false;
+        input.select_fire = false;
+        input.select_water = false;
     }
 
     ResolvePlayerCollisions();
@@ -941,6 +1145,8 @@ void GameApp::SimulateHostGameplay(float dt) {
 }
 
 void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& input, float dt) {
+    player.last_processed_move_seq = input.seq;
+
     if (!player.alive) {
         player.vel = {0.0f, 0.0f};
         player.melee_active_remaining = 0.0f;

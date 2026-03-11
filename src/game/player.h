@@ -45,4 +45,5 @@ struct Player {
     int emitter_frame_counter = 0;
 
     int last_input_tick = 0;
+    int last_processed_move_seq = 0;
 };

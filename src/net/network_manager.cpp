@@ -1,5 +1,6 @@
 #include "net/network_manager.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -8,6 +9,9 @@
 #include <nlohmann/json.hpp>
 
 namespace {
+
+constexpr enet_uint8 kChannelReliable = 0;
+constexpr enet_uint8 kChannelRealtime = 1;
 
 nlohmann::json WrapPacket(const std::string& type, const nlohmann::json& payload) {
     return {{"type", type}, {"payload", payload}};
@@ -135,7 +139,8 @@ void NetworkManager::Stop() {
 
     server_peer_ = nullptr;
     peers_.clear();
-    pending_host_inputs_.clear();
+    pending_host_moves_.clear();
+    pending_host_actions_.clear();
     latest_snapshot_.reset();
     latest_lobby_state_.reset();
     pending_match_start_ = false;
@@ -147,6 +152,14 @@ void NetworkManager::Stop() {
     next_remote_player_id_ = 1;
     client_connection_state_ = ClientConnectionState::Idle;
     last_debug_message_ = "stopped";
+    last_received_snapshot_tick_ = -1;
+    rate_window_bytes_sent_ = 0;
+    rate_window_bytes_received_ = 0;
+    rate_window_packets_sent_ = 0;
+    rate_window_packets_received_ = 0;
+    rate_window_reconciliation_corrections_ = 0;
+    last_rate_update_ms_ = enet_time_get();
+    telemetry_ = NetTelemetry{};
 
     if (enet_initialized_) {
         enet_deinitialize();
@@ -177,7 +190,7 @@ void NetworkManager::Poll() {
                     client_connection_state_ = ClientConnectionState::WaitingJoinAck;
                     last_debug_message_ = "transport connected, waiting join_ack";
                     nlohmann::json join_payload = {{"name", local_player_name_}};
-                    SendJsonToPeer(server_peer_, WrapPacket("join", join_payload), true);
+                    SendJsonToPeer(server_peer_, WrapPacket("join", join_payload), true, kChannelReliable);
                     NetLog("[NET] Client transport connected, sent join name='%s'", local_player_name_.c_str());
                 }
                 break;
@@ -199,15 +212,20 @@ void NetworkManager::Poll() {
                         if (it != peers_.end()) {
                             it->second.name = payload.value("name", it->second.name);
                             nlohmann::json ack_payload = {{"player_id", it->second.player_id}};
-                            SendJsonToPeer(event.peer, WrapPacket("join_ack", ack_payload), true);
+                            SendJsonToPeer(event.peer, WrapPacket("join_ack", ack_payload), true, kChannelReliable);
                             NetLog("[NET] Host received join from '%s' (%s), sent join_ack player_id=%d",
                                    it->second.name.c_str(), AddressToString(event.peer->address).c_str(),
                                    it->second.player_id);
                         }
-                    } else if (type == "client_input") {
-                        auto input = ClientInputFromJson(payload);
-                        if (input.has_value()) {
-                            pending_host_inputs_.push_back(*input);
+                    } else if (type == "client_move") {
+                        auto move = ClientMoveFromJson(payload);
+                        if (move.has_value()) {
+                            pending_host_moves_.push_back(*move);
+                        }
+                    } else if (type == "client_action") {
+                        auto action = ClientActionFromJson(payload);
+                        if (action.has_value()) {
+                            pending_host_actions_.push_back(*action);
                         }
                     }
                 } else {
@@ -221,6 +239,16 @@ void NetworkManager::Poll() {
                         NetLog("[NET] Client received join_ack player_id=%d", assigned_local_player_id_);
                     } else if (type == "snapshot") {
                         latest_snapshot_ = ServerSnapshotFromJson(payload);
+                        if (latest_snapshot_.has_value()) {
+                            const int tick = latest_snapshot_->server_tick;
+                            if (last_received_snapshot_tick_ >= 0 && tick > last_received_snapshot_tick_ + 1) {
+                                telemetry_.dropped_snapshots_total +=
+                                    static_cast<uint64_t>(tick - (last_received_snapshot_tick_ + 1));
+                            }
+                            if (tick > last_received_snapshot_tick_) {
+                                last_received_snapshot_tick_ = tick;
+                            }
+                        }
                     } else if (type == "lobby_state") {
                         latest_lobby_state_ = LobbyStateFromJson(payload);
                         client_received_lobby_state_ = latest_lobby_state_.has_value();
@@ -240,6 +268,8 @@ void NetworkManager::Poll() {
                         NetLog("[NET] Client received match_start");
                     }
                 }
+
+                RegisterIncomingPacket(event.packet->dataLength, type == "snapshot");
 
                 enet_packet_destroy(event.packet);
                 break;
@@ -262,6 +292,7 @@ void NetworkManager::Poll() {
                 break;
         }
     }
+    UpdateRateTelemetry();
 }
 
 bool NetworkManager::IsHost() const { return is_host_; }
@@ -281,17 +312,29 @@ bool NetworkManager::HasReceivedLobbyState() const { return client_received_lobb
 
 const std::string& NetworkManager::GetLastDebugMessage() const { return last_debug_message_; }
 
-void NetworkManager::SendClientInput(const ClientInputMessage& message) {
+void NetworkManager::SendClientMove(const ClientMoveMessage& message) {
     if (is_host_ || !server_peer_) {
         return;
     }
-    // Reliable for v1 so one-shot actions (key presses/clicks) are not dropped.
-    SendJsonToPeer(server_peer_, WrapPacket("client_input", ToJson(message)), true);
+    SendJsonToPeer(server_peer_, WrapPacket("client_move", ToJson(message)), false, kChannelRealtime);
 }
 
-std::vector<ClientInputMessage> NetworkManager::ConsumeHostInputs() {
-    std::vector<ClientInputMessage> out;
-    out.swap(pending_host_inputs_);
+void NetworkManager::SendClientAction(const ClientActionMessage& message) {
+    if (is_host_ || !server_peer_) {
+        return;
+    }
+    SendJsonToPeer(server_peer_, WrapPacket("client_action", ToJson(message)), true, kChannelReliable);
+}
+
+std::vector<ClientMoveMessage> NetworkManager::ConsumeHostMoveInputs() {
+    std::vector<ClientMoveMessage> out;
+    out.swap(pending_host_moves_);
+    return out;
+}
+
+std::vector<ClientActionMessage> NetworkManager::ConsumeHostActionInputs() {
+    std::vector<ClientActionMessage> out;
+    out.swap(pending_host_actions_);
     return out;
 }
 
@@ -299,7 +342,7 @@ void NetworkManager::BroadcastSnapshot(const ServerSnapshotMessage& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastJson(WrapPacket("snapshot", ToJson(message)), false);
+    BroadcastJson(WrapPacket("snapshot", ToJson(message)), false, kChannelRealtime);
 }
 
 std::optional<ServerSnapshotMessage> NetworkManager::ConsumeLatestSnapshot() {
@@ -312,7 +355,7 @@ void NetworkManager::BroadcastLobbyState(const LobbyStateMessage& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastJson(WrapPacket("lobby_state", ToJson(message)), true);
+    BroadcastJson(WrapPacket("lobby_state", ToJson(message)), true, kChannelReliable);
 }
 
 std::optional<LobbyStateMessage> NetworkManager::ConsumeLobbyState() {
@@ -325,7 +368,7 @@ void NetworkManager::BroadcastMatchStart(const MatchStartMessage& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastJson(WrapPacket("match_start", ToJson(message)), true);
+    BroadcastJson(WrapPacket("match_start", ToJson(message)), true, kChannelReliable);
 }
 
 bool NetworkManager::ConsumeMatchStart() {
@@ -344,7 +387,14 @@ std::vector<RemotePlayerInfo> NetworkManager::GetRemotePlayers() const {
     return result;
 }
 
-void NetworkManager::SendJsonToPeer(ENetPeer* peer, const nlohmann::json& json, bool reliable) {
+const NetTelemetry& NetworkManager::GetTelemetry() const { return telemetry_; }
+
+void NetworkManager::AddReconciliationCorrection() {
+    telemetry_.reconciliation_corrections_total += 1;
+    rate_window_reconciliation_corrections_ += 1;
+}
+
+void NetworkManager::SendJsonToPeer(ENetPeer* peer, const nlohmann::json& json, bool reliable, uint8_t channel) {
     if (!peer) {
         return;
     }
@@ -353,12 +403,13 @@ void NetworkManager::SendJsonToPeer(ENetPeer* peer, const nlohmann::json& json, 
     ENetPacket* packet =
         enet_packet_create(payload.data(), payload.size(), reliable ? ENET_PACKET_FLAG_RELIABLE : 0);
     if (packet) {
-        enet_peer_send(peer, 0, packet);
+        enet_peer_send(peer, channel, packet);
+        RegisterOutgoingPacket(payload.size(), false);
         enet_host_flush(host_);
     }
 }
 
-void NetworkManager::BroadcastJson(const nlohmann::json& json, bool reliable) {
+void NetworkManager::BroadcastJson(const nlohmann::json& json, bool reliable, uint8_t channel) {
     if (!host_) {
         return;
     }
@@ -367,7 +418,63 @@ void NetworkManager::BroadcastJson(const nlohmann::json& json, bool reliable) {
     ENetPacket* packet =
         enet_packet_create(payload.data(), payload.size(), reliable ? ENET_PACKET_FLAG_RELIABLE : 0);
     if (packet) {
-        enet_host_broadcast(host_, 0, packet);
+        enet_host_broadcast(host_, channel, packet);
+        RegisterOutgoingPacket(payload.size(), channel == kChannelRealtime && !reliable);
         enet_host_flush(host_);
     }
+}
+
+void NetworkManager::RegisterOutgoingPacket(size_t bytes, bool is_snapshot) {
+    telemetry_.bytes_sent_total += static_cast<uint64_t>(bytes);
+    telemetry_.packets_sent_total += 1;
+    rate_window_bytes_sent_ += static_cast<uint64_t>(bytes);
+    rate_window_packets_sent_ += 1;
+    if (is_snapshot) {
+        telemetry_.snapshot_bytes_sent_total += static_cast<uint64_t>(bytes);
+        telemetry_.snapshots_sent_total += 1;
+        telemetry_.average_snapshot_bytes_sent =
+            static_cast<float>(telemetry_.snapshot_bytes_sent_total) /
+            static_cast<float>(std::max<uint64_t>(1, telemetry_.snapshots_sent_total));
+    }
+}
+
+void NetworkManager::RegisterIncomingPacket(size_t bytes, bool is_snapshot) {
+    telemetry_.bytes_received_total += static_cast<uint64_t>(bytes);
+    telemetry_.packets_received_total += 1;
+    rate_window_bytes_received_ += static_cast<uint64_t>(bytes);
+    rate_window_packets_received_ += 1;
+    if (is_snapshot) {
+        telemetry_.snapshot_bytes_received_total += static_cast<uint64_t>(bytes);
+        telemetry_.snapshots_received_total += 1;
+        telemetry_.average_snapshot_bytes_received =
+            static_cast<float>(telemetry_.snapshot_bytes_received_total) /
+            static_cast<float>(std::max<uint64_t>(1, telemetry_.snapshots_received_total));
+    }
+}
+
+void NetworkManager::UpdateRateTelemetry() {
+    const uint32_t now = enet_time_get();
+    if (last_rate_update_ms_ == 0) {
+        last_rate_update_ms_ = now;
+        return;
+    }
+    const uint32_t elapsed_ms = now - last_rate_update_ms_;
+    if (elapsed_ms < 1000) {
+        return;
+    }
+
+    const float elapsed_seconds = static_cast<float>(elapsed_ms) / 1000.0f;
+    telemetry_.bytes_per_sec_up = static_cast<float>(rate_window_bytes_sent_) / elapsed_seconds;
+    telemetry_.bytes_per_sec_down = static_cast<float>(rate_window_bytes_received_) / elapsed_seconds;
+    telemetry_.packets_per_sec_up = static_cast<float>(rate_window_packets_sent_) / elapsed_seconds;
+    telemetry_.packets_per_sec_down = static_cast<float>(rate_window_packets_received_) / elapsed_seconds;
+    telemetry_.reconciliation_corrections_per_sec =
+        static_cast<float>(rate_window_reconciliation_corrections_) / elapsed_seconds;
+
+    rate_window_bytes_sent_ = 0;
+    rate_window_bytes_received_ = 0;
+    rate_window_packets_sent_ = 0;
+    rate_window_packets_received_ = 0;
+    rate_window_reconciliation_corrections_ = 0;
+    last_rate_update_ms_ = now;
 }

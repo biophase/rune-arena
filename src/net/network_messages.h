@@ -16,11 +16,29 @@ struct ClientInputMessage {
     bool primary_pressed = false;
     bool select_fire = false;
     bool select_water = false;
+    int seq = 0;
+};
+
+struct ClientMoveMessage {
+    int player_id = -1;
+    int seq = 0;
+    int tick = 0;
+    float move_x = 0.0f;
+    float move_y = 0.0f;
+    float aim_x = 0.0f;
+    float aim_y = 0.0f;
+};
+
+struct ClientActionMessage {
+    int player_id = -1;
+    int seq = 0;
+    bool primary_pressed = false;
+    bool select_fire = false;
+    bool select_water = false;
 };
 
 struct PlayerSnapshot {
     int id = -1;
-    std::string name;
     int team = 0;
     float pos_x = 0.0f;
     float pos_y = 0.0f;
@@ -39,6 +57,7 @@ struct PlayerSnapshot {
     float rune_place_cooldown_remaining = 0.0f;
     bool awaiting_respawn = false;
     float respawn_remaining = 0.0f;
+    int last_processed_move_seq = 0;
 };
 
 struct RuneSnapshot {
@@ -78,16 +97,6 @@ struct IceWallSnapshot {
     bool alive = true;
 };
 
-struct DamagePopupSnapshot {
-    float pos_x = 0.0f;
-    float pos_y = 0.0f;
-    int amount = 0;
-    float age_seconds = 0.0f;
-    float lifetime_seconds = 0.0f;
-    float rise_per_second = 0.0f;
-    bool alive = true;
-};
-
 struct ServerSnapshotMessage {
     int server_tick = 0;
     float time_remaining = 0.0f;
@@ -106,7 +115,6 @@ struct ServerSnapshotMessage {
     std::vector<RuneSnapshot> runes;
     std::vector<ProjectileSnapshot> projectiles;
     std::vector<IceWallSnapshot> ice_walls;
-    std::vector<DamagePopupSnapshot> damage_popups;
 };
 
 struct LobbyPlayerInfo {
@@ -127,6 +135,10 @@ struct MatchStartMessage {
 
 nlohmann::json ToJson(const ClientInputMessage& message);
 std::optional<ClientInputMessage> ClientInputFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const ClientMoveMessage& message);
+std::optional<ClientMoveMessage> ClientMoveFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const ClientActionMessage& message);
+std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& json);
 
 nlohmann::json ToJson(const ServerSnapshotMessage& message);
 std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json& json);
