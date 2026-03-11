@@ -11,6 +11,8 @@ struct MainMenuUiResult {
     bool request_join = false;
     std::string selected_host_ip;
     int selected_host_port = 0;
+    bool settings_changed = false;
+    bool show_network_debug_panel = true;
     bool request_apply_controls = false;
     ControlsBindings controls_bindings;
 };
@@ -19,4 +21,4 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
                               int join_ip_buffer_size,
                               const std::vector<DiscoveredHost>& discovered_hosts, const std::string& config_path,
                               const ControlsBindings& current_bindings, const std::string& controls_path,
-                              const std::string& status_message, bool status_is_error);
+                              bool show_network_debug_panel, const std::string& status_message, bool status_is_error);

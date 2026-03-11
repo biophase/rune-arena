@@ -34,10 +34,11 @@ constexpr std::array<ActionRow, 7> kActionRows = {{
 MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_size, char* join_ip_buffer,
                               int join_ip_buffer_size, const std::vector<DiscoveredHost>& discovered_hosts,
                               const std::string& config_path, const ControlsBindings& current_bindings,
-                              const std::string& controls_path, const std::string& status_message,
-                              bool status_is_error) {
+                              const std::string& controls_path, bool show_network_debug_panel,
+                              const std::string& status_message, bool status_is_error) {
     MainMenuUiResult result;
     result.controls_bindings = current_bindings;
+    result.show_network_debug_panel = show_network_debug_panel;
 
     const int center_x = GetScreenWidth() / 2;
     static MainMenuPage page = MainMenuPage::Home;
@@ -52,6 +53,7 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
     static bool edit_name = false;
     static int selected_host_index = -1;
     static ControlsBindings draft_bindings = current_bindings;
+    static bool draft_show_network_debug_panel = true;
     static int rebinding_action = -1;
     static int rebind_block_frames = 0;
     if (selected_host_index >= static_cast<int>(discovered_hosts.size())) {
@@ -79,6 +81,7 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         if (GuiButton({static_cast<float>(panel_x + 420), static_cast<float>(panel_y + 190), 80, 40}, "Settings")) {
             page = MainMenuPage::Settings;
             draft_bindings = current_bindings;
+            draft_show_network_debug_panel = show_network_debug_panel;
             rebinding_action = -1;
         }
 
@@ -129,13 +132,23 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
                  Color{140, 147, 160, 255});
     } else if (page == MainMenuPage::Settings) {
         DrawText("Settings", panel_x + 20, panel_y + 16, 30, RAYWHITE);
-        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 80), 180, 40}, "Controls")) {
+        bool updated_debug_panel = draft_show_network_debug_panel;
+        GuiCheckBox({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 88), 24, 24},
+                    "Show Network Debug Panel", &updated_debug_panel);
+        if (updated_debug_panel != draft_show_network_debug_panel) {
+            draft_show_network_debug_panel = updated_debug_panel;
+        }
+        if (draft_show_network_debug_panel != show_network_debug_panel) {
+            result.settings_changed = true;
+            result.show_network_debug_panel = draft_show_network_debug_panel;
+        }
+        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 130), 180, 40}, "Controls")) {
             page = MainMenuPage::Controls;
             draft_bindings = current_bindings;
             rebinding_action = -1;
             rebind_block_frames = 0;
         }
-        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 130), 180, 36}, "Back")) {
+        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 180), 180, 36}, "Back")) {
             page = MainMenuPage::Home;
         }
         DrawText(TextFormat("Controls Config: %s", controls_path.c_str()), panel_x + 20, panel_y + panel_height - 24,

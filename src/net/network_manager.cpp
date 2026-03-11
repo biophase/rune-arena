@@ -475,6 +475,11 @@ void NetworkManager::Poll() {
                             if (!received_snapshot.has_value()) {
                                 break;
                             }
+                            if (received_snapshot->is_delta) {
+                                telemetry_.delta_snapshots_received_total += 1;
+                            } else {
+                                telemetry_.keyframe_snapshots_received_total += 1;
+                            }
 
                             std::optional<ServerSnapshotMessage> applied_snapshot;
                             if (received_snapshot->is_delta) {
@@ -483,6 +488,7 @@ void NetworkManager::Poll() {
                                     applied_snapshot = ApplyDeltaSnapshot(base_it->second, *received_snapshot);
                                 } else {
                                     telemetry_.dropped_snapshots_total += 1;
+                                    telemetry_.dropped_delta_missing_base_total += 1;
                                     last_debug_message_ = "dropped delta: missing base snapshot";
                                 }
                             } else {
@@ -645,12 +651,14 @@ void NetworkManager::BroadcastSnapshot(const ServerSnapshotMessage& message) {
                 const std::vector<uint8_t> delta_packet = binary::EncodeSnapshotPacket(delta);
                 if (delta_packet.size() < full_packet.size()) {
                     SendPacketToPeer(peer, delta_packet, false, kChannelRealtime, true);
+                    telemetry_.delta_snapshots_sent_total += 1;
                     sent = true;
                 }
             }
         }
         if (!sent) {
             SendPacketToPeer(peer, full_packet, false, kChannelRealtime, true);
+            telemetry_.keyframe_snapshots_sent_total += 1;
             peer_info.last_keyframe_snapshot_id_sent = full.snapshot_id;
         }
     }

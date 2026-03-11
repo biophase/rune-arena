@@ -103,6 +103,7 @@ bool GameApp::Initialize() {
         std::clamp(settings_.lobby_min_arena_radius_tiles, 0.0f, Constants::kMaxArenaRadiusTiles);
     lobby_shrink_tiles_per_second_ = settings_.lobby_shrink_tiles_per_second;
     lobby_min_arena_radius_tiles_ = settings_.lobby_min_arena_radius_tiles;
+    show_network_debug_panel_ = settings_.show_network_debug_panel;
     initial_fullscreen_setting_ = settings_.fullscreen;
     controls_manager_.Load(controls_bindings_);
     controls_manager_.Save(controls_bindings_);
@@ -199,6 +200,7 @@ void GameApp::Shutdown() {
     }
     settings_.lobby_shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
     settings_.lobby_min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
+    settings_.show_network_debug_panel = show_network_debug_panel_;
     config_manager_.Save(settings_);
 
     lan_discovery_.Stop();
@@ -500,7 +502,14 @@ void GameApp::Render() {
             const MainMenuUiResult ui_result =
                 DrawMainMenu(player_name_buffer_, sizeof(player_name_buffer_), join_ip_buffer_, sizeof(join_ip_buffer_),
                              lan_discovery_.GetHosts(), config_manager_.GetConfigPath(), controls_bindings_,
-                             controls_manager_.GetControlsPath(), main_menu_status_message_, main_menu_status_is_error_);
+                             controls_manager_.GetControlsPath(), show_network_debug_panel_, main_menu_status_message_,
+                             main_menu_status_is_error_);
+
+            if (ui_result.settings_changed) {
+                show_network_debug_panel_ = ui_result.show_network_debug_panel;
+                settings_.show_network_debug_panel = show_network_debug_panel_;
+                config_manager_.Save(settings_);
+            }
 
             if (ui_result.request_host) {
                 StartAsHost();
@@ -581,6 +590,7 @@ void GameApp::Render() {
             RenderWorld();
             DrawMatchHud(state_, state_.local_player_id);
             RenderDebugRuneCooldown();
+            RenderNetworkDebugPanel();
             break;
 
         case AppScreen::PostMatch:
@@ -2375,6 +2385,80 @@ void GameApp::RenderDebugRuneCooldown() {
     const int text_x = static_cast<int>(bar.x + (bar.width - static_cast<float>(text_width)) * 0.5f);
     const int text_y = static_cast<int>(bar.y - static_cast<float>(font_size) - 2.0f);
     DrawText(cooldown_text, text_x, text_y, font_size, WHITE);
+}
+
+void GameApp::RenderNetworkDebugPanel() {
+    if (!show_network_debug_panel_) {
+        return;
+    }
+
+    const NetTelemetry& t = network_manager_.GetTelemetry();
+
+    const float x = 12.0f;
+    const float y = 12.0f;
+    const float width = 408.0f;
+    const float height = network_debug_panel_minimized_ ? 34.0f : 224.0f;
+    const Rectangle panel = {x, y, width, height};
+
+    DrawRectangleRec(panel, Color{20, 24, 30, 220});
+    DrawRectangleLinesEx(panel, 1.0f, Color{70, 82, 104, 255});
+    DrawText("Net Debug", static_cast<int>(x + 10.0f), static_cast<int>(y + 8.0f), 14, RAYWHITE);
+
+    if (GuiButton({x + width - 28.0f, y + 6.0f, 20.0f, 20.0f}, network_debug_panel_minimized_ ? "+" : "-")) {
+        network_debug_panel_minimized_ = !network_debug_panel_minimized_;
+    }
+
+    if (network_debug_panel_minimized_) {
+        return;
+    }
+
+    const char* role = network_manager_.IsHost() ? "Host" : "Client";
+    const std::string status_text = network_manager_.IsHost() ? "authoritative" : GetClientLobbyStatusText();
+
+    int text_y = static_cast<int>(y + 34.0f);
+    const int line_h = 16;
+    DrawText(TextFormat("Role: %s  |  Status: %s", role, status_text.c_str()), static_cast<int>(x + 10.0f), text_y, 13,
+             RAYWHITE);
+    text_y += line_h;
+    DrawText(TextFormat("Up: %.1f KB/s (%0.1f pkt/s)  Down: %.1f KB/s (%0.1f pkt/s)", t.bytes_per_sec_up / 1024.0f,
+                        t.packets_per_sec_up, t.bytes_per_sec_down / 1024.0f, t.packets_per_sec_down),
+             static_cast<int>(x + 10.0f), text_y, 13, Color{184, 210, 255, 255});
+    text_y += line_h;
+    DrawText(TextFormat("Snapshots tx/rx: %llu / %llu  avg bytes tx/rx: %.1f / %.1f",
+                        static_cast<unsigned long long>(t.snapshots_sent_total),
+                        static_cast<unsigned long long>(t.snapshots_received_total), t.average_snapshot_bytes_sent,
+                        t.average_snapshot_bytes_received),
+             static_cast<int>(x + 10.0f), text_y, 13, Color{184, 210, 255, 255});
+    text_y += line_h;
+    DrawText(TextFormat("Keyframe tx/rx: %llu / %llu  Delta tx/rx: %llu / %llu",
+                        static_cast<unsigned long long>(t.keyframe_snapshots_sent_total),
+                        static_cast<unsigned long long>(t.keyframe_snapshots_received_total),
+                        static_cast<unsigned long long>(t.delta_snapshots_sent_total),
+                        static_cast<unsigned long long>(t.delta_snapshots_received_total)),
+             static_cast<int>(x + 10.0f), text_y, 13, Color{190, 226, 180, 255});
+    text_y += line_h;
+    DrawText(TextFormat("Dropped snapshots: %llu  Missing-base deltas: %llu",
+                        static_cast<unsigned long long>(t.dropped_snapshots_total),
+                        static_cast<unsigned long long>(t.dropped_delta_missing_base_total)),
+             static_cast<int>(x + 10.0f), text_y, 13,
+             (t.dropped_snapshots_total > 0 || t.dropped_delta_missing_base_total > 0) ? Color{255, 175, 130, 255}
+                                                                                         : Color{186, 226, 186, 255});
+    text_y += line_h;
+    DrawText(TextFormat("Reconcile corrections: %.2f/s (total %llu)", t.reconciliation_corrections_per_sec,
+                        static_cast<unsigned long long>(t.reconciliation_corrections_total)),
+             static_cast<int>(x + 10.0f), text_y, 13, Color{235, 220, 185, 255});
+    text_y += line_h;
+
+    const char* hint_1 = "Tune: lower interpolation delay first (100ms -> 75 -> 50 on LAN).";
+    const char* hint_2 = "If missing-base deltas rise, shorten keyframe interval.";
+    if (t.reconciliation_corrections_per_sec > 8.0f) {
+        hint_2 = "High reconcile rate: increase hard snap threshold or lower reconcile gain.";
+    } else if (t.dropped_delta_missing_base_total == 0 && t.dropped_snapshots_total == 0) {
+        hint_2 = "If still stuttery, raise snapshot rate or reduce render load.";
+    }
+    DrawText(hint_1, static_cast<int>(x + 10.0f), text_y, 12, Color{210, 214, 220, 255});
+    text_y += 14;
+    DrawText(hint_2, static_cast<int>(x + 10.0f), text_y, 12, Color{210, 214, 220, 255});
 }
 
 void GameApp::UpdateCameraTarget() {

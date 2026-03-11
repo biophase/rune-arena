@@ -105,6 +105,7 @@ class GameApp {
     void RenderDamagePopups();
     void RenderRunePlacementOverlay();
     void RenderDebugRuneCooldown();
+    void RenderNetworkDebugPanel();
     void UpdateCameraTarget();
     Vector2 GetRenderPlayerPosition(int player_id) const;
 
@@ -165,6 +166,8 @@ class GameApp {
     float render_time_seconds_ = 0.0f;
     bool force_windowed_launch_ = false;
     bool initial_fullscreen_setting_ = true;
+    bool show_network_debug_panel_ = true;
+    bool network_debug_panel_minimized_ = false;
 
     bool pending_primary_pressed_ = false;
     bool pending_select_fire_ = false;

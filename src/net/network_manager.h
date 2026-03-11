@@ -28,6 +28,11 @@ struct NetTelemetry {
     uint64_t snapshots_sent_total = 0;
     uint64_t snapshots_received_total = 0;
     uint64_t dropped_snapshots_total = 0;
+    uint64_t keyframe_snapshots_sent_total = 0;
+    uint64_t delta_snapshots_sent_total = 0;
+    uint64_t keyframe_snapshots_received_total = 0;
+    uint64_t delta_snapshots_received_total = 0;
+    uint64_t dropped_delta_missing_base_total = 0;
     uint64_t reconciliation_corrections_total = 0;
 
     float bytes_per_sec_up = 0.0f;

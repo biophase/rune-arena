@@ -35,6 +35,7 @@ bool ConfigManager::Load(UserSettings& settings) const {
     settings.window_width = json.value("window_width", settings.window_width);
     settings.window_height = json.value("window_height", settings.window_height);
     settings.fullscreen = json.value("fullscreen", settings.fullscreen);
+    settings.show_network_debug_panel = json.value("show_network_debug_panel", settings.show_network_debug_panel);
     settings.lobby_shrink_tiles_per_second =
         json.value("lobby_shrink_tiles_per_second", settings.lobby_shrink_tiles_per_second);
     settings.lobby_min_arena_radius_tiles =
@@ -48,6 +49,7 @@ bool ConfigManager::Save(const UserSettings& settings) const {
     json["window_width"] = settings.window_width;
     json["window_height"] = settings.window_height;
     json["fullscreen"] = settings.fullscreen;
+    json["show_network_debug_panel"] = settings.show_network_debug_panel;
     json["lobby_shrink_tiles_per_second"] = settings.lobby_shrink_tiles_per_second;
     json["lobby_min_arena_radius_tiles"] = settings.lobby_min_arena_radius_tiles;
 
