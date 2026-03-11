@@ -23,6 +23,7 @@ struct ClientMoveMessage {
     int player_id = -1;
     int seq = 0;
     int tick = 0;
+    int last_received_snapshot_id = 0;
     float move_x = 0.0f;
     float move_y = 0.0f;
     float aim_x = 0.0f;
@@ -32,6 +33,7 @@ struct ClientMoveMessage {
 struct ClientActionMessage {
     int player_id = -1;
     int seq = 0;
+    int last_received_snapshot_id = 0;
     bool primary_pressed = false;
     bool select_fire = false;
     bool select_water = false;
@@ -61,6 +63,7 @@ struct PlayerSnapshot {
 };
 
 struct RuneSnapshot {
+    int id = -1;
     int owner_player_id = -1;
     int owner_team = 0;
     int x = 0;
@@ -71,6 +74,7 @@ struct RuneSnapshot {
 };
 
 struct ProjectileSnapshot {
+    int id = -1;
     int owner_player_id = -1;
     int owner_team = 0;
     float pos_x = 0.0f;
@@ -87,6 +91,7 @@ struct ProjectileSnapshot {
 };
 
 struct IceWallSnapshot {
+    int id = -1;
     int owner_player_id = -1;
     int owner_team = 0;
     int cell_x = 0;
@@ -99,6 +104,9 @@ struct IceWallSnapshot {
 
 struct ServerSnapshotMessage {
     int server_tick = 0;
+    int snapshot_id = 0;
+    int base_snapshot_id = 0;
+    bool is_delta = false;
     float time_remaining = 0.0f;
     float shrink_tiles_per_second = 0.0f;
     float min_arena_radius_tiles = 0.0f;
@@ -112,9 +120,13 @@ struct ServerSnapshotMessage {
     int blue_team_kills = 0;
 
     std::vector<PlayerSnapshot> players;
+    std::vector<int> removed_player_ids;
     std::vector<RuneSnapshot> runes;
+    std::vector<int> removed_rune_ids;
     std::vector<ProjectileSnapshot> projectiles;
+    std::vector<int> removed_projectile_ids;
     std::vector<IceWallSnapshot> ice_walls;
+    std::vector<int> removed_ice_wall_ids;
 };
 
 struct LobbyPlayerInfo {

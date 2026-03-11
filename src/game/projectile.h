@@ -7,6 +7,7 @@
 #include "core/constants.h"
 
 struct Projectile {
+    int id = -1;
     int owner_player_id = -1;
     int owner_team = 0;
     Vector2 pos = {0.0f, 0.0f};

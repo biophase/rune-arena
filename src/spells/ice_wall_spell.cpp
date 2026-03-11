@@ -49,6 +49,7 @@ void IceWallSpell::Cast(GameState& state, EventQueue& event_queue) {
         }
 
         IceWallPiece piece;
+        piece.id = state.next_entity_id++;
         piece.cell = cell;
         piece.owner_player_id = caster_player_id_;
         piece.owner_team = caster_team;

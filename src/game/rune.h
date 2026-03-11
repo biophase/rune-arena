@@ -3,6 +3,7 @@
 #include "game/game_types.h"
 
 struct Rune {
+    int id = -1;
     int owner_player_id = -1;
     int owner_team = 0;
     GridCoord cell;

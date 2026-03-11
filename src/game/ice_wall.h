@@ -10,6 +10,7 @@ enum class IceWallState {
 };
 
 struct IceWallPiece {
+    int id = -1;
     GridCoord cell;
     int owner_player_id = -1;
     int owner_team = 0;

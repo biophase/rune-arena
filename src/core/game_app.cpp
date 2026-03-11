@@ -716,6 +716,7 @@ void GameApp::StartMatchAsHost() {
     state_.explosions.clear();
     state_.ice_walls.clear();
     state_.particles.clear();
+    state_.next_entity_id = 1;
     state_.next_rune_placement_order = 1;
     latest_remote_inputs_.clear();
     render_player_positions_.clear();
@@ -840,6 +841,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     state_.runes.clear();
     for (const auto& rune_snapshot : snapshot.runes) {
         Rune rune;
+        rune.id = rune_snapshot.id;
         rune.owner_player_id = rune_snapshot.owner_player_id;
         rune.owner_team = rune_snapshot.owner_team;
         rune.cell = {rune_snapshot.x, rune_snapshot.y};
@@ -852,6 +854,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     state_.projectiles.clear();
     for (const auto& projectile_snapshot : snapshot.projectiles) {
         Projectile projectile;
+        projectile.id = projectile_snapshot.id;
         projectile.owner_player_id = projectile_snapshot.owner_player_id;
         projectile.owner_team = projectile_snapshot.owner_team;
         projectile.pos = {projectile_snapshot.pos_x, projectile_snapshot.pos_y};
@@ -869,6 +872,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     state_.ice_walls.clear();
     for (const auto& wall_snapshot : snapshot.ice_walls) {
         IceWallPiece wall;
+        wall.id = wall_snapshot.id;
         wall.owner_player_id = wall_snapshot.owner_player_id;
         wall.owner_team = wall_snapshot.owner_team;
         wall.cell = {wall_snapshot.cell_x, wall_snapshot.cell_y};
@@ -949,10 +953,19 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
 
     int max_order = 0;
+    int max_entity_id = 0;
     for (const auto& rune : state_.runes) {
         max_order = std::max(max_order, rune.placement_order);
+        max_entity_id = std::max(max_entity_id, rune.id);
+    }
+    for (const auto& projectile : state_.projectiles) {
+        max_entity_id = std::max(max_entity_id, projectile.id);
+    }
+    for (const auto& wall : state_.ice_walls) {
+        max_entity_id = std::max(max_entity_id, wall.id);
     }
     state_.next_rune_placement_order = max_order + 1;
+    state_.next_entity_id = max_entity_id + 1;
 
     if (state_.local_player_id < 0) {
         state_.local_player_id = network_manager_.GetAssignedLocalPlayerId();
@@ -972,6 +985,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
 ServerSnapshotMessage GameApp::BuildHostSnapshot() {
     ServerSnapshotMessage snapshot;
     snapshot.server_tick = ++host_server_tick_;
+    snapshot.snapshot_id = snapshot.server_tick;
+    snapshot.base_snapshot_id = 0;
+    snapshot.is_delta = false;
     snapshot.time_remaining = state_.match.time_remaining;
     snapshot.shrink_tiles_per_second = state_.match.shrink_tiles_per_second;
     snapshot.min_arena_radius_tiles = state_.match.min_arena_radius_tiles;
@@ -1011,6 +1027,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
 
     for (const auto& rune : state_.runes) {
         RuneSnapshot rune_snapshot;
+        rune_snapshot.id = rune.id;
         rune_snapshot.owner_player_id = rune.owner_player_id;
         rune_snapshot.owner_team = rune.owner_team;
         rune_snapshot.x = rune.cell.x;
@@ -1023,6 +1040,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
 
     for (const auto& projectile : state_.projectiles) {
         ProjectileSnapshot projectile_snapshot;
+        projectile_snapshot.id = projectile.id;
         projectile_snapshot.owner_player_id = projectile.owner_player_id;
         projectile_snapshot.owner_team = projectile.owner_team;
         projectile_snapshot.pos_x = projectile.pos.x;
@@ -1041,6 +1059,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
 
     for (const auto& wall : state_.ice_walls) {
         IceWallSnapshot wall_snapshot;
+        wall_snapshot.id = wall.id;
         wall_snapshot.owner_player_id = wall.owner_player_id;
         wall_snapshot.owner_team = wall.owner_team;
         wall_snapshot.cell_x = wall.cell.x;
@@ -1772,6 +1791,7 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
     }
 
     Rune rune;
+    rune.id = state_.next_entity_id++;
     rune.owner_player_id = player.id;
     rune.owner_team = player.team;
     rune.cell = cell;

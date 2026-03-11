@@ -32,6 +32,7 @@ void FireBoltSpell::Cast(GameState& state, EventQueue& event_queue) {
     }
 
     Projectile projectile;
+    projectile.id = state.next_entity_id++;
     projectile.owner_player_id = caster_player_id_;
     projectile.owner_team = caster_team;
     projectile.pos = cast_position_;

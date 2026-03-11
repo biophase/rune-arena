@@ -91,11 +91,14 @@ class NetworkManager {
     struct PeerInfo {
         int player_id = -1;
         std::string name;
+        int last_acked_snapshot_id = 0;
+        int last_keyframe_snapshot_id_sent = 0;
     };
 
     bool EnsureEnetInitialized();
-    void SendJsonToPeer(ENetPeer* peer, const nlohmann::json& json, bool reliable, uint8_t channel);
-    void BroadcastJson(const nlohmann::json& json, bool reliable, uint8_t channel);
+    void SendPacketToPeer(ENetPeer* peer, const std::vector<uint8_t>& packet_data, bool reliable, uint8_t channel,
+                          bool is_snapshot);
+    void BroadcastPacket(const std::vector<uint8_t>& packet_data, bool reliable, uint8_t channel, bool is_snapshot);
     void RegisterOutgoingPacket(size_t bytes, bool is_snapshot);
     void RegisterIncomingPacket(size_t bytes, bool is_snapshot);
     void UpdateRateTelemetry();
@@ -112,6 +115,9 @@ class NetworkManager {
     int assigned_local_player_id_ = -1;
 
     std::unordered_map<ENetPeer*, PeerInfo> peers_;
+    std::unordered_map<int, ServerSnapshotMessage> host_snapshot_history_;
+    std::unordered_map<int, ServerSnapshotMessage> client_snapshot_history_;
+    int last_client_applied_snapshot_id_ = 0;
 
     std::vector<ClientMoveMessage> pending_host_moves_;
     std::vector<ClientActionMessage> pending_host_actions_;

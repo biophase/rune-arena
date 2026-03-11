@@ -12,6 +12,8 @@ constexpr int kDiscoveryPort = 7968;
 
 constexpr double kFixedDt = 1.0 / 60.0;
 constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 30.0f;
+constexpr int kNetworkSnapshotKeyframeIntervalTicks = 18;
+constexpr int kNetworkSnapshotHistorySize = 128;
 constexpr float kCameraZoom = 3.0f;
 constexpr float kClientVisualSmoothing = 16.0f;
 constexpr float kRemoteInterpolationDelaySeconds = 0.1f;

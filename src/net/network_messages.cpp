@@ -41,6 +41,7 @@ std::optional<ClientInputMessage> ClientInputFromJson(const nlohmann::json& json
 nlohmann::json ToJson(const ClientMoveMessage& message) {
     return {
         {"player_id", message.player_id}, {"seq", message.seq}, {"tick", message.tick},
+        {"last_received_snapshot_id", message.last_received_snapshot_id},
         {"move_x", Quantize2(message.move_x)}, {"move_y", Quantize2(message.move_y)},
         {"aim_x", Quantize2(message.aim_x)},   {"aim_y", Quantize2(message.aim_y)},
     };
@@ -51,6 +52,7 @@ std::optional<ClientMoveMessage> ClientMoveFromJson(const nlohmann::json& json) 
     out.player_id = json.value("player_id", -1);
     out.seq = json.value("seq", 0);
     out.tick = json.value("tick", 0);
+    out.last_received_snapshot_id = json.value("last_received_snapshot_id", 0);
     out.move_x = json.value("move_x", 0.0f);
     out.move_y = json.value("move_y", 0.0f);
     out.aim_x = json.value("aim_x", 0.0f);
@@ -62,6 +64,7 @@ nlohmann::json ToJson(const ClientActionMessage& message) {
     return {
         {"player_id", message.player_id},
         {"seq", message.seq},
+        {"last_received_snapshot_id", message.last_received_snapshot_id},
         {"primary_pressed", message.primary_pressed},
         {"select_fire", message.select_fire},
         {"select_water", message.select_water},
@@ -72,6 +75,7 @@ std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& js
     ClientActionMessage out;
     out.player_id = json.value("player_id", -1);
     out.seq = json.value("seq", 0);
+    out.last_received_snapshot_id = json.value("last_received_snapshot_id", 0);
     out.primary_pressed = json.value("primary_pressed", false);
     out.select_fire = json.value("select_fire", false);
     out.select_water = json.value("select_water", false);
@@ -81,6 +85,9 @@ std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& js
 nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     nlohmann::json out;
     out["server_tick"] = message.server_tick;
+    out["snapshot_id"] = message.snapshot_id;
+    out["base_snapshot_id"] = message.base_snapshot_id;
+    out["is_delta"] = message.is_delta;
     out["time_remaining"] = message.time_remaining;
     out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
     out["min_arena_radius_tiles"] = message.min_arena_radius_tiles;
@@ -122,6 +129,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["runes"] = nlohmann::json::array();
     for (const auto& rune : message.runes) {
         out["runes"].push_back({
+            {"id", rune.id},
             {"owner_player_id", rune.owner_player_id},
             {"owner_team", rune.owner_team},
             {"x", rune.x},
@@ -135,6 +143,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["projectiles"] = nlohmann::json::array();
     for (const auto& projectile : message.projectiles) {
         out["projectiles"].push_back({
+            {"id", projectile.id},
             {"owner_player_id", projectile.owner_player_id},
             {"owner_team", projectile.owner_team},
             {"pos_x", Quantize2(projectile.pos_x)},
@@ -154,6 +163,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["ice_walls"] = nlohmann::json::array();
     for (const auto& wall : message.ice_walls) {
         out["ice_walls"].push_back({
+            {"id", wall.id},
             {"owner_player_id", wall.owner_player_id},
             {"owner_team", wall.owner_team},
             {"cell_x", wall.cell_x},
@@ -165,12 +175,20 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
         });
     }
 
+    out["removed_player_ids"] = message.removed_player_ids;
+    out["removed_rune_ids"] = message.removed_rune_ids;
+    out["removed_projectile_ids"] = message.removed_projectile_ids;
+    out["removed_ice_wall_ids"] = message.removed_ice_wall_ids;
+
     return out;
 }
 
 std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json& json) {
     ServerSnapshotMessage out;
     out.server_tick = json.value("server_tick", 0);
+    out.snapshot_id = json.value("snapshot_id", 0);
+    out.base_snapshot_id = json.value("base_snapshot_id", 0);
+    out.is_delta = json.value("is_delta", false);
     out.time_remaining = json.value("time_remaining", 0.0f);
     out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
     out.min_arena_radius_tiles = json.value("min_arena_radius_tiles", 0.0f);
@@ -215,6 +233,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     if (runes_it != json.end() && runes_it->is_array()) {
         for (const auto& item : *runes_it) {
             RuneSnapshot rune;
+            rune.id = item.value("id", -1);
             rune.owner_player_id = item.value("owner_player_id", -1);
             rune.owner_team = item.value("owner_team", 0);
             rune.x = item.value("x", 0);
@@ -230,6 +249,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     if (projectiles_it != json.end() && projectiles_it->is_array()) {
         for (const auto& item : *projectiles_it) {
             ProjectileSnapshot projectile;
+            projectile.id = item.value("id", -1);
             projectile.owner_player_id = item.value("owner_player_id", -1);
             projectile.owner_team = item.value("owner_team", 0);
             projectile.pos_x = item.value("pos_x", 0.0f);
@@ -251,6 +271,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     if (walls_it != json.end() && walls_it->is_array()) {
         for (const auto& item : *walls_it) {
             IceWallSnapshot wall;
+            wall.id = item.value("id", -1);
             wall.owner_player_id = item.value("owner_player_id", -1);
             wall.owner_team = item.value("owner_team", 0);
             wall.cell_x = item.value("cell_x", 0);
@@ -260,6 +281,31 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             wall.hp = item.value("hp", 0.0f);
             wall.alive = item.value("alive", true);
             out.ice_walls.push_back(wall);
+        }
+    }
+
+    const auto removed_players_it = json.find("removed_player_ids");
+    if (removed_players_it != json.end() && removed_players_it->is_array()) {
+        for (const auto& item : *removed_players_it) {
+            out.removed_player_ids.push_back(item.get<int>());
+        }
+    }
+    const auto removed_runes_it = json.find("removed_rune_ids");
+    if (removed_runes_it != json.end() && removed_runes_it->is_array()) {
+        for (const auto& item : *removed_runes_it) {
+            out.removed_rune_ids.push_back(item.get<int>());
+        }
+    }
+    const auto removed_projectiles_it = json.find("removed_projectile_ids");
+    if (removed_projectiles_it != json.end() && removed_projectiles_it->is_array()) {
+        for (const auto& item : *removed_projectiles_it) {
+            out.removed_projectile_ids.push_back(item.get<int>());
+        }
+    }
+    const auto removed_walls_it = json.find("removed_ice_wall_ids");
+    if (removed_walls_it != json.end() && removed_walls_it->is_array()) {
+        for (const auto& item : *removed_walls_it) {
+            out.removed_ice_wall_ids.push_back(item.get<int>());
         }
     }
 
