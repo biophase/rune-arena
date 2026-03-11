@@ -321,8 +321,9 @@ void GameApp::UpdateMatch(float dt) {
     if (network_manager_.IsHost()) {
         SimulateHostGameplay(dt);
         snapshot_accumulator_ += dt;
-        if (snapshot_accumulator_ >= Constants::kNetworkSnapshotIntervalSeconds) {
-            snapshot_accumulator_ = 0.0;
+        const double snapshot_interval = static_cast<double>(Constants::kNetworkSnapshotIntervalSeconds);
+        while (snapshot_accumulator_ >= snapshot_interval) {
+            snapshot_accumulator_ -= snapshot_interval;
             network_manager_.BroadcastSnapshot(BuildHostSnapshot());
         }
         UpdateClientVisualSmoothing(dt);
@@ -635,6 +636,7 @@ void GameApp::StartAsHost() {
     known_player_names_.clear();
     known_player_names_[0] = settings_.player_name;
     lobby_broadcast_accumulator_ = 0.0;
+    snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
 
     app_screen_ = AppScreen::Lobby;
@@ -670,6 +672,7 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
     lobby_broadcast_accumulator_ = 0.0;
+    snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = GetTime();
     app_screen_ = AppScreen::Connecting;
 }
@@ -695,6 +698,7 @@ void GameApp::ReturnToMainMenu() {
     pending_select_fire_ = false;
     pending_select_water_ = false;
     lobby_broadcast_accumulator_ = 0.0;
+    snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
     winning_team_ = -1;
     host_server_tick_ = 0;
@@ -733,6 +737,7 @@ void GameApp::StartMatchAsHost() {
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
     host_server_tick_ = 0;
+    snapshot_accumulator_ = 0.0;
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
