@@ -5,6 +5,7 @@
 #include <raylib.h>
 
 #include "game/game_types.h"
+#include "game/damage_popup.h"
 #include "game/ice_wall.h"
 #include "game/explosion.h"
 #include "game/match_state.h"
@@ -47,6 +48,7 @@ struct GameState {
     std::vector<Explosion> explosions;
     std::vector<IceWallPiece> ice_walls;
     std::vector<Particle> particles;
+    std::vector<DamagePopup> damage_popups;
     MapData map;
 
     int local_player_id = -1;

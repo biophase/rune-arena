@@ -37,6 +37,8 @@ struct PlayerSnapshot {
     bool rune_placing_mode = false;
     int selected_rune_type = 0;
     float rune_place_cooldown_remaining = 0.0f;
+    bool awaiting_respawn = false;
+    float respawn_remaining = 0.0f;
 };
 
 struct RuneSnapshot {
@@ -76,9 +78,25 @@ struct IceWallSnapshot {
     bool alive = true;
 };
 
+struct DamagePopupSnapshot {
+    float pos_x = 0.0f;
+    float pos_y = 0.0f;
+    int amount = 0;
+    float age_seconds = 0.0f;
+    float lifetime_seconds = 0.0f;
+    float rise_per_second = 0.0f;
+    bool alive = true;
+};
+
 struct ServerSnapshotMessage {
     int server_tick = 0;
     float time_remaining = 0.0f;
+    float shrink_tiles_per_second = 0.0f;
+    float min_arena_radius_tiles = 0.0f;
+    float arena_radius_tiles = 0.0f;
+    float arena_radius_world = 0.0f;
+    float arena_center_world_x = 0.0f;
+    float arena_center_world_y = 0.0f;
     bool match_running = false;
     bool match_finished = false;
     int red_team_kills = 0;
@@ -88,6 +106,7 @@ struct ServerSnapshotMessage {
     std::vector<RuneSnapshot> runes;
     std::vector<ProjectileSnapshot> projectiles;
     std::vector<IceWallSnapshot> ice_walls;
+    std::vector<DamagePopupSnapshot> damage_popups;
 };
 
 struct LobbyPlayerInfo {
@@ -98,6 +117,8 @@ struct LobbyPlayerInfo {
 struct LobbyStateMessage {
     std::vector<LobbyPlayerInfo> players;
     bool host_can_start = false;
+    float shrink_tiles_per_second = 0.0f;
+    float min_arena_radius_tiles = 0.0f;
 };
 
 struct MatchStartMessage {

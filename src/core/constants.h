@@ -14,6 +14,12 @@ constexpr double kFixedDt = 1.0 / 60.0;
 constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 30.0f;
 constexpr float kCameraZoom = 3.0f;
 constexpr float kClientVisualSmoothing = 16.0f;
+constexpr float kDefaultShrinkTilesPerSecond = 1.0f;
+constexpr float kShrinkTilesPerSecondStep = 0.25f;
+constexpr float kMaxShrinkTilesPerSecond = 6.0f;
+constexpr float kDefaultMinArenaRadiusTiles = 6.0f;
+constexpr float kMinArenaRadiusTilesStep = 1.0f;
+constexpr float kMaxArenaRadiusTiles = 256.0f;
 
 constexpr float kPlayerRadius = 12.0f;
 constexpr float kPlayerAcceleration = 900.0f;
@@ -47,6 +53,10 @@ constexpr float kRunePlaceCooldownSeconds = 0.5f;
 
 constexpr int kMatchDurationSeconds = 120;
 constexpr int kMaxHp = 100;
+constexpr float kRespawnDelaySeconds = 3.0f;
+constexpr float kArenaUnsafeDamagePerSecond = 5.0f;
+constexpr float kArenaSpawnBufferTiles = 3.0f;
+constexpr float kOutsideZoneTileBrightness = 0.5f;
 constexpr float kPlayerHealthBarWidth = 32.0f;
 constexpr float kPlayerHealthBarHeight = 4.0f;
 constexpr float kPlayerHealthBarOffsetY = 8.0f;
@@ -60,6 +70,10 @@ constexpr int kPlayerHealthBarMissingB = 182;
 constexpr float kRuneCooldownBarWidth = 128.0f;
 constexpr float kRuneCooldownBarHeight = 8.0f;
 constexpr int kRuneCooldownTextFontSize = 14;
+
+constexpr float kDamagePopupLifetimeSeconds = 0.75f;
+constexpr float kDamagePopupRisePerSecond = 20.0f;
+constexpr int kDamagePopupFontSize = 11;
 
 constexpr int kRuneCellSize = 32;
 constexpr int kPlacementPreviewRadiusCells = 3;

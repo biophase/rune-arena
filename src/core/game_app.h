@@ -59,6 +59,9 @@ class GameApp {
     ClientInputMessage BuildLocalInput(int local_player_id);
     void SimulateHostGameplay(float dt);
     void SimulatePlayerFromInput(Player& player, const ClientInputMessage& input, float dt);
+    void UpdateArena(float dt);
+    void UpdateRespawns(float dt);
+    void UpdateDamagePopups(float dt);
     void UpdateIceWalls(float dt);
     void UpdateProjectiles(float dt);
     void UpdateExplosions(float dt);
@@ -70,6 +73,13 @@ class GameApp {
     void UpdateProjectileEmitters();
     void UpdateParticles(float dt);
     void SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id);
+    void SpawnDamagePopup(Vector2 world_pos, int amount);
+    bool ApplyDamageToPlayer(Player& target, int attacker_player_id, int damage, const char* source,
+                             bool count_kill_for_attacker);
+    void HandlePlayerDeath(Player& victim, int killer_player_id, bool count_kill_for_attacker);
+    bool IsOutsideArena(Vector2 world_pos) const;
+    Vector2 ClampToArenaWithBuffer(Vector2 world_pos, float buffer_tiles) const;
+    Vector2 ComputeRespawnPosition(const Player& player) const;
 
     bool TryPlaceRune(Player& player, Vector2 world_mouse);
     void CheckSpellPatterns(const RunePlacedEvent& event);
@@ -91,6 +101,7 @@ class GameApp {
     void RenderMeleeAttacks();
     void RenderProjectiles();
     void RenderParticles();
+    void RenderDamagePopups();
     void RenderRunePlacementOverlay();
     void RenderDebugRuneCooldown();
     void UpdateCameraTarget();
@@ -137,6 +148,8 @@ class GameApp {
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;
     double connect_attempt_start_seconds_ = 0.0;
+    float lobby_shrink_tiles_per_second_ = Constants::kDefaultShrinkTilesPerSecond;
+    float lobby_min_arena_radius_tiles_ = Constants::kDefaultMinArenaRadiusTiles;
 
     float render_time_seconds_ = 0.0f;
     bool force_windowed_launch_ = false;

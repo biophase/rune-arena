@@ -25,6 +25,10 @@ struct Player {
     int hp = Constants::kMaxHp;
     int kills = 0;
     bool alive = true;
+    bool awaiting_respawn = false;
+    float respawn_remaining = 0.0f;
+    GridCoord spawn_cell = {0, 0};
+    float outside_zone_damage_accumulator = 0.0f;
 
     bool rune_placing_mode = false;
     RuneType selected_rune_type = RuneType::Fire;

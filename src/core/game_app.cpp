@@ -97,6 +97,12 @@ bool GameApp::Initialize() {
     if (!loaded_settings) {
         settings_.fullscreen = true;
     }
+    settings_.lobby_shrink_tiles_per_second =
+        std::clamp(settings_.lobby_shrink_tiles_per_second, 0.0f, Constants::kMaxShrinkTilesPerSecond);
+    settings_.lobby_min_arena_radius_tiles =
+        std::clamp(settings_.lobby_min_arena_radius_tiles, 0.0f, Constants::kMaxArenaRadiusTiles);
+    lobby_shrink_tiles_per_second_ = settings_.lobby_shrink_tiles_per_second;
+    lobby_min_arena_radius_tiles_ = settings_.lobby_min_arena_radius_tiles;
     initial_fullscreen_setting_ = settings_.fullscreen;
     controls_manager_.Load(controls_bindings_);
     controls_manager_.Save(controls_bindings_);
@@ -191,6 +197,8 @@ void GameApp::Shutdown() {
     } else {
         settings_.fullscreen = IsWindowFullscreen();
     }
+    settings_.lobby_shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
+    settings_.lobby_min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
     config_manager_.Save(settings_);
 
     lan_discovery_.Stop();
@@ -267,6 +275,8 @@ void GameApp::UpdateLobby(float dt) {
 
         LobbyStateMessage lobby_state;
         lobby_state.host_can_start = true;
+        lobby_state.shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
+        lobby_state.min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
         lobby_state.players.push_back({0, player_name_buffer_});
 
         for (const auto& remote : network_manager_.GetRemotePlayers()) {
@@ -285,6 +295,8 @@ void GameApp::UpdateLobby(float dt) {
             for (const auto& player : lobby_update->players) {
                 lobby_player_names_.push_back(player.name);
             }
+            lobby_shrink_tiles_per_second_ = lobby_update->shrink_tiles_per_second;
+            lobby_min_arena_radius_tiles_ = lobby_update->min_arena_radius_tiles;
         }
 
         if (network_manager_.ConsumeMatchStart()) {
@@ -323,6 +335,7 @@ void GameApp::UpdateMatch(float dt) {
             }
         }
         UpdateClientVisualSmoothing(dt);
+        UpdateDamagePopups(dt);
     }
 
     UpdateProjectileEmitters();
@@ -430,6 +443,7 @@ void GameApp::Render() {
         case AppScreen::Connecting: {
             const LobbyUiResult lobby_ui =
                 DrawLobby(lobby_player_names_, false, host_display_ip_, Constants::kMatchDurationSeconds,
+                          lobby_shrink_tiles_per_second_, lobby_min_arena_radius_tiles_,
                           most_kills_mode_.GetUiName(), GetClientLobbyStatusText());
             if (lobby_ui.request_leave) {
                 ReturnToMainMenu();
@@ -439,11 +453,39 @@ void GameApp::Render() {
 
         case AppScreen::Lobby: {
             const LobbyUiResult lobby_ui = DrawLobby(lobby_player_names_, network_manager_.IsHost(), host_display_ip_,
-                                                     Constants::kMatchDurationSeconds, most_kills_mode_.GetUiName(),
+                                                     Constants::kMatchDurationSeconds, lobby_shrink_tiles_per_second_,
+                                                     lobby_min_arena_radius_tiles_, most_kills_mode_.GetUiName(),
                                                      network_manager_.IsHost() ? "hosting/listening"
                                                                               : GetClientLobbyStatusText());
             if (lobby_ui.request_leave) {
                 ReturnToMainMenu();
+            }
+            bool mode_settings_changed = false;
+            if (network_manager_.IsHost() && lobby_ui.request_decrease_shrink_rate) {
+                lobby_shrink_tiles_per_second_ = std::max(
+                    0.0f, lobby_shrink_tiles_per_second_ - Constants::kShrinkTilesPerSecondStep);
+                mode_settings_changed = true;
+            }
+            if (network_manager_.IsHost() && lobby_ui.request_increase_shrink_rate) {
+                lobby_shrink_tiles_per_second_ =
+                    std::min(Constants::kMaxShrinkTilesPerSecond,
+                             lobby_shrink_tiles_per_second_ + Constants::kShrinkTilesPerSecondStep);
+                mode_settings_changed = true;
+            }
+            if (network_manager_.IsHost() && lobby_ui.request_decrease_min_radius) {
+                lobby_min_arena_radius_tiles_ = std::max(
+                    0.0f, lobby_min_arena_radius_tiles_ - Constants::kMinArenaRadiusTilesStep);
+                mode_settings_changed = true;
+            }
+            if (network_manager_.IsHost() && lobby_ui.request_increase_min_radius) {
+                lobby_min_arena_radius_tiles_ = std::min(
+                    Constants::kMaxArenaRadiusTiles, lobby_min_arena_radius_tiles_ + Constants::kMinArenaRadiusTilesStep);
+                mode_settings_changed = true;
+            }
+            if (network_manager_.IsHost() && mode_settings_changed) {
+                settings_.lobby_shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
+                settings_.lobby_min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
+                config_manager_.Save(settings_);
             }
             if (lobby_ui.request_start_match && network_manager_.IsHost()) {
                 StartMatchAsHost();
@@ -554,6 +596,8 @@ void GameApp::ReturnToMainMenu() {
     winning_team_ = -1;
     main_menu_status_message_.clear();
     main_menu_status_is_error_ = false;
+    lobby_shrink_tiles_per_second_ = settings_.lobby_shrink_tiles_per_second;
+    lobby_min_arena_radius_tiles_ = settings_.lobby_min_arena_radius_tiles;
     app_screen_ = AppScreen::MainMenu;
 }
 
@@ -562,6 +606,14 @@ void GameApp::StartMatchAsHost() {
     state_.match.match_running = true;
     state_.match.match_finished = false;
     state_.match.time_remaining = static_cast<float>(Constants::kMatchDurationSeconds);
+    state_.match.shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
+    state_.match.arena_center_world = {static_cast<float>(state_.map.width * state_.map.cell_size) * 0.5f,
+                                       static_cast<float>(state_.map.height * state_.map.cell_size) * 0.5f};
+    const float map_diameter_tiles = static_cast<float>(std::max(state_.map.width, state_.map.height));
+    const float map_radius_tiles = map_diameter_tiles * 0.5f;
+    state_.match.min_arena_radius_tiles = std::clamp(lobby_min_arena_radius_tiles_, 0.0f, map_radius_tiles);
+    state_.match.arena_radius_tiles = map_radius_tiles;
+    state_.match.arena_radius_world = state_.match.arena_radius_tiles * static_cast<float>(state_.map.cell_size);
 
     state_.players.clear();
     state_.runes.clear();
@@ -601,7 +653,12 @@ void GameApp::StartMatchAsHost() {
 
     for (size_t i = 0; i < state_.players.size(); ++i) {
         const GridCoord spawn = spawns[i % spawns.size()];
+        state_.players[i].spawn_cell = spawn;
         state_.players[i].pos = CellToWorldCenter(spawn);
+        state_.players[i].alive = true;
+        state_.players[i].awaiting_respawn = false;
+        state_.players[i].respawn_remaining = 0.0f;
+        state_.players[i].outside_zone_damage_accumulator = 0.0f;
         render_player_positions_[state_.players[i].id] = state_.players[i].pos;
     }
 
@@ -615,6 +672,11 @@ void GameApp::StartMatchAsHost() {
 
 void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) {
     state_.match.time_remaining = snapshot.time_remaining;
+    state_.match.shrink_tiles_per_second = snapshot.shrink_tiles_per_second;
+    state_.match.min_arena_radius_tiles = snapshot.min_arena_radius_tiles;
+    state_.match.arena_radius_tiles = snapshot.arena_radius_tiles;
+    state_.match.arena_radius_world = snapshot.arena_radius_world;
+    state_.match.arena_center_world = {snapshot.arena_center_world_x, snapshot.arena_center_world_y};
     state_.match.match_running = snapshot.match_running;
     state_.match.match_finished = snapshot.match_finished;
     state_.match.red_team_kills = snapshot.red_team_kills;
@@ -639,6 +701,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         player.rune_placing_mode = player_snapshot.rune_placing_mode;
         player.selected_rune_type = static_cast<RuneType>(player_snapshot.selected_rune_type);
         player.rune_place_cooldown_remaining = player_snapshot.rune_place_cooldown_remaining;
+        player.awaiting_respawn = player_snapshot.awaiting_respawn;
+        player.respawn_remaining = player_snapshot.respawn_remaining;
         state_.players.push_back(player);
 
         auto render_it = render_player_positions_.find(player.id);
@@ -690,6 +754,18 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     state_.explosions.clear();
 
+    state_.damage_popups.clear();
+    for (const auto& popup_snapshot : snapshot.damage_popups) {
+        DamagePopup popup;
+        popup.pos = {popup_snapshot.pos_x, popup_snapshot.pos_y};
+        popup.amount = popup_snapshot.amount;
+        popup.age_seconds = popup_snapshot.age_seconds;
+        popup.lifetime_seconds = popup_snapshot.lifetime_seconds;
+        popup.rise_per_second = popup_snapshot.rise_per_second;
+        popup.alive = popup_snapshot.alive;
+        state_.damage_popups.push_back(popup);
+    }
+
     int max_order = 0;
     for (const auto& rune : state_.runes) {
         max_order = std::max(max_order, rune.placement_order);
@@ -704,6 +780,12 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
 ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
     ServerSnapshotMessage snapshot;
     snapshot.time_remaining = state_.match.time_remaining;
+    snapshot.shrink_tiles_per_second = state_.match.shrink_tiles_per_second;
+    snapshot.min_arena_radius_tiles = state_.match.min_arena_radius_tiles;
+    snapshot.arena_radius_tiles = state_.match.arena_radius_tiles;
+    snapshot.arena_radius_world = state_.match.arena_radius_world;
+    snapshot.arena_center_world_x = state_.match.arena_center_world.x;
+    snapshot.arena_center_world_y = state_.match.arena_center_world.y;
     snapshot.match_running = state_.match.match_running;
     snapshot.match_finished = state_.match.match_finished;
     snapshot.red_team_kills = state_.match.red_team_kills;
@@ -729,6 +811,8 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         player_snapshot.rune_placing_mode = player.rune_placing_mode;
         player_snapshot.selected_rune_type = static_cast<int>(player.selected_rune_type);
         player_snapshot.rune_place_cooldown_remaining = player.rune_place_cooldown_remaining;
+        player_snapshot.awaiting_respawn = player.awaiting_respawn;
+        player_snapshot.respawn_remaining = player.respawn_remaining;
         snapshot.players.push_back(player_snapshot);
     }
 
@@ -773,6 +857,18 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() const {
         wall_snapshot.hp = wall.hp;
         wall_snapshot.alive = wall.alive;
         snapshot.ice_walls.push_back(wall_snapshot);
+    }
+
+    for (const auto& popup : state_.damage_popups) {
+        DamagePopupSnapshot popup_snapshot;
+        popup_snapshot.pos_x = popup.pos.x;
+        popup_snapshot.pos_y = popup.pos.y;
+        popup_snapshot.amount = popup.amount;
+        popup_snapshot.age_seconds = popup.age_seconds;
+        popup_snapshot.lifetime_seconds = popup.lifetime_seconds;
+        popup_snapshot.rise_per_second = popup.rise_per_second;
+        popup_snapshot.alive = popup.alive;
+        snapshot.damage_popups.push_back(popup_snapshot);
     }
 
     return snapshot;
@@ -823,6 +919,7 @@ void GameApp::SimulateHostGameplay(float dt) {
 
     ResolvePlayerCollisions();
     UpdateIceWalls(dt);
+    UpdateArena(dt);
 
     for (auto& player : state_.players) {
         if (player.melee_active_remaining > 0.0f && player.alive) {
@@ -832,6 +929,8 @@ void GameApp::SimulateHostGameplay(float dt) {
 
     UpdateProjectiles(dt);
     UpdateExplosions(dt);
+    UpdateRespawns(dt);
+    UpdateDamagePopups(dt);
     most_kills_mode_.Update(state_, event_queue_, dt);
     HandleEventsHost();
 
@@ -844,6 +943,8 @@ void GameApp::SimulateHostGameplay(float dt) {
 void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& input, float dt) {
     if (!player.alive) {
         player.vel = {0.0f, 0.0f};
+        player.melee_active_remaining = 0.0f;
+        player.action_state = PlayerActionState::Idle;
         return;
     }
 
@@ -909,6 +1010,175 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
     } else {
         player.action_state = PlayerActionState::Idle;
     }
+}
+
+void GameApp::UpdateArena(float dt) {
+    if (!state_.match.match_running || state_.match.match_finished) {
+        return;
+    }
+    if (state_.map.cell_size <= 0) {
+        return;
+    }
+
+    state_.match.arena_radius_tiles = std::max(
+        state_.match.min_arena_radius_tiles,
+        state_.match.arena_radius_tiles - state_.match.shrink_tiles_per_second * dt);
+    state_.match.arena_radius_world = state_.match.arena_radius_tiles * static_cast<float>(state_.map.cell_size);
+
+    for (auto& player : state_.players) {
+        if (!player.alive) {
+            continue;
+        }
+
+        if (!IsOutsideArena(player.pos)) {
+            player.outside_zone_damage_accumulator = 0.0f;
+            continue;
+        }
+
+        player.outside_zone_damage_accumulator += Constants::kArenaUnsafeDamagePerSecond * dt;
+        const int zone_damage = static_cast<int>(std::floor(player.outside_zone_damage_accumulator));
+        if (zone_damage > 0) {
+            player.outside_zone_damage_accumulator -= static_cast<float>(zone_damage);
+            ApplyDamageToPlayer(player, -1, zone_damage, "outside_zone", false);
+        }
+    }
+}
+
+void GameApp::UpdateRespawns(float dt) {
+    for (auto& player : state_.players) {
+        if (!player.awaiting_respawn) {
+            continue;
+        }
+        player.respawn_remaining = std::max(0.0f, player.respawn_remaining - dt);
+        if (player.respawn_remaining > 0.0f) {
+            continue;
+        }
+
+        player.awaiting_respawn = false;
+        player.alive = true;
+        player.hp = Constants::kMaxHp;
+        player.vel = {0.0f, 0.0f};
+        player.rune_placing_mode = false;
+        player.melee_active_remaining = 0.0f;
+        player.melee_cooldown_remaining = 0.0f;
+        player.outside_zone_damage_accumulator = 0.0f;
+        player.action_state = PlayerActionState::Idle;
+        player.pos = ComputeRespawnPosition(player);
+        CollisionWorld::ResolvePlayerVsWorld(state_.map, player);
+        ResolvePlayerVsIceWalls(player);
+        render_player_positions_[player.id] = player.pos;
+    }
+}
+
+void GameApp::UpdateDamagePopups(float dt) {
+    for (auto& popup : state_.damage_popups) {
+        if (!popup.alive) {
+            continue;
+        }
+        popup.age_seconds += dt;
+        popup.pos.y -= popup.rise_per_second * dt;
+        if (popup.age_seconds >= popup.lifetime_seconds) {
+            popup.alive = false;
+        }
+    }
+
+    state_.damage_popups.erase(
+        std::remove_if(state_.damage_popups.begin(), state_.damage_popups.end(),
+                       [](const DamagePopup& popup) { return !popup.alive; }),
+        state_.damage_popups.end());
+}
+
+void GameApp::SpawnDamagePopup(Vector2 world_pos, int amount) {
+    if (amount <= 0) {
+        return;
+    }
+    DamagePopup popup;
+    popup.pos = world_pos;
+    popup.amount = amount;
+    popup.age_seconds = 0.0f;
+    popup.lifetime_seconds = Constants::kDamagePopupLifetimeSeconds;
+    popup.rise_per_second = Constants::kDamagePopupRisePerSecond;
+    popup.alive = true;
+    state_.damage_popups.push_back(popup);
+}
+
+bool GameApp::ApplyDamageToPlayer(Player& target, int attacker_player_id, int damage, const char* source,
+                                  bool count_kill_for_attacker) {
+    if (!target.alive || damage <= 0) {
+        return false;
+    }
+
+    target.hp = std::max(0, target.hp - damage);
+    event_queue_.Push(PlayerHitEvent{attacker_player_id, target.id, damage, source != nullptr ? source : "unknown"});
+    SpawnDamagePopup(target.pos, damage);
+
+    if (target.hp <= 0) {
+        HandlePlayerDeath(target, attacker_player_id, count_kill_for_attacker);
+    }
+    return true;
+}
+
+void GameApp::HandlePlayerDeath(Player& victim, int killer_player_id, bool count_kill_for_attacker) {
+    if (!victim.alive) {
+        return;
+    }
+
+    victim.alive = false;
+    victim.hp = 0;
+    victim.awaiting_respawn = true;
+    victim.respawn_remaining = Constants::kRespawnDelaySeconds;
+    victim.rune_placing_mode = false;
+    victim.melee_active_remaining = 0.0f;
+    victim.melee_cooldown_remaining = 0.0f;
+    victim.melee_hit_target_ids.clear();
+    victim.outside_zone_damage_accumulator = 0.0f;
+    victim.action_state = PlayerActionState::Idle;
+    victim.vel = {0.0f, 0.0f};
+    event_queue_.Push(PlayerDiedEvent{victim.id, killer_player_id});
+
+    if (!count_kill_for_attacker || killer_player_id < 0 || killer_player_id == victim.id) {
+        return;
+    }
+
+    if (Player* killer = FindPlayerById(killer_player_id)) {
+        killer->kills += 1;
+        if (killer->team == Constants::kTeamRed) {
+            state_.match.red_team_kills += 1;
+        } else {
+            state_.match.blue_team_kills += 1;
+        }
+    }
+}
+
+bool GameApp::IsOutsideArena(Vector2 world_pos) const {
+    if (state_.match.arena_radius_world <= 0.0f) {
+        return false;
+    }
+    const Vector2 delta = Vector2Subtract(world_pos, state_.match.arena_center_world);
+    return Vector2LengthSqr(delta) > state_.match.arena_radius_world * state_.match.arena_radius_world;
+}
+
+Vector2 GameApp::ClampToArenaWithBuffer(Vector2 world_pos, float buffer_tiles) const {
+    const float buffer_world = std::max(0.0f, buffer_tiles) * static_cast<float>(state_.map.cell_size);
+    const float allowed_radius = std::max(0.0f, state_.match.arena_radius_world + buffer_world);
+    const Vector2 center = state_.match.arena_center_world;
+    const Vector2 delta = Vector2Subtract(world_pos, center);
+    const float distance = Vector2Length(delta);
+    if (distance <= allowed_radius || distance <= 0.0001f) {
+        return world_pos;
+    }
+    return Vector2Add(center, Vector2Scale(delta, allowed_radius / distance));
+}
+
+Vector2 GameApp::ComputeRespawnPosition(const Player& player) const {
+    Vector2 respawn = CellToWorldCenter(player.spawn_cell);
+    respawn = ClampToArenaWithBuffer(respawn, Constants::kArenaSpawnBufferTiles);
+
+    const float map_width = static_cast<float>(state_.map.width * state_.map.cell_size);
+    const float map_height = static_cast<float>(state_.map.height * state_.map.cell_size);
+    respawn.x = std::clamp(respawn.x, player.radius, std::max(player.radius, map_width - player.radius));
+    respawn.y = std::clamp(respawn.y, player.radius, std::max(player.radius, map_height - player.radius));
+    return respawn;
 }
 
 void GameApp::UpdateIceWalls(float dt) {
@@ -1070,26 +1340,9 @@ void GameApp::UpdateProjectiles(float dt) {
                     continue;
                 }
 
-                target.hp -= projectile.damage;
-                event_queue_.Push(
-                    PlayerHitEvent{projectile.owner_player_id, target.id, projectile.damage, "fire_bolt"});
                 destroy_projectile = true;
                 excluded_target_id = target.id;
-
-                if (target.hp <= 0 && target.alive) {
-                    target.alive = false;
-                    target.hp = 0;
-                    event_queue_.Push(PlayerDiedEvent{target.id, projectile.owner_player_id});
-
-                    if (Player* killer = FindPlayerById(projectile.owner_player_id)) {
-                        killer->kills += 1;
-                        if (killer->team == Constants::kTeamRed) {
-                            state_.match.red_team_kills += 1;
-                        } else {
-                            state_.match.blue_team_kills += 1;
-                        }
-                    }
-                }
+                ApplyDamageToPlayer(target, projectile.owner_player_id, projectile.damage, "fire_bolt", true);
 
                 break;
             }
@@ -1168,25 +1421,8 @@ void GameApp::UpdateExplosions(float dt) {
                 continue;
             }
 
-            target.hp -= explosion.damage;
-            event_queue_.Push(
-                PlayerHitEvent{explosion.owner_player_id, target.id, explosion.damage, "fire_bolt_explosion"});
             explosion.already_hit_target_ids.push_back(target.id);
-
-            if (target.hp <= 0 && target.alive) {
-                target.alive = false;
-                target.hp = 0;
-                event_queue_.Push(PlayerDiedEvent{target.id, explosion.owner_player_id});
-
-                if (Player* killer = FindPlayerById(explosion.owner_player_id)) {
-                    killer->kills += 1;
-                    if (killer->team == Constants::kTeamRed) {
-                        state_.match.red_team_kills += 1;
-                    } else {
-                        state_.match.blue_team_kills += 1;
-                    }
-                }
-            }
+            ApplyDamageToPlayer(target, explosion.owner_player_id, explosion.damage, "fire_bolt_explosion", true);
         }
 
         if (explosion.age_seconds >= explosion.duration_seconds) {
@@ -1295,21 +1531,8 @@ void GameApp::HandleMeleeHit(Player& attacker) {
             continue;
         }
 
-        target.hp -= Constants::kMeleeDamage;
-        event_queue_.Push(PlayerHitEvent{attacker.id, target.id, Constants::kMeleeDamage, "melee"});
+        ApplyDamageToPlayer(target, attacker.id, Constants::kMeleeDamage, "melee", true);
         attacker.melee_hit_target_ids.push_back(target.id);
-
-        if (target.hp <= 0 && target.alive) {
-            target.alive = false;
-            target.hp = 0;
-            attacker.kills += 1;
-            if (attacker.team == Constants::kTeamRed) {
-                state_.match.red_team_kills += 1;
-            } else {
-                state_.match.blue_team_kills += 1;
-            }
-            event_queue_.Push(PlayerDiedEvent{target.id, attacker.id});
-        }
     }
 }
 
@@ -1533,6 +1756,7 @@ void GameApp::RenderWorld() {
     RenderParticles();
     RenderPlayers();
     RenderMeleeAttacks();
+    RenderDamagePopups();
     RenderRunePlacementOverlay();
     EndMode2D();
 }
@@ -1551,12 +1775,19 @@ void GameApp::RenderMap() {
             const Rectangle dst = SnapRect(
                 {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
                  static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
+            const Vector2 tile_center = {dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f};
+            const bool dimmed = IsOutsideArena(tile_center);
+            const Color tint = dimmed ? Color{static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
+                                              static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
+                                              static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
+                                              255}
+                                      : WHITE;
 
             if (has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
                 const Rectangle src = InsetSourceRect(
                     sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
                     Constants::kAtlasSampleInsetPixels);
-                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
                 if (tile == TileType::SpawnPoint) {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                 Color{240, 240, 240, 180});
@@ -1565,10 +1796,15 @@ void GameApp::RenderMap() {
                 const Rectangle src = InsetSourceRect(
                     sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
                     Constants::kAtlasSampleInsetPixels);
-                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
             } else {
                 Color fallback = Color{34, 120, 34, 255};
                 if (tile == TileType::Water) fallback = Color{26, 96, 152, 255};
+                if (dimmed) {
+                    fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
+                                     static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
+                                     static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness), 255};
+                }
                 DrawRectangleRec(dst, fallback);
             }
         }
@@ -1793,6 +2029,23 @@ void GameApp::RenderParticles() {
         } else {
             DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
         }
+    }
+}
+
+void GameApp::RenderDamagePopups() {
+    for (const auto& popup : state_.damage_popups) {
+        if (!popup.alive) {
+            continue;
+        }
+
+        const float ratio = std::clamp(1.0f - popup.age_seconds / std::max(0.001f, popup.lifetime_seconds), 0.0f, 1.0f);
+        const unsigned char alpha = static_cast<unsigned char>(255.0f * ratio);
+        const char* text = TextFormat("-%d", popup.amount);
+        const int font_size = Constants::kDamagePopupFontSize;
+        const int text_w = MeasureText(text, font_size);
+        const Vector2 draw_pos = {std::roundf(popup.pos.x - static_cast<float>(text_w) * 0.5f), std::roundf(popup.pos.y)};
+        DrawText(text, static_cast<int>(draw_pos.x), static_cast<int>(draw_pos.y), font_size,
+                 Color{255, 50, 50, alpha});
     }
 }
 

@@ -32,6 +32,12 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     nlohmann::json out;
     out["server_tick"] = message.server_tick;
     out["time_remaining"] = message.time_remaining;
+    out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
+    out["min_arena_radius_tiles"] = message.min_arena_radius_tiles;
+    out["arena_radius_tiles"] = message.arena_radius_tiles;
+    out["arena_radius_world"] = message.arena_radius_world;
+    out["arena_center_world_x"] = message.arena_center_world_x;
+    out["arena_center_world_y"] = message.arena_center_world_y;
     out["match_running"] = message.match_running;
     out["match_finished"] = message.match_finished;
     out["red_team_kills"] = message.red_team_kills;
@@ -58,6 +64,8 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"rune_placing_mode", player.rune_placing_mode},
             {"selected_rune_type", player.selected_rune_type},
             {"rune_place_cooldown_remaining", player.rune_place_cooldown_remaining},
+            {"awaiting_respawn", player.awaiting_respawn},
+            {"respawn_remaining", player.respawn_remaining},
         });
     }
 
@@ -107,6 +115,19 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
         });
     }
 
+    out["damage_popups"] = nlohmann::json::array();
+    for (const auto& popup : message.damage_popups) {
+        out["damage_popups"].push_back({
+            {"pos_x", popup.pos_x},
+            {"pos_y", popup.pos_y},
+            {"amount", popup.amount},
+            {"age_seconds", popup.age_seconds},
+            {"lifetime_seconds", popup.lifetime_seconds},
+            {"rise_per_second", popup.rise_per_second},
+            {"alive", popup.alive},
+        });
+    }
+
     return out;
 }
 
@@ -114,6 +135,12 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     ServerSnapshotMessage out;
     out.server_tick = json.value("server_tick", 0);
     out.time_remaining = json.value("time_remaining", 0.0f);
+    out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
+    out.min_arena_radius_tiles = json.value("min_arena_radius_tiles", 0.0f);
+    out.arena_radius_tiles = json.value("arena_radius_tiles", 0.0f);
+    out.arena_radius_world = json.value("arena_radius_world", 0.0f);
+    out.arena_center_world_x = json.value("arena_center_world_x", 0.0f);
+    out.arena_center_world_y = json.value("arena_center_world_y", 0.0f);
     out.match_running = json.value("match_running", false);
     out.match_finished = json.value("match_finished", false);
     out.red_team_kills = json.value("red_team_kills", 0);
@@ -141,6 +168,8 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.rune_placing_mode = item.value("rune_placing_mode", false);
             player.selected_rune_type = item.value("selected_rune_type", 0);
             player.rune_place_cooldown_remaining = item.value("rune_place_cooldown_remaining", 0.0f);
+            player.awaiting_respawn = item.value("awaiting_respawn", false);
+            player.respawn_remaining = item.value("respawn_remaining", 0.0f);
             out.players.push_back(player);
         }
     }
@@ -197,12 +226,29 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
         }
     }
 
+    const auto popups_it = json.find("damage_popups");
+    if (popups_it != json.end() && popups_it->is_array()) {
+        for (const auto& item : *popups_it) {
+            DamagePopupSnapshot popup;
+            popup.pos_x = item.value("pos_x", 0.0f);
+            popup.pos_y = item.value("pos_y", 0.0f);
+            popup.amount = item.value("amount", 0);
+            popup.age_seconds = item.value("age_seconds", 0.0f);
+            popup.lifetime_seconds = item.value("lifetime_seconds", 0.0f);
+            popup.rise_per_second = item.value("rise_per_second", 0.0f);
+            popup.alive = item.value("alive", true);
+            out.damage_popups.push_back(popup);
+        }
+    }
+
     return out;
 }
 
 nlohmann::json ToJson(const LobbyStateMessage& message) {
     nlohmann::json out;
     out["host_can_start"] = message.host_can_start;
+    out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
+    out["min_arena_radius_tiles"] = message.min_arena_radius_tiles;
     out["players"] = nlohmann::json::array();
     for (const auto& player : message.players) {
         out["players"].push_back({{"player_id", player.player_id}, {"name", player.name}});
@@ -213,6 +259,8 @@ nlohmann::json ToJson(const LobbyStateMessage& message) {
 std::optional<LobbyStateMessage> LobbyStateFromJson(const nlohmann::json& json) {
     LobbyStateMessage out;
     out.host_can_start = json.value("host_can_start", false);
+    out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
+    out.min_arena_radius_tiles = json.value("min_arena_radius_tiles", 0.0f);
 
     const auto players_it = json.find("players");
     if (players_it != json.end() && players_it->is_array()) {
