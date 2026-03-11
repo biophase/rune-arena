@@ -2009,6 +2009,58 @@ void GameApp::RenderMap() {
 
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
+    const auto is_grass_family = [](TileType tile) {
+        return tile == TileType::Grass || tile == TileType::SpawnPoint;
+    };
+
+    const auto compute_grass_bitmask = [&](int x, int y) {
+        int mask = 0;
+        const GridCoord north = {x, y - 1};
+        const GridCoord west = {x - 1, y};
+        const GridCoord east = {x + 1, y};
+        const GridCoord south = {x, y + 1};
+        const GridCoord north_west = {x - 1, y - 1};
+        const GridCoord north_east = {x + 1, y - 1};
+        const GridCoord south_west = {x - 1, y + 1};
+        const GridCoord south_east = {x + 1, y + 1};
+
+        const bool has_n = state_.map.IsInside(north) && is_grass_family(state_.map.GetTile(north));
+        const bool has_w = state_.map.IsInside(west) && is_grass_family(state_.map.GetTile(west));
+        const bool has_e = state_.map.IsInside(east) && is_grass_family(state_.map.GetTile(east));
+        const bool has_s = state_.map.IsInside(south) && is_grass_family(state_.map.GetTile(south));
+
+        // 8-bit layout:
+        // NW=1, N=2, NE=4, W=8, E=16, SW=32, S=64, SE=128
+        if (has_n) {
+            mask |= 2;
+        }
+        if (has_w) {
+            mask |= 8;
+        }
+        if (has_e) {
+            mask |= 16;
+        }
+        if (has_s) {
+            mask |= 64;
+        }
+
+        // Corner bits only count when both adjacent cardinals are present.
+        if (has_n && has_w && state_.map.IsInside(north_west) && is_grass_family(state_.map.GetTile(north_west))) {
+            mask |= 1;
+        }
+        if (has_n && has_e && state_.map.IsInside(north_east) && is_grass_family(state_.map.GetTile(north_east))) {
+            mask |= 4;
+        }
+        if (has_s && has_w && state_.map.IsInside(south_west) && is_grass_family(state_.map.GetTile(south_west))) {
+            mask |= 32;
+        }
+        if (has_s && has_e && state_.map.IsInside(south_east) && is_grass_family(state_.map.GetTile(south_east))) {
+            mask |= 128;
+        }
+
+        return mask;
+    };
 
     for (int y = 0; y < state_.map.height; ++y) {
         for (int x = 0; x < state_.map.width; ++x) {
@@ -2025,10 +2077,38 @@ void GameApp::RenderMap() {
                                       : WHITE;
 
             if (has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
-                const Rectangle src = InsetSourceRect(
-                    sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
-                    Constants::kAtlasSampleInsetPixels);
-                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+                if (has_grass_bitmask) {
+                    const int mask = compute_grass_bitmask(x, y);
+                    const bool has_background =
+                        sprite_metadata_.HasBitmaskLayer("tile_grass", mask, SpriteFrameLayer::Background);
+                    const bool has_foreground =
+                        sprite_metadata_.HasBitmaskLayer("tile_grass", mask, SpriteFrameLayer::Foreground);
+
+                    Rectangle src = {};
+                    if (has_background &&
+                        sprite_metadata_.GetBitmaskFrame("tile_grass", mask, render_time_seconds_,
+                                                         SpriteFrameLayer::Background, src)) {
+                        DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), dst, {0, 0},
+                                       0.0f, tint);
+                    }
+                    if (has_foreground &&
+                        sprite_metadata_.GetBitmaskFrame("tile_grass", mask, render_time_seconds_,
+                                                         SpriteFrameLayer::Foreground, src)) {
+                        DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), dst, {0, 0},
+                                       0.0f, tint);
+                    }
+                    if (!has_background && !has_foreground &&
+                        sprite_metadata_.GetBitmaskFrame("tile_grass", mask, render_time_seconds_,
+                                                         SpriteFrameLayer::Single, src)) {
+                        DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), dst, {0, 0},
+                                       0.0f, tint);
+                    }
+                } else {
+                    const Rectangle src = InsetSourceRect(
+                        sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
+                        Constants::kAtlasSampleInsetPixels);
+                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+                }
                 if (tile == TileType::SpawnPoint) {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                 Color{240, 240, 240, 180});

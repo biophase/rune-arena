@@ -1,0 +1,16 @@
+0: none
+1: TL
+2: TR
+3: TL+TR
+4: BR
+5: TL+BR (ambiguous)
+6: TR+BR
+7: TL+TR+BR
+8: BL
+9: TL+BL
+10: TR+BL (ambiguous)
+11: TL+TR+BL
+12: BR+BL
+13: TL+BR+BL
+14: TR+BR+BL
+15: all
