@@ -7,8 +7,8 @@ namespace Constants {
 
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
-constexpr int kDefaultPort = 7867;
-constexpr int kDiscoveryPort = 7868;
+constexpr int kDefaultPort = 7967;
+constexpr int kDiscoveryPort = 7968;
 
 constexpr double kFixedDt = 1.0 / 60.0;
 constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 30.0f;
