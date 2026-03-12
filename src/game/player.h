@@ -38,6 +38,7 @@ struct Player {
     float melee_cooldown_remaining = 0.0f;
     float melee_active_remaining = 0.0f;
     std::vector<int> melee_hit_target_ids;
+    std::vector<int> melee_hit_object_ids;
 
     // Emitter-capable state (currently not active on players).
     bool emitter_enabled = false;

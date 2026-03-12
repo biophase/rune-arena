@@ -102,6 +102,20 @@ struct IceWallSnapshot {
     bool alive = true;
 };
 
+struct MapObjectSnapshot {
+    int id = -1;
+    std::string prototype_id;
+    int cell_x = 0;
+    int cell_y = 0;
+    int object_type = 0;
+    int hp = 0;
+    int state = 0;
+    float state_time = 0.0f;
+    float death_duration = 0.0f;
+    bool collision_enabled = false;
+    bool alive = true;
+};
+
 struct ServerSnapshotMessage {
     int server_tick = 0;
     int snapshot_id = 0;
@@ -127,6 +141,8 @@ struct ServerSnapshotMessage {
     std::vector<int> removed_projectile_ids;
     std::vector<IceWallSnapshot> ice_walls;
     std::vector<int> removed_ice_wall_ids;
+    std::vector<MapObjectSnapshot> map_objects;
+    std::vector<int> removed_map_object_ids;
 };
 
 struct LobbyPlayerInfo {

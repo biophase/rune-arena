@@ -65,7 +65,7 @@ constexpr float kArenaSpawnBufferTiles = 3.0f;
 constexpr float kOutsideZoneTileBrightness = 0.5f;
 constexpr float kPlayerHealthBarWidth = 32.0f;
 constexpr float kPlayerHealthBarHeight = 4.0f;
-constexpr float kPlayerHealthBarOffsetY = 8.0f;
+constexpr float kPlayerHealthBarOffsetY = 11.0f;
 constexpr int kPlayerHealthTextFontSize = 6;
 constexpr int kPlayerHealthBarFillR = 189;
 constexpr int kPlayerHealthBarFillG = 217;
@@ -80,6 +80,11 @@ constexpr int kRuneCooldownTextFontSize = 14;
 constexpr float kDamagePopupLifetimeSeconds = 0.75f;
 constexpr float kDamagePopupRisePerSecond = 20.0f;
 constexpr int kDamagePopupFontSize = 11;
+constexpr float kCameraShakeDurationSeconds = 0.12f;
+constexpr float kCameraShakePixels = 7.0f;
+// Vertical anchor inside the lightning sprite used for start/end alignment.
+// 0.5 keeps the beam centerline on the world-space start/end points.
+constexpr float kLightningAnchorYRatio = 0.5f;
 
 constexpr int kRuneCellSize = 32;
 constexpr int kPlacementPreviewRadiusCells = 3;
@@ -98,6 +103,31 @@ constexpr const char* kTileMappingPath = "assets/maps/tiles_mapping.json";
 constexpr const char* kSpriteMetadataPath = "assets/sprite_sheet.json";
 constexpr const char* kSpriteMetadataTallPath = "assets/sprite_sheet_32x64.json";
 constexpr const char* kSpellPatternPath = "assets/spell_patterns.json";
+constexpr const char* kObjectsConfigPath = "assets/objects.json";
+constexpr const char* kMenuBackgroundPath = "assets/menu_background.png";
+constexpr const char* kSfxFireballCreatedPath = "assets/sfx/ogg/SFX/Spells/Fireball 1.ogg";
+constexpr const char* kSfxMeleeAttackPath = "assets/sfx/ogg/SFX/Attacks/Sword Attacks Hits and Blocks/Sword Attack 1.ogg";
+constexpr const char* kSfxCreateRunePath = "assets/sfx/ogg/SFX/Torch/Light Torch 1.ogg";
+constexpr const char* kSfxExplosionPath = "assets/sfx/ogg/SFX/Spells/Spell Impact 1.ogg";
+constexpr const char* kSfxVaseBreakingPath = "assets/sfx/ogg/SFX/Torch/Torch Impact 2.ogg";
+constexpr const char* kSfxIceWallFreezePath = "assets/sfx/ogg/SFX/Spells/Ice Freeze 1.ogg";
+constexpr const char* kSfxIceWallMeltPath = "assets/sfx/ogg/SFX/Spells/Ice Wall 2.ogg";
+constexpr const char* kSfxPlayerDeathPath = "assets/sfx/ogg/SFX/Spells/Spell Impact 3.ogg";
+constexpr const char* kSfxPlayerDamagedPath = "assets/sfx/ogg/SFX/Attacks/Sword Attacks Hits and Blocks/Sword Impact Hit 1.ogg";
+constexpr const char* kSfxDrinkPotionPath = "assets/sfx/ogg/SFX/Spells/Waterspray 1.ogg";
+constexpr const char* kBgmForestDayPath = "assets/sfx/ogg/BGS Loops/Forest Day/Forest Day.ogg";
+
+constexpr float kBgmVolume = 0.35f;
+constexpr float kSfxVolumeFireballCreated = 0.70f;
+constexpr float kSfxVolumeMeleeAttack = 0.60f;
+constexpr float kSfxVolumeCreateRune = 0.70f;
+constexpr float kSfxVolumeExplosion = 0.80f;
+constexpr float kSfxVolumeVaseBreaking = 0.80f;
+constexpr float kSfxVolumeIceWallFreeze = 0.80f;
+constexpr float kSfxVolumeIceWallMelt = 0.75f;
+constexpr float kSfxVolumePlayerDeath = 0.85f;
+constexpr float kSfxVolumePlayerDamaged = 0.60f;
+constexpr float kSfxVolumeDrinkPotion = 0.65f;
 
 constexpr const char* kConfigFolderName = "RuneArena";
 constexpr const char* kConfigFileName = "config.json";

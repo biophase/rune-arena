@@ -7,7 +7,7 @@ namespace binary {
 namespace {
 
 constexpr uint32_t kMagic = 0x524E4152;  // RNAR
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;
 constexpr size_t kHeaderSize = 12;
 
 class BufferWriter {
@@ -274,6 +274,22 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteBool(wall.alive);
     }
 
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.map_objects.size(), 65535)));
+    for (size_t i = 0; i < message.map_objects.size() && i < 65535; ++i) {
+        const auto& object = message.map_objects[i];
+        payload.WriteI32(object.id);
+        payload.WriteString(object.prototype_id);
+        payload.WriteI32(object.cell_x);
+        payload.WriteI32(object.cell_y);
+        payload.WriteI32(object.object_type);
+        payload.WriteI32(object.hp);
+        payload.WriteI32(object.state);
+        payload.WriteF32(object.state_time);
+        payload.WriteF32(object.death_duration);
+        payload.WriteBool(object.collision_enabled);
+        payload.WriteBool(object.alive);
+    }
+
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_player_ids.size(), 65535)));
     for (size_t i = 0; i < message.removed_player_ids.size() && i < 65535; ++i) {
         payload.WriteI32(message.removed_player_ids[i]);
@@ -289,6 +305,10 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_ice_wall_ids.size(), 65535)));
     for (size_t i = 0; i < message.removed_ice_wall_ids.size() && i < 65535; ++i) {
         payload.WriteI32(message.removed_ice_wall_ids[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_map_object_ids.size(), 65535)));
+    for (size_t i = 0; i < message.removed_map_object_ids.size() && i < 65535; ++i) {
+        payload.WriteI32(message.removed_map_object_ids[i]);
     }
 
     return MakePacket(PacketType::Snapshot, payload.Bytes());
@@ -369,6 +389,21 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         out.ice_walls.push_back(wall);
     }
 
+    uint16_t object_count = 0;
+    if (!reader.ReadU16(object_count)) return std::nullopt;
+    out.map_objects.reserve(object_count);
+    for (uint16_t i = 0; i < object_count; ++i) {
+        MapObjectSnapshot object;
+        if (!reader.ReadI32(object.id) || !reader.ReadString(object.prototype_id) || !reader.ReadI32(object.cell_x) ||
+            !reader.ReadI32(object.cell_y) || !reader.ReadI32(object.object_type) || !reader.ReadI32(object.hp) ||
+            !reader.ReadI32(object.state) || !reader.ReadF32(object.state_time) ||
+            !reader.ReadF32(object.death_duration) || !reader.ReadBool(object.collision_enabled) ||
+            !reader.ReadBool(object.alive)) {
+            return std::nullopt;
+        }
+        out.map_objects.push_back(object);
+    }
+
     uint16_t removed_player_count = 0;
     if (!reader.ReadU16(removed_player_count)) return std::nullopt;
     out.removed_player_ids.reserve(removed_player_count);
@@ -403,6 +438,15 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         int32_t id = 0;
         if (!reader.ReadI32(id)) return std::nullopt;
         out.removed_ice_wall_ids.push_back(id);
+    }
+
+    uint16_t removed_object_count = 0;
+    if (!reader.ReadU16(removed_object_count)) return std::nullopt;
+    out.removed_map_object_ids.reserve(removed_object_count);
+    for (uint16_t i = 0; i < removed_object_count; ++i) {
+        int32_t id = 0;
+        if (!reader.ReadI32(id)) return std::nullopt;
+        out.removed_map_object_ids.push_back(id);
     }
 
     if (!reader.End()) return std::nullopt;

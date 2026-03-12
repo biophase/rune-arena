@@ -8,6 +8,7 @@
 #include <limits>
 #include <random>
 #include <string>
+#include <unordered_set>
 
 #include <raygui.h>
 #include <raymath.h>
@@ -88,9 +89,18 @@ std::string ResolveRuntimePath(const char* relative_path) {
     return direct.string();
 }
 
+bool IsLoadedSound(const Sound& sound) {
+    return sound.frameCount > 0 && sound.stream.buffer != nullptr;
+}
+
+bool IsLoadedMusic(const Music& music) {
+    return music.stream.buffer != nullptr && music.ctxData != nullptr;
+}
+
 }  // namespace
 
-GameApp::GameApp(bool force_windowed_launch) : force_windowed_launch_(force_windowed_launch) {}
+GameApp::GameApp(bool force_windowed_launch)
+    : force_windowed_launch_(force_windowed_launch), rng_(std::random_device{}()) {}
 
 bool GameApp::Initialize() {
     const bool loaded_settings = config_manager_.Load(settings_);
@@ -118,6 +128,9 @@ bool GameApp::Initialize() {
         ToggleFullscreen();
     }
 
+    InitAudioDevice();
+    audio_device_ready_ = IsAudioDeviceReady();
+
     // Basic dark UI look.
     GuiSetStyle(DEFAULT, BACKGROUND_COLOR, ColorToInt(Color{25, 28, 34, 255}));
     GuiSetStyle(DEFAULT, TEXT_COLOR_NORMAL, ColorToInt(Color{221, 228, 245, 255}));
@@ -126,23 +139,33 @@ bool GameApp::Initialize() {
 
     resolved_map_path_ = ResolveRuntimePath(Constants::kDefaultMapPath);
     resolved_tile_mapping_path_ = ResolveRuntimePath(Constants::kTileMappingPath);
+    resolved_objects_config_path_ = ResolveRuntimePath(Constants::kObjectsConfigPath);
     resolved_sprite_metadata_path_ = ResolveRuntimePath(Constants::kSpriteMetadataPath);
     resolved_sprite_metadata_tall_path_ = ResolveRuntimePath(Constants::kSpriteMetadataTallPath);
     resolved_spell_pattern_path_ = ResolveRuntimePath(Constants::kSpellPatternPath);
+    resolved_menu_background_path_ = ResolveRuntimePath(Constants::kMenuBackgroundPath);
 
-    if (!map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, state_.map)) {
+    objects_database_.LoadFromFile(resolved_objects_config_path_);
+
+    if (!map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, &objects_database_, state_.map)) {
         // Fallback: small grass-only map.
         state_.map.width = 24;
         state_.map.height = 16;
         state_.map.cell_size = Constants::kRuneCellSize;
         state_.map.tiles.assign(static_cast<size_t>(state_.map.width * state_.map.height), TileType::Grass);
         state_.map.decorations.assign(static_cast<size_t>(state_.map.width * state_.map.height), "");
+        state_.map.object_seeds.clear();
         state_.map.spawn_points = {{2, 2}, {state_.map.width - 3, state_.map.height - 3}};
     }
 
     sprite_metadata_.LoadFromFile(resolved_sprite_metadata_path_);
     sprite_metadata_tall_.LoadFromFile(resolved_sprite_metadata_tall_path_);
     spell_patterns_.LoadFromFile(resolved_spell_pattern_path_);
+    if (FileExists(resolved_menu_background_path_.c_str())) {
+        menu_background_texture_ = LoadTexture(resolved_menu_background_path_.c_str());
+        has_menu_background_texture_ = (menu_background_texture_.id != 0);
+    }
+    LoadAudioAssets();
     camera_.target = {0.0f, 0.0f};
     camera_.offset = {static_cast<float>(settings_.window_width) * 0.5f,
                       static_cast<float>(settings_.window_height) * 0.5f};
@@ -173,6 +196,7 @@ void GameApp::Run() {
 
         network_manager_.Poll();
         lan_discovery_.Update();
+        UpdateAudioFrame();
 
         while (accumulator >= Constants::kFixedDt) {
             Update(static_cast<float>(Constants::kFixedDt));
@@ -208,8 +232,17 @@ void GameApp::Shutdown() {
 
     lan_discovery_.Stop();
     network_manager_.Stop();
+    UnloadAudioAssets();
     sprite_metadata_.Unload();
     sprite_metadata_tall_.Unload();
+    if (has_menu_background_texture_) {
+        UnloadTexture(menu_background_texture_);
+        has_menu_background_texture_ = false;
+    }
+    if (audio_device_ready_) {
+        CloseAudioDevice();
+        audio_device_ready_ = false;
+    }
     CloseWindow();
 }
 
@@ -236,6 +269,109 @@ void GameApp::Update(float dt) {
 
 void GameApp::UpdateMainMenu(float /*dt*/) {
     // Discovery keeps running so joinable hosts appear while user is in the menu.
+}
+
+void GameApp::LoadAudioAssets() {
+    if (!audio_device_ready_) {
+        return;
+    }
+
+    auto load_sfx = [&](LoadedSfx& clip, const char* path, float volume) {
+        const std::string resolved = ResolveRuntimePath(path);
+        if (!FileExists(resolved.c_str())) {
+            clip.loaded = false;
+            return;
+        }
+        clip.sound = LoadSound(resolved.c_str());
+        clip.loaded = IsLoadedSound(clip.sound);
+        if (clip.loaded) {
+            SetSoundVolume(clip.sound, volume);
+        }
+    };
+
+    load_sfx(sfx_fireball_created_, Constants::kSfxFireballCreatedPath, Constants::kSfxVolumeFireballCreated);
+    load_sfx(sfx_melee_attack_, Constants::kSfxMeleeAttackPath, Constants::kSfxVolumeMeleeAttack);
+    load_sfx(sfx_create_rune_, Constants::kSfxCreateRunePath, Constants::kSfxVolumeCreateRune);
+    load_sfx(sfx_explosion_, Constants::kSfxExplosionPath, Constants::kSfxVolumeExplosion);
+    load_sfx(sfx_vase_breaking_, Constants::kSfxVaseBreakingPath, Constants::kSfxVolumeVaseBreaking);
+    load_sfx(sfx_ice_wall_freeze_, Constants::kSfxIceWallFreezePath, Constants::kSfxVolumeIceWallFreeze);
+    load_sfx(sfx_ice_wall_melt_, Constants::kSfxIceWallMeltPath, Constants::kSfxVolumeIceWallMelt);
+    load_sfx(sfx_player_death_, Constants::kSfxPlayerDeathPath, Constants::kSfxVolumePlayerDeath);
+    load_sfx(sfx_player_damaged_, Constants::kSfxPlayerDamagedPath, Constants::kSfxVolumePlayerDamaged);
+    load_sfx(sfx_drink_potion_, Constants::kSfxDrinkPotionPath, Constants::kSfxVolumeDrinkPotion);
+
+    const std::string bgm_path = ResolveRuntimePath(Constants::kBgmForestDayPath);
+    if (FileExists(bgm_path.c_str())) {
+        bgm_forest_day_ = LoadMusicStream(bgm_path.c_str());
+        has_bgm_forest_day_ = IsLoadedMusic(bgm_forest_day_);
+        if (has_bgm_forest_day_) {
+            SetMusicVolume(bgm_forest_day_, Constants::kBgmVolume);
+            PlayMusicStream(bgm_forest_day_);
+        }
+    }
+}
+
+void GameApp::UnloadAudioAssets() {
+    if (!audio_device_ready_) {
+        return;
+    }
+
+    auto unload_sfx = [](LoadedSfx& clip) {
+        if (!clip.loaded) {
+            return;
+        }
+        UnloadSound(clip.sound);
+        clip = LoadedSfx{};
+    };
+
+    unload_sfx(sfx_fireball_created_);
+    unload_sfx(sfx_melee_attack_);
+    unload_sfx(sfx_create_rune_);
+    unload_sfx(sfx_explosion_);
+    unload_sfx(sfx_vase_breaking_);
+    unload_sfx(sfx_ice_wall_freeze_);
+    unload_sfx(sfx_ice_wall_melt_);
+    unload_sfx(sfx_player_death_);
+    unload_sfx(sfx_player_damaged_);
+    unload_sfx(sfx_drink_potion_);
+
+    if (has_bgm_forest_day_) {
+        StopMusicStream(bgm_forest_day_);
+        UnloadMusicStream(bgm_forest_day_);
+        has_bgm_forest_day_ = false;
+    }
+}
+
+void GameApp::UpdateAudioFrame() {
+    if (!audio_device_ready_) {
+        return;
+    }
+    if (has_bgm_forest_day_) {
+        UpdateMusicStream(bgm_forest_day_);
+    }
+}
+
+bool GameApp::IsWorldPointInsideCameraView(Vector2 world_pos) const {
+    if (camera_.zoom <= 0.0001f) {
+        return false;
+    }
+    const float view_w = static_cast<float>(GetScreenWidth()) / camera_.zoom;
+    const float view_h = static_cast<float>(GetScreenHeight()) / camera_.zoom;
+    const float left = camera_.target.x - camera_.offset.x / camera_.zoom;
+    const float top = camera_.target.y - camera_.offset.y / camera_.zoom;
+    const float right = left + view_w;
+    const float bottom = top + view_h;
+    return world_pos.x >= left && world_pos.x <= right && world_pos.y >= top && world_pos.y <= bottom;
+}
+
+void GameApp::PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const {
+    if (!audio_device_ready_ || !loaded) {
+        return;
+    }
+    if (!IsWorldPointInsideCameraView(world_pos)) {
+        return;
+    }
+    PlaySound(sound);
 }
 
 void GameApp::UpdateConnecting(float /*dt*/) {
@@ -369,6 +505,8 @@ void GameApp::UpdateMatch(float dt) {
 
     UpdateProjectileEmitters();
     UpdateParticles(dt);
+    UpdateLightningEffects(dt);
+    camera_shake_time_remaining_ = std::max(0.0f, camera_shake_time_remaining_ - dt);
     UpdateCameraTarget();
 }
 
@@ -480,6 +618,7 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
     }
     local_player->pos = Vector2Add(local_player->pos, Vector2Scale(local_player->vel, dt));
     CollisionWorld::ResolvePlayerVsWorld(state_.map, *local_player);
+    ResolvePlayerVsMapObjects(*local_player);
     ResolvePlayerVsIceWalls(*local_player);
 
     if (local_player->melee_active_remaining > 0.0f) {
@@ -504,6 +643,13 @@ void GameApp::Render() {
 
     switch (app_screen_) {
         case AppScreen::MainMenu: {
+            if (has_menu_background_texture_) {
+                Rectangle src = {0.0f, 0.0f, static_cast<float>(menu_background_texture_.width),
+                                 static_cast<float>(menu_background_texture_.height)};
+                Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+                DrawTexturePro(menu_background_texture_, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+            }
+
             const MainMenuUiResult ui_result =
                 DrawMainMenu(player_name_buffer_, sizeof(player_name_buffer_), join_ip_buffer_, sizeof(join_ip_buffer_),
                              lan_discovery_.GetHosts(), config_manager_.GetConfigPath(), controls_bindings_,
@@ -690,7 +836,7 @@ void GameApp::ReturnToMainMenu() {
     }
 
     state_ = GameState{};
-    map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, state_.map);
+    map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, &objects_database_, state_.map);
 
     event_queue_.Clear();
     latest_remote_inputs_.clear();
@@ -701,6 +847,7 @@ void GameApp::ReturnToMainMenu() {
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
+    pending_object_spawns_.clear();
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
@@ -732,7 +879,9 @@ void GameApp::StartMatchAsHost() {
     state_.runes.clear();
     state_.projectiles.clear();
     state_.explosions.clear();
+    state_.lightning_effects.clear();
     state_.ice_walls.clear();
+    state_.map_objects.clear();
     state_.particles.clear();
     state_.next_entity_id = 1;
     state_.next_rune_placement_order = 1;
@@ -745,6 +894,7 @@ void GameApp::StartMatchAsHost() {
     pending_primary_pressed_ = false;
     pending_select_fire_ = false;
     pending_select_water_ = false;
+    pending_object_spawns_.clear();
 
     Player host_player;
     host_player.id = 0;
@@ -780,6 +930,8 @@ void GameApp::StartMatchAsHost() {
         render_player_positions_[state_.players[i].id] = state_.players[i].pos;
     }
 
+    RebuildMapObjectsFromSeeds();
+
     state_.local_player_id = 0;
 
     network_manager_.BroadcastMatchStart(MatchStartMessage{});
@@ -789,10 +941,44 @@ void GameApp::StartMatchAsHost() {
 }
 
 void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) {
+    struct PreviousPlayerState {
+        int hp = 0;
+        bool alive = false;
+        PlayerActionState action_state = PlayerActionState::Idle;
+    };
+
     std::unordered_map<int, int> previous_hp;
     previous_hp.reserve(state_.players.size());
+    std::unordered_map<int, PreviousPlayerState> previous_player_state;
+    previous_player_state.reserve(state_.players.size());
     for (const auto& player : state_.players) {
         previous_hp[player.id] = player.hp;
+        previous_player_state[player.id] = {player.hp, player.alive, player.action_state};
+    }
+    std::unordered_set<int> previous_rune_ids;
+    previous_rune_ids.reserve(state_.runes.size());
+    for (const auto& rune : state_.runes) {
+        previous_rune_ids.insert(rune.id);
+    }
+    std::unordered_map<int, Vector2> previous_projectile_positions;
+    previous_projectile_positions.reserve(state_.projectiles.size());
+    for (const auto& projectile : state_.projectiles) {
+        previous_projectile_positions[projectile.id] = projectile.pos;
+    }
+    std::unordered_map<int, IceWallState> previous_wall_states;
+    previous_wall_states.reserve(state_.ice_walls.size());
+    for (const auto& wall : state_.ice_walls) {
+        previous_wall_states[wall.id] = wall.state;
+    }
+    std::unordered_map<int, MapObjectState> previous_object_states;
+    previous_object_states.reserve(state_.map_objects.size());
+    std::unordered_map<int, Vector2> previous_consumable_positions;
+    previous_consumable_positions.reserve(state_.map_objects.size());
+    for (const auto& object : state_.map_objects) {
+        previous_object_states[object.id] = object.state;
+        if (object.type == ObjectType::Consumable && object.alive) {
+            previous_consumable_positions[object.id] = CellToWorldCenter(object.cell);
+        }
     }
 
     Vector2 previous_local_pos = {0.0f, 0.0f};
@@ -869,6 +1055,31 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         rune.active = rune_snapshot.active;
         state_.runes.push_back(rune);
     }
+    if (!network_manager_.IsHost()) {
+        for (const auto& rune : state_.runes) {
+            if (!rune.active || previous_rune_ids.find(rune.id) != previous_rune_ids.end()) {
+                continue;
+            }
+            Particle rune_cast_vfx;
+            rune_cast_vfx.pos = CellToWorldCenter(rune.cell);
+            rune_cast_vfx.vel = {0.0f, 0.0f};
+            rune_cast_vfx.acc = {0.0f, 0.0f};
+            rune_cast_vfx.drag = 0.0f;
+            rune_cast_vfx.animation_key = "rune_cast_effect";
+            rune_cast_vfx.facing = "default";
+            rune_cast_vfx.age_seconds = 0.0f;
+            rune_cast_vfx.max_cycles = 1;
+            rune_cast_vfx.alive = true;
+            state_.particles.push_back(rune_cast_vfx);
+            PlaySfxIfVisible(sfx_create_rune_.sound, sfx_create_rune_.loaded, rune_cast_vfx.pos);
+
+            Vector2 start = CellToWorldCenter(rune.cell);
+            if (const Player* caster = FindPlayerById(rune.owner_player_id)) {
+                start = caster->pos;
+            }
+            SpawnLightningEffect(start, CellToWorldCenter(rune.cell), 0.3f);
+        }
+    }
 
     state_.projectiles.clear();
     for (const auto& projectile_snapshot : snapshot.projectiles) {
@@ -887,6 +1098,23 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         projectile.alive = projectile_snapshot.alive;
         state_.projectiles.push_back(projectile);
     }
+    if (!network_manager_.IsHost()) {
+        std::unordered_set<int> current_projectile_ids;
+        current_projectile_ids.reserve(state_.projectiles.size());
+        for (const auto& projectile : state_.projectiles) {
+            current_projectile_ids.insert(projectile.id);
+            if (previous_projectile_positions.find(projectile.id) == previous_projectile_positions.end() &&
+                projectile.animation_key == "projectile_fire_bolt") {
+                PlaySfxIfVisible(sfx_fireball_created_.sound, sfx_fireball_created_.loaded, projectile.pos);
+            }
+        }
+        for (const auto& [projectile_id, projectile_pos] : previous_projectile_positions) {
+            if (current_projectile_ids.find(projectile_id) != current_projectile_ids.end()) {
+                continue;
+            }
+            PlaySfxIfVisible(sfx_explosion_.sound, sfx_explosion_.loaded, projectile_pos);
+        }
+    }
 
     state_.ice_walls.clear();
     for (const auto& wall_snapshot : snapshot.ice_walls) {
@@ -901,6 +1129,65 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         wall.alive = wall_snapshot.alive;
         state_.ice_walls.push_back(wall);
     }
+    if (!network_manager_.IsHost()) {
+        bool played_freeze = false;
+        bool played_melt = false;
+        for (const auto& wall : state_.ice_walls) {
+            const auto previous_state_it = previous_wall_states.find(wall.id);
+            const Vector2 center = CellToWorldCenter(wall.cell);
+            if (previous_state_it == previous_wall_states.end()) {
+                if (!played_freeze) {
+                    PlaySfxIfVisible(sfx_ice_wall_freeze_.sound, sfx_ice_wall_freeze_.loaded, center);
+                    played_freeze = true;
+                }
+                continue;
+            }
+            if (previous_state_it->second != IceWallState::Dying && wall.state == IceWallState::Dying) {
+                if (!played_melt) {
+                    PlaySfxIfVisible(sfx_ice_wall_melt_.sound, sfx_ice_wall_melt_.loaded, center);
+                    played_melt = true;
+                }
+            }
+        }
+    }
+    state_.map_objects.clear();
+    for (const auto& object_snapshot : snapshot.map_objects) {
+        MapObjectInstance object;
+        object.id = object_snapshot.id;
+        object.prototype_id = object_snapshot.prototype_id;
+        object.cell = {object_snapshot.cell_x, object_snapshot.cell_y};
+        object.type = static_cast<ObjectType>(object_snapshot.object_type);
+        object.hp = object_snapshot.hp;
+        object.state = static_cast<MapObjectState>(object_snapshot.state);
+        object.state_time = object_snapshot.state_time;
+        object.death_duration = object_snapshot.death_duration;
+        object.collision_enabled = object_snapshot.collision_enabled;
+        object.alive = object_snapshot.alive;
+        if (const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id)) {
+            object.walkable = proto->walkable;
+            object.stops_projectiles = proto->stops_projectiles;
+        }
+        state_.map_objects.push_back(object);
+    }
+    if (!network_manager_.IsHost()) {
+        std::unordered_set<int> current_object_ids;
+        current_object_ids.reserve(state_.map_objects.size());
+        for (const auto& object : state_.map_objects) {
+            current_object_ids.insert(object.id);
+            const auto previous_state_it = previous_object_states.find(object.id);
+            if (previous_state_it == previous_object_states.end()) {
+                continue;
+            }
+            if (previous_state_it->second != MapObjectState::Dying && object.state == MapObjectState::Dying) {
+                PlaySfxIfVisible(sfx_vase_breaking_.sound, sfx_vase_breaking_.loaded, CellToWorldCenter(object.cell));
+            }
+        }
+        for (const auto& [object_id, world_pos] : previous_consumable_positions) {
+            if (current_object_ids.find(object_id) == current_object_ids.end()) {
+                PlaySfxIfVisible(sfx_drink_potion_.sound, sfx_drink_potion_.loaded, world_pos);
+            }
+        }
+    }
     state_.explosions.clear();
 
     if (!network_manager_.IsHost()) {
@@ -910,7 +1197,21 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 continue;
             }
             if (previous_hp_it->second > player.hp) {
-                SpawnDamagePopup(player.pos, previous_hp_it->second - player.hp);
+                SpawnDamagePopup(player.pos, previous_hp_it->second - player.hp, false);
+                PlaySfxIfVisible(sfx_player_damaged_.sound, sfx_player_damaged_.loaded, player.pos);
+            } else if (previous_hp_it->second < player.hp) {
+                SpawnDamagePopup(player.pos, player.hp - previous_hp_it->second, true);
+            }
+
+            const auto previous_state_it = previous_player_state.find(player.id);
+            if (previous_state_it != previous_player_state.end()) {
+                if (previous_state_it->second.alive && !player.alive) {
+                    PlaySfxIfVisible(sfx_player_death_.sound, sfx_player_death_.loaded, player.pos);
+                }
+                if (previous_state_it->second.action_state != PlayerActionState::Slashing &&
+                    player.action_state == PlayerActionState::Slashing) {
+                    PlaySfxIfVisible(sfx_melee_attack_.sound, sfx_melee_attack_.loaded, player.pos);
+                }
             }
         }
     }
@@ -945,6 +1246,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 }
                 replay.pos = Vector2Add(replay.pos, Vector2Scale(replay.vel, static_cast<float>(Constants::kFixedDt)));
                 CollisionWorld::ResolvePlayerVsWorld(state_.map, replay);
+                ResolvePlayerVsMapObjects(replay);
                 ResolvePlayerVsIceWalls(replay);
             }
 
@@ -982,6 +1284,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     for (const auto& wall : state_.ice_walls) {
         max_entity_id = std::max(max_entity_id, wall.id);
+    }
+    for (const auto& object : state_.map_objects) {
+        max_entity_id = std::max(max_entity_id, object.id);
     }
     state_.next_rune_placement_order = max_order + 1;
     state_.next_entity_id = max_entity_id + 1;
@@ -1090,6 +1395,22 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
         snapshot.ice_walls.push_back(wall_snapshot);
     }
 
+    for (const auto& object : state_.map_objects) {
+        MapObjectSnapshot object_snapshot;
+        object_snapshot.id = object.id;
+        object_snapshot.prototype_id = object.prototype_id;
+        object_snapshot.cell_x = object.cell.x;
+        object_snapshot.cell_y = object.cell.y;
+        object_snapshot.object_type = static_cast<int>(object.type);
+        object_snapshot.hp = object.hp;
+        object_snapshot.state = static_cast<int>(object.state);
+        object_snapshot.state_time = object.state_time;
+        object_snapshot.death_duration = object.death_duration;
+        object_snapshot.collision_enabled = object.collision_enabled;
+        object_snapshot.alive = object.alive;
+        snapshot.map_objects.push_back(object_snapshot);
+    }
+
     return snapshot;
 }
 
@@ -1171,6 +1492,7 @@ void GameApp::SimulateHostGameplay(float dt) {
 
     UpdateProjectiles(dt);
     UpdateExplosions(dt);
+    UpdateMapObjects(dt);
     UpdateRespawns(dt);
     UpdateDamagePopups(dt);
     most_kills_mode_.Update(state_, event_queue_, dt);
@@ -1221,7 +1543,9 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
             player.melee_cooldown_remaining = Constants::kMeleeCooldownSeconds;
             player.melee_active_remaining = Constants::kMeleeActiveWindowSeconds;
             player.melee_hit_target_ids.clear();
+            player.melee_hit_object_ids.clear();
             player.action_state = PlayerActionState::Slashing;
+            PlaySfxIfVisible(sfx_melee_attack_.sound, sfx_melee_attack_.loaded, player.pos);
         }
     }
 
@@ -1243,6 +1567,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
 
     player.pos = Vector2Add(player.pos, Vector2Scale(player.vel, dt));
     CollisionWorld::ResolvePlayerVsWorld(state_.map, player);
+    ResolvePlayerVsMapObjects(player);
     ResolvePlayerVsIceWalls(player);
 
     if (player.melee_active_remaining > 0.0f) {
@@ -1309,6 +1634,7 @@ void GameApp::UpdateRespawns(float dt) {
         player.action_state = PlayerActionState::Idle;
         player.pos = ComputeRespawnPosition(player);
         CollisionWorld::ResolvePlayerVsWorld(state_.map, player);
+        ResolvePlayerVsMapObjects(player);
         ResolvePlayerVsIceWalls(player);
         render_player_positions_[player.id] = player.pos;
     }
@@ -1332,13 +1658,225 @@ void GameApp::UpdateDamagePopups(float dt) {
         state_.damage_popups.end());
 }
 
-void GameApp::SpawnDamagePopup(Vector2 world_pos, int amount) {
+MapObjectInstance* GameApp::FindMapObjectById(int id) {
+    auto it = std::find_if(state_.map_objects.begin(), state_.map_objects.end(),
+                           [&](const MapObjectInstance& object) { return object.id == id; });
+    return it == state_.map_objects.end() ? nullptr : &(*it);
+}
+
+const MapObjectInstance* GameApp::FindMapObjectById(int id) const {
+    auto it = std::find_if(state_.map_objects.begin(), state_.map_objects.end(),
+                           [&](const MapObjectInstance& object) { return object.id == id; });
+    return it == state_.map_objects.end() ? nullptr : &(*it);
+}
+
+const ObjectPrototype* GameApp::FindObjectPrototype(const std::string& prototype_id) const {
+    return objects_database_.FindById(prototype_id);
+}
+
+void GameApp::SpawnObjectInstanceAtCell(const std::string& prototype_id, const GridCoord& cell) {
+    const ObjectPrototype* proto = FindObjectPrototype(prototype_id);
+    if (proto == nullptr || proto->type == ObjectType::Terrain) {
+        return;
+    }
+    if (!state_.map.IsInside(cell)) {
+        return;
+    }
+
+    MapObjectInstance object;
+    object.id = state_.next_entity_id++;
+    object.prototype_id = prototype_id;
+    object.cell = cell;
+    object.type = proto->type;
+    object.walkable = proto->walkable;
+    object.stops_projectiles = proto->stops_projectiles;
+    object.collision_enabled = (!proto->walkable || proto->stops_projectiles);
+    object.hp = proto->destructible_hp;
+    object.state = MapObjectState::Active;
+    object.state_time = 0.0f;
+    object.death_duration = 0.0f;
+    object.alive = true;
+    state_.map_objects.push_back(object);
+}
+
+void GameApp::RebuildMapObjectsFromSeeds() {
+    state_.map_objects.clear();
+    for (const auto& seed : state_.map.object_seeds) {
+        SpawnObjectInstanceAtCell(seed.prototype_id, seed.cell);
+    }
+}
+
+void GameApp::ResolvePlayerVsMapObjects(Player& player) {
+    if (!player.alive) {
+        return;
+    }
+
+    for (const auto& object : state_.map_objects) {
+        if (!object.alive || !object.collision_enabled || object.walkable) {
+            continue;
+        }
+
+        const Rectangle aabb = {static_cast<float>(object.cell.x * state_.map.cell_size),
+                                static_cast<float>(object.cell.y * state_.map.cell_size),
+                                static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)};
+        Vector2 normal = {0.0f, 0.0f};
+        float penetration = 0.0f;
+        if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+            continue;
+        }
+
+        player.pos = Vector2Add(player.pos, Vector2Scale(normal, penetration));
+        const float velocity_dot = Vector2DotProduct(player.vel, normal);
+        if (velocity_dot < 0.0f) {
+            player.vel = Vector2Subtract(player.vel, Vector2Scale(normal, velocity_dot));
+        }
+    }
+}
+
+bool GameApp::ApplyObjectDamage(int object_instance_id, int amount, int /*source_player_id*/, const char* /*source*/) {
+    MapObjectInstance* object = FindMapObjectById(object_instance_id);
+    if (object == nullptr || !object->alive || amount <= 0 || object->hp <= 0) {
+        return false;
+    }
+
+    const ObjectPrototype* proto = FindObjectPrototype(object->prototype_id);
+    if (proto == nullptr || proto->type != ObjectType::Destructible) {
+        return false;
+    }
+
+    object->hp = std::max(0, object->hp - amount);
+    SpawnDamagePopup(CellToWorldCenter(object->cell), amount, false);
+
+    if (object->hp > 0) {
+        return true;
+    }
+
+    PlaySfxIfVisible(sfx_vase_breaking_.sound, sfx_vase_breaking_.loaded, CellToWorldCenter(object->cell));
+
+    object->collision_enabled = false;
+
+    for (const DropEntry& drop : proto->on_destroy_drops) {
+        std::uniform_real_distribution<float> chance_dist(0.0f, 1.0f);
+        if (chance_dist(rng_) > drop.chance) {
+            continue;
+        }
+        const int min_count = std::max(1, drop.min_count);
+        const int max_count = std::max(min_count, drop.max_count);
+        std::uniform_int_distribution<int> count_dist(min_count, max_count);
+        const int count = count_dist(rng_);
+        for (int i = 0; i < count; ++i) {
+            pending_object_spawns_.push_back({drop.object_id, object->cell});
+        }
+    }
+
+    if (!proto->death_animation.empty()) {
+        object->state = MapObjectState::Dying;
+        object->state_time = 0.0f;
+        object->death_duration = 0.4f;
+
+        int frame_count = 0;
+        float fps = 1.0f;
+        const SpriteMetadataLoader* metadata =
+            (proto->sprite_sheet == SpriteSheetType::Tall32x64) ? &sprite_metadata_tall_ : &sprite_metadata_;
+        if (metadata->GetAnimationStats(proto->death_animation, "default", frame_count, fps) && frame_count > 0) {
+            object->death_duration = static_cast<float>(frame_count) / std::max(0.001f, fps);
+        }
+    } else {
+        object->alive = false;
+    }
+
+    return true;
+}
+
+bool GameApp::TryConsumeObject(int object_instance_id, int player_id) {
+    MapObjectInstance* object = FindMapObjectById(object_instance_id);
+    Player* player = FindPlayerById(player_id);
+    if (object == nullptr || player == nullptr || !object->alive || !player->alive) {
+        return false;
+    }
+
+    const ObjectPrototype* proto = FindObjectPrototype(object->prototype_id);
+    if (proto == nullptr || proto->type != ObjectType::Consumable) {
+        return false;
+    }
+
+    for (const EffectSpec& effect : proto->consumable_effects) {
+        if (effect.type == EffectType::IncreaseCurrentHealth) {
+            const int before_hp = player->hp;
+            player->hp = std::min(Constants::kMaxHp, player->hp + std::max(0, effect.amount));
+            const int healed = player->hp - before_hp;
+            if (healed > 0) {
+                SpawnDamagePopup(player->pos, healed, true);
+            }
+        } else if (effect.type == EffectType::SpawnObject) {
+            const int min_count = std::max(1, effect.min_count);
+            const int max_count = std::max(min_count, effect.max_count);
+            std::uniform_int_distribution<int> count_dist(min_count, max_count);
+            const int count = count_dist(rng_);
+            for (int i = 0; i < count; ++i) {
+                pending_object_spawns_.push_back({effect.object_id, object->cell});
+            }
+        }
+    }
+
+    PlaySfxIfVisible(sfx_drink_potion_.sound, sfx_drink_potion_.loaded, player->pos);
+    object->collision_enabled = false;
+    object->alive = false;
+    return true;
+}
+
+void GameApp::UpdateMapObjects(float dt) {
+    for (auto& object : state_.map_objects) {
+        if (!object.alive) {
+            continue;
+        }
+
+        if (object.state == MapObjectState::Dying) {
+            object.state_time += dt;
+            if (object.state_time >= object.death_duration) {
+                object.alive = false;
+            }
+            continue;
+        }
+
+        if (object.type == ObjectType::Consumable) {
+            const Rectangle aabb = {static_cast<float>(object.cell.x * state_.map.cell_size),
+                                    static_cast<float>(object.cell.y * state_.map.cell_size),
+                                    static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)};
+            for (const auto& player : state_.players) {
+                if (!player.alive) {
+                    continue;
+                }
+                Vector2 normal = {0.0f, 0.0f};
+                float penetration = 0.0f;
+                if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+                    continue;
+                }
+                TryConsumeObject(object.id, player.id);
+                break;
+            }
+        }
+    }
+
+    for (const auto& pending : pending_object_spawns_) {
+        SpawnObjectInstanceAtCell(pending.prototype_id, pending.cell);
+    }
+    pending_object_spawns_.clear();
+
+    state_.map_objects.erase(
+        std::remove_if(state_.map_objects.begin(), state_.map_objects.end(),
+                       [](const MapObjectInstance& object) { return !object.alive; }),
+        state_.map_objects.end());
+}
+
+void GameApp::SpawnDamagePopup(Vector2 world_pos, int amount, bool is_heal) {
     if (amount <= 0) {
         return;
     }
     DamagePopup popup;
     popup.pos = world_pos;
     popup.amount = amount;
+    popup.is_heal = is_heal;
     popup.age_seconds = 0.0f;
     popup.lifetime_seconds = Constants::kDamagePopupLifetimeSeconds;
     popup.rise_per_second = Constants::kDamagePopupRisePerSecond;
@@ -1354,7 +1892,8 @@ bool GameApp::ApplyDamageToPlayer(Player& target, int attacker_player_id, int da
 
     target.hp = std::max(0, target.hp - damage);
     event_queue_.Push(PlayerHitEvent{attacker_player_id, target.id, damage, source != nullptr ? source : "unknown"});
-    SpawnDamagePopup(target.pos, damage);
+    SpawnDamagePopup(target.pos, damage, false);
+    PlaySfxIfVisible(sfx_player_damaged_.sound, sfx_player_damaged_.loaded, target.pos);
 
     if (target.hp <= 0) {
         HandlePlayerDeath(target, attacker_player_id, count_kill_for_attacker);
@@ -1375,10 +1914,12 @@ void GameApp::HandlePlayerDeath(Player& victim, int killer_player_id, bool count
     victim.melee_active_remaining = 0.0f;
     victim.melee_cooldown_remaining = 0.0f;
     victim.melee_hit_target_ids.clear();
+    victim.melee_hit_object_ids.clear();
     victim.outside_zone_damage_accumulator = 0.0f;
     victim.action_state = PlayerActionState::Idle;
     victim.vel = {0.0f, 0.0f};
     event_queue_.Push(PlayerDiedEvent{victim.id, killer_player_id});
+    PlaySfxIfVisible(sfx_player_death_.sound, sfx_player_death_.loaded, victim.pos);
 
     if (!count_kill_for_attacker || killer_player_id < 0 || killer_player_id == victim.id) {
         return;
@@ -1452,6 +1993,7 @@ void GameApp::UpdateIceWalls(float dt) {
                 if (wall.hp <= 0.0f) {
                     wall.state = IceWallState::Dying;
                     wall.state_time = 0.0f;
+                    PlaySfxIfVisible(sfx_ice_wall_melt_.sound, sfx_ice_wall_melt_.loaded, CellToWorldCenter(wall.cell));
                 }
                 break;
             case IceWallState::Dying:
@@ -1548,6 +2090,27 @@ void GameApp::UpdateProjectiles(float dt) {
         }
 
         if (!destroy_projectile) {
+            for (auto& object : state_.map_objects) {
+                if (!object.alive || !object.collision_enabled || !object.stops_projectiles) {
+                    continue;
+                }
+
+                const Rectangle aabb = {static_cast<float>(object.cell.x * state_.map.cell_size),
+                                        static_cast<float>(object.cell.y * state_.map.cell_size),
+                                        static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)};
+                Vector2 normal = {0.0f, 0.0f};
+                float penetration = 0.0f;
+                if (!CollisionWorld::CircleVsAabb(projectile.pos, projectile.radius, aabb, normal, penetration)) {
+                    continue;
+                }
+
+                ApplyObjectDamage(object.id, projectile.damage, projectile.owner_player_id, "projectile");
+                destroy_projectile = true;
+                break;
+            }
+        }
+
+        if (!destroy_projectile) {
             const int wall_cell_size = state_.map.cell_size;
             for (auto& wall : state_.ice_walls) {
                 if (!wall.alive || wall.state != IceWallState::Active) {
@@ -1624,6 +2187,17 @@ void GameApp::SpawnProjectileExplosion(const Projectile& projectile, std::option
 
     state_.explosions.push_back(explosion);
 
+    const float half_w = static_cast<float>(GetScreenWidth()) / std::max(0.001f, (2.0f * camera_.zoom));
+    const float half_h = static_cast<float>(GetScreenHeight()) / std::max(0.001f, (2.0f * camera_.zoom));
+    const float pad = explosion.radius;
+    const bool in_camera_view =
+        projectile.pos.x >= (camera_.target.x - half_w - pad) && projectile.pos.x <= (camera_.target.x + half_w + pad) &&
+        projectile.pos.y >= (camera_.target.y - half_h - pad) && projectile.pos.y <= (camera_.target.y + half_h + pad);
+    if (in_camera_view) {
+        camera_shake_time_remaining_ = std::max(camera_shake_time_remaining_, Constants::kCameraShakeDurationSeconds);
+    }
+    PlaySfxIfVisible(sfx_explosion_.sound, sfx_explosion_.loaded, projectile.pos);
+
     Particle explosion_vfx;
     explosion_vfx.pos = projectile.pos;
     explosion_vfx.vel = {0.0f, 0.0f};
@@ -1678,6 +2252,75 @@ void GameApp::UpdateExplosions(float dt) {
         std::remove_if(state_.explosions.begin(), state_.explosions.end(),
                        [](const Explosion& explosion) { return !explosion.alive; }),
         state_.explosions.end());
+}
+
+void GameApp::SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds) {
+    const float half_tile = 0.5f * static_cast<float>(std::max(1, state_.map.cell_size));
+    const Vector2 half_tile_offset = {0.0f, half_tile};
+
+    LightningEffect effect;
+    effect.id = state_.next_entity_id++;
+    effect.start = Vector2Add(start, half_tile_offset);
+    effect.end = Vector2Add(end, half_tile_offset);
+    effect.idle_duration = std::max(0.0f, idle_duration_seconds);
+    effect.elapsed = 0.0f;
+    effect.dying = false;
+    effect.death_elapsed = 0.0f;
+    effect.death_duration = 0.25f;
+    effect.alive = true;
+
+    const Vector2 delta = Vector2Subtract(end, start);
+    const float distance = Vector2Length(delta);
+    const float target_len = static_cast<float>(std::max(1, state_.map.cell_size));
+    effect.segment_count = std::max(1, static_cast<int>(std::round(distance / std::max(1.0f, target_len))));
+
+    int idle_frame_count = 0;
+    float idle_fps = 1.0f;
+    float cycle_seconds = 0.25f;
+    if (sprite_metadata_.GetAnimationStats("lightning_magic_idle", "default", idle_frame_count, idle_fps) &&
+        idle_frame_count > 0) {
+        cycle_seconds = static_cast<float>(idle_frame_count) / std::max(0.001f, idle_fps);
+    }
+
+    effect.segment_phase_offsets_seconds.resize(static_cast<size_t>(effect.segment_count), 0.0f);
+    std::uniform_real_distribution<float> phase_dist(0.0f, std::max(0.0f, cycle_seconds - 0.0001f));
+    for (float& phase : effect.segment_phase_offsets_seconds) {
+        phase = phase_dist(rng_);
+    }
+
+    int death_frame_count = 0;
+    float death_fps = 1.0f;
+    if (sprite_metadata_.GetAnimationStats("lightning_magic_death", "default", death_frame_count, death_fps) &&
+        death_frame_count > 0) {
+        effect.death_duration = static_cast<float>(death_frame_count) / std::max(0.001f, death_fps);
+    }
+
+    state_.lightning_effects.push_back(effect);
+}
+
+void GameApp::UpdateLightningEffects(float dt) {
+    for (auto& effect : state_.lightning_effects) {
+        if (!effect.alive) {
+            continue;
+        }
+        if (!effect.dying) {
+            effect.elapsed += dt;
+            if (effect.elapsed >= effect.idle_duration) {
+                effect.dying = true;
+                effect.death_elapsed = 0.0f;
+            }
+        } else {
+            effect.death_elapsed += dt;
+            if (effect.death_elapsed >= effect.death_duration) {
+                effect.alive = false;
+            }
+        }
+    }
+
+    state_.lightning_effects.erase(
+        std::remove_if(state_.lightning_effects.begin(), state_.lightning_effects.end(),
+                       [](const LightningEffect& effect) { return !effect.alive; }),
+        state_.lightning_effects.end());
 }
 
 void GameApp::UpdateProjectileEmitters() {
@@ -1747,6 +2390,7 @@ void GameApp::ResolvePlayerCollisions() {
     }
 
     for (auto& player : state_.players) {
+        ResolvePlayerVsMapObjects(player);
         ResolvePlayerVsIceWalls(player);
     }
 }
@@ -1777,6 +2421,29 @@ void GameApp::HandleMeleeHit(Player& attacker) {
 
         ApplyDamageToPlayer(target, attacker.id, Constants::kMeleeDamage, "melee", true);
         attacker.melee_hit_target_ids.push_back(target.id);
+    }
+
+    for (auto& object : state_.map_objects) {
+        if (!object.alive || object.hp <= 0) {
+            continue;
+        }
+        if (std::find(attacker.melee_hit_object_ids.begin(), attacker.melee_hit_object_ids.end(), object.id) !=
+            attacker.melee_hit_object_ids.end()) {
+            continue;
+        }
+
+        const Rectangle aabb = {static_cast<float>(object.cell.x * state_.map.cell_size),
+                                static_cast<float>(object.cell.y * state_.map.cell_size),
+                                static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)};
+        Vector2 normal = {0.0f, 0.0f};
+        float penetration = 0.0f;
+        if (!CollisionWorld::CircleVsAabb(hit_center, Constants::kMeleeHitRadius, aabb, normal, penetration)) {
+            continue;
+        }
+
+        if (ApplyObjectDamage(object.id, Constants::kMeleeDamage, attacker.id, "melee")) {
+            attacker.melee_hit_object_ids.push_back(object.id);
+        }
     }
 }
 
@@ -1818,6 +2485,21 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
     rune.placement_order = state_.next_rune_placement_order++;
     rune.active = true;
     state_.runes.push_back(rune);
+
+    Particle rune_cast_vfx;
+    rune_cast_vfx.pos = CellToWorldCenter(cell);
+    rune_cast_vfx.vel = {0.0f, 0.0f};
+    rune_cast_vfx.acc = {0.0f, 0.0f};
+    rune_cast_vfx.drag = 0.0f;
+    rune_cast_vfx.animation_key = "rune_cast_effect";
+    rune_cast_vfx.facing = "default";
+    rune_cast_vfx.age_seconds = 0.0f;
+    rune_cast_vfx.max_cycles = 1;
+    rune_cast_vfx.alive = true;
+    state_.particles.push_back(rune_cast_vfx);
+
+    SpawnLightningEffect(player.pos, CellToWorldCenter(cell), 0.3f);
+    PlaySfxIfVisible(sfx_create_rune_.sound, sfx_create_rune_.loaded, CellToWorldCenter(cell));
 
     event_queue_.Push(RunePlacedEvent{player.id, player.team, cell, player.selected_rune_type, rune.placement_order});
     player.rune_place_cooldown_remaining = player.rune_place_cooldown_duration;
@@ -1936,9 +2618,13 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
                     if (pattern.spell_name == "fire_bolt") {
                         FireBoltSpell spell(CellToWorldCenter(cast_origin), event.player_id, directional.direction);
                         spell.Cast(state_, event_queue_);
+                        PlaySfxIfVisible(sfx_fireball_created_.sound, sfx_fireball_created_.loaded,
+                                         CellToWorldCenter(cast_origin));
                     } else if (pattern.spell_name == "ice_wall") {
                         IceWallSpell spell(cast_origin, event.player_id, directional.direction);
                         spell.Cast(state_, event_queue_);
+                        PlaySfxIfVisible(sfx_ice_wall_freeze_.sound, sfx_ice_wall_freeze_.loaded,
+                                         CellToWorldCenter(cast_origin));
                     }
 
                     for (auto& rune : state_.runes) {
@@ -1963,7 +2649,19 @@ bool GameApp::IsTileRunePlaceable(const GridCoord& cell) const {
     }
 
     const TileType tile = state_.map.GetTile(cell);
-    return tile == TileType::Grass || tile == TileType::SpawnPoint;
+    if (!(tile == TileType::Grass || tile == TileType::SpawnPoint)) {
+        return false;
+    }
+
+    for (const auto& object : state_.map_objects) {
+        if (!object.alive || object.cell.x != cell.x || object.cell.y != cell.y) {
+            continue;
+        }
+        if (!object.walkable) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool GameApp::IsCellOccupiedByRune(const GridCoord& cell) const {
@@ -2004,9 +2702,11 @@ void GameApp::RenderWorld() {
 
 void GameApp::RenderNonTerrainDepthSorted() {
     enum class RenderKind {
-        Decoration,
+        LegacyDecoration,
+        MapObject,
         Rune,
         IceWall,
+        LightningSegment,
         Projectile,
         Particle,
         Player,
@@ -2016,29 +2716,41 @@ void GameApp::RenderNonTerrainDepthSorted() {
         RenderKind kind = RenderKind::Player;
         float sort_y = 0.0f;
         size_t index = 0;
+        size_t sub_index = 0;
     };
 
     const auto kind_priority = [](RenderKind kind) {
         switch (kind) {
-            case RenderKind::Decoration:
+            case RenderKind::LegacyDecoration:
                 return 0;
-            case RenderKind::Rune:
+            case RenderKind::MapObject:
                 return 1;
-            case RenderKind::IceWall:
+            case RenderKind::Rune:
                 return 2;
-            case RenderKind::Projectile:
+            case RenderKind::IceWall:
                 return 3;
-            case RenderKind::Particle:
+            case RenderKind::LightningSegment:
                 return 4;
+            case RenderKind::Projectile:
+                return 5;
+            case RenderKind::Particle:
+                return 6;
             case RenderKind::Player:
             default:
-                return 5;
+                return 7;
         }
     };
 
     std::vector<RenderItem> items;
+    size_t lightning_segment_total = 0;
+    for (const auto& effect : state_.lightning_effects) {
+        if (effect.alive) {
+            lightning_segment_total += static_cast<size_t>(std::max(1, effect.segment_count));
+        }
+    }
     items.reserve(state_.players.size() + state_.runes.size() + state_.projectiles.size() + state_.particles.size() +
-                  state_.ice_walls.size() + state_.map.decorations.size());
+                  state_.ice_walls.size() + state_.map.decorations.size() + state_.map_objects.size() +
+                  lightning_segment_total);
 
     for (size_t i = 0; i < state_.map.decorations.size(); ++i) {
         if (state_.map.decorations[i].empty()) {
@@ -2046,8 +2758,17 @@ void GameApp::RenderNonTerrainDepthSorted() {
         }
         const int cell_x = static_cast<int>(i % static_cast<size_t>(std::max(1, state_.map.width)));
         const int cell_y = static_cast<int>(i / static_cast<size_t>(std::max(1, state_.map.width)));
-        items.push_back(
-            {RenderKind::Decoration, (static_cast<float>(cell_y) + 1.0f) * static_cast<float>(state_.map.cell_size), i});
+        items.push_back({RenderKind::LegacyDecoration,
+                         (static_cast<float>(cell_y) + 1.0f) * static_cast<float>(state_.map.cell_size), i});
+    }
+
+    for (size_t i = 0; i < state_.map_objects.size(); ++i) {
+        const MapObjectInstance& object = state_.map_objects[i];
+        if (!object.alive) {
+            continue;
+        }
+        items.push_back({RenderKind::MapObject, (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size),
+                         i});
     }
 
     for (size_t i = 0; i < state_.runes.size(); ++i) {
@@ -2064,6 +2785,23 @@ void GameApp::RenderNonTerrainDepthSorted() {
         }
         const float base_y = (static_cast<float>(state_.ice_walls[i].cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
         items.push_back({RenderKind::IceWall, base_y, i});
+    }
+
+    for (size_t i = 0; i < state_.lightning_effects.size(); ++i) {
+        const LightningEffect& effect = state_.lightning_effects[i];
+        if (!effect.alive) {
+            continue;
+        }
+        const Vector2 delta = Vector2Subtract(effect.end, effect.start);
+        const int segments = std::max(1, effect.segment_count);
+        for (int seg = 0; seg < segments; ++seg) {
+            const float t0 = static_cast<float>(seg) / static_cast<float>(segments);
+            const float t1 = static_cast<float>(seg + 1) / static_cast<float>(segments);
+            const Vector2 p0 = Vector2Add(effect.start, Vector2Scale(delta, t0));
+            const Vector2 p1 = Vector2Add(effect.start, Vector2Scale(delta, t1));
+            const float sort_y = (p0.y + p1.y) * 0.5f;
+            items.push_back({RenderKind::LightningSegment, sort_y, i, static_cast<size_t>(seg)});
+        }
     }
 
     for (size_t i = 0; i < state_.projectiles.size(); ++i) {
@@ -2101,7 +2839,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
 
     for (const RenderItem& item : items) {
         switch (item.kind) {
-            case RenderKind::Decoration: {
+            case RenderKind::LegacyDecoration: {
                 if (!has_tall_texture || state_.map.width <= 0) {
                     break;
                 }
@@ -2124,6 +2862,42 @@ void GameApp::RenderNonTerrainDepthSorted() {
                     sprite_metadata_tall_.GetFrame(animation_name, "default", render_time_seconds_),
                     Constants::kAtlasSampleInsetPixels);
                 DrawTexturePro(tall_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                break;
+            }
+            case RenderKind::MapObject: {
+                const MapObjectInstance& object = state_.map_objects[item.index];
+                const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+                if (proto == nullptr) {
+                    break;
+                }
+
+                const bool use_tall = proto->sprite_sheet == SpriteSheetType::Tall32x64;
+                const SpriteMetadataLoader& metadata = use_tall ? sprite_metadata_tall_ : sprite_metadata_;
+                const float dst_w = static_cast<float>(metadata.GetCellWidth() > 0 ? metadata.GetCellWidth() : state_.map.cell_size);
+                const float dst_h = static_cast<float>(metadata.GetCellHeight() > 0 ? metadata.GetCellHeight() : state_.map.cell_size);
+                Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
+                                 static_cast<float>(object.cell.y * state_.map.cell_size) -
+                                     (dst_h - static_cast<float>(state_.map.cell_size)),
+                                 dst_w, dst_h};
+                dst = SnapRect(dst);
+
+                std::string animation = proto->idle_animation;
+                float anim_time = render_time_seconds_;
+                if (object.state == MapObjectState::Dying && !proto->death_animation.empty() &&
+                    metadata.HasAnimation(proto->death_animation)) {
+                    animation = proto->death_animation;
+                    anim_time = object.state_time;
+                }
+
+                if (metadata.IsLoaded() && metadata.HasAnimation(animation)) {
+                    const Texture2D draw_texture = use_tall ? tall_texture : texture;
+                    const Rectangle src =
+                        InsetSourceRect(metadata.GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
+                    DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                } else {
+                    DrawRectangleRec(dst, Color{180, 120, 80, 220});
+                    DrawRectangleLinesEx(dst, 1.0f, Color{30, 20, 12, 255});
+                }
                 break;
             }
             case RenderKind::Rune: {
@@ -2176,6 +2950,52 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 }
                 break;
             }
+            case RenderKind::LightningSegment: {
+                if (!has_texture || !sprite_metadata_.HasAnimation("lightning_magic_idle")) {
+                    break;
+                }
+                if (item.index >= state_.lightning_effects.size()) {
+                    break;
+                }
+                const LightningEffect& effect = state_.lightning_effects[item.index];
+                if (!effect.alive) {
+                    break;
+                }
+
+                const Vector2 delta = Vector2Subtract(effect.end, effect.start);
+                const float total_len = Vector2Length(delta);
+                if (total_len <= 0.001f) {
+                    break;
+                }
+                const int segments = std::max(1, effect.segment_count);
+                const size_t seg = std::min(item.sub_index, static_cast<size_t>(segments - 1));
+                const float t0 = static_cast<float>(seg) / static_cast<float>(segments);
+                const float t1 = static_cast<float>(seg + 1) / static_cast<float>(segments);
+                const Vector2 p0 = Vector2Add(effect.start, Vector2Scale(delta, t0));
+                const Vector2 p1 = Vector2Add(effect.start, Vector2Scale(delta, t1));
+                const Vector2 seg_vec = Vector2Subtract(p1, p0);
+                const float seg_len = std::max(1.0f, Vector2Length(seg_vec));
+                const float rotation = std::atan2f(delta.y, delta.x) * RAD2DEG;
+
+                const char* animation_key = effect.dying ? "lightning_magic_death" : "lightning_magic_idle";
+                if (!sprite_metadata_.HasAnimation(animation_key)) {
+                    break;
+                }
+
+                float anim_time = effect.dying ? effect.death_elapsed : effect.elapsed;
+                if (!effect.dying && seg < effect.segment_phase_offsets_seconds.size()) {
+                    anim_time += effect.segment_phase_offsets_seconds[seg];
+                }
+
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame(animation_key, "default", anim_time),
+                                    Constants::kAtlasSampleInsetPixels);
+                const float seg_h = static_cast<float>(std::max(1, state_.map.cell_size));
+                const float anchor_y = seg_h * Constants::kLightningAnchorYRatio;
+                Rectangle dst = {p0.x, p0.y - anchor_y, seg_len, seg_h};
+                DrawTexturePro(texture, src, dst, {0.0f, anchor_y}, rotation, WHITE);
+                break;
+            }
             case RenderKind::Projectile: {
                 const Projectile& projectile = state_.projectiles[item.index];
                 if (has_texture && sprite_metadata_.HasAnimation(projectile.animation_key)) {
@@ -2218,13 +3038,19 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 }
 
                 const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
-                std::string animation = "wizard_idle";
+                const char* base_prefix = player.team == Constants::kTeamRed ? "wizard_red_" : "wizard_blue_";
+                const char* suffix = "idle";
                 if (player.action_state == PlayerActionState::Slashing) {
-                    animation = "wizard_slash";
+                    suffix = "slash";
                 } else if (player.action_state == PlayerActionState::RunePlacing) {
-                    animation = "wizard_create_rune";
+                    suffix = "create_rune";
                 } else if (is_moving) {
-                    animation = "wizard_walking";
+                    suffix = "walking";
+                }
+                std::string animation = std::string(base_prefix) + suffix;
+                if (!sprite_metadata_.HasAnimation(animation)) {
+                    // Backward compatibility with legacy non-team animation keys.
+                    animation = std::string("wizard_") + suffix;
                 }
 
                 const char* facing = FacingToSpriteFacing(player.facing);
@@ -2240,15 +3066,8 @@ void GameApp::RenderNonTerrainDepthSorted() {
                     }
                     src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
 
-                    Color tint = WHITE;
-                    if (player.team == Constants::kTeamRed) {
-                        tint = Color{255, 215, 215, 255};
-                    } else {
-                        tint = Color{215, 230, 255, 255};
-                    }
-
                     const Texture2D draw_texture = sprite_metadata_.GetTexture(mirror);
-                    DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, tint);
+                    DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
                 } else {
                     const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
                     DrawCircleV(draw_pos, player.radius, fallback);
@@ -2284,6 +3103,15 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 const int text_y =
                     static_cast<int>(health_bar.y + (health_bar.height - static_cast<float>(font_size)) * 0.5f);
                 DrawText(hp_text, text_x, text_y, font_size, BLACK);
+
+                if (player.id != state_.local_player_id && !player.name.empty()) {
+                    const int name_font_size = 8;
+                    const int name_width = MeasureText(player.name.c_str(), name_font_size);
+                    const int name_x =
+                        static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(name_width)) * 0.5f);
+                    const int name_y = static_cast<int>(health_bar.y - static_cast<float>(name_font_size) - 2.0f);
+                    DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
+                }
                 break;
             }
         }
@@ -2588,13 +3416,18 @@ void GameApp::RenderPlayers() {
         }
 
         const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
-        std::string animation = "wizard_idle";
+        const char* base_prefix = player.team == Constants::kTeamRed ? "wizard_red_" : "wizard_blue_";
+        const char* suffix = "idle";
         if (player.action_state == PlayerActionState::Slashing) {
-            animation = "wizard_slash";
+            suffix = "slash";
         } else if (player.action_state == PlayerActionState::RunePlacing) {
-            animation = "wizard_create_rune";
+            suffix = "create_rune";
         } else if (is_moving) {
-            animation = "wizard_walking";
+            suffix = "walking";
+        }
+        std::string animation = std::string(base_prefix) + suffix;
+        if (!sprite_metadata_.HasAnimation(animation)) {
+            animation = std::string("wizard_") + suffix;
         }
 
         const char* facing = FacingToSpriteFacing(player.facing);
@@ -2610,15 +3443,8 @@ void GameApp::RenderPlayers() {
             }
             src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
 
-            Color tint = WHITE;
-            if (player.team == Constants::kTeamRed) {
-                tint = Color{255, 215, 215, 255};
-            } else {
-                tint = Color{215, 230, 255, 255};
-            }
-
             const Texture2D draw_texture = sprite_metadata_.GetTexture(mirror);
-            DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, tint);
+            DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
         } else {
             const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
             DrawCircleV(draw_pos, player.radius, fallback);
@@ -2652,6 +3478,14 @@ void GameApp::RenderPlayers() {
         const int text_y =
             static_cast<int>(health_bar.y + (health_bar.height - static_cast<float>(font_size)) * 0.5f);
         DrawText(hp_text, text_x, text_y, font_size, BLACK);
+
+        if (player.id != state_.local_player_id && !player.name.empty()) {
+            const int name_font_size = 8;
+            const int name_width = MeasureText(player.name.c_str(), name_font_size);
+            const int name_x = static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(name_width)) * 0.5f);
+            const int name_y = static_cast<int>(health_bar.y - static_cast<float>(name_font_size) - 2.0f);
+            DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
+        }
     }
 }
 
@@ -2741,12 +3575,13 @@ void GameApp::RenderDamagePopups() {
 
         const float ratio = std::clamp(1.0f - popup.age_seconds / std::max(0.001f, popup.lifetime_seconds), 0.0f, 1.0f);
         const unsigned char alpha = static_cast<unsigned char>(255.0f * ratio);
-        const char* text = TextFormat("-%d", popup.amount);
+        const char* text = popup.is_heal ? TextFormat("+%d", popup.amount) : TextFormat("-%d", popup.amount);
         const int font_size = Constants::kDamagePopupFontSize;
         const int text_w = MeasureText(text, font_size);
         const Vector2 draw_pos = {std::roundf(popup.pos.x - static_cast<float>(text_w) * 0.5f), std::roundf(popup.pos.y)};
+        const Color tint = popup.is_heal ? Color{90, 230, 120, alpha} : Color{255, 50, 50, alpha};
         DrawText(text, static_cast<int>(draw_pos.x), static_cast<int>(draw_pos.y), font_size,
-                 Color{255, 50, 50, alpha});
+                 tint);
     }
 }
 
@@ -2937,8 +3772,19 @@ void GameApp::UpdateCameraTarget() {
         camera_.target = {std::roundf(render_pos.x), std::roundf(render_pos.y)};
     }
 
-    camera_.offset = {std::roundf(static_cast<float>(GetScreenWidth()) * 0.5f),
-                      std::roundf(static_cast<float>(GetScreenHeight()) * 0.5f)};
+    Vector2 base_offset = {std::roundf(static_cast<float>(GetScreenWidth()) * 0.5f),
+                           std::roundf(static_cast<float>(GetScreenHeight()) * 0.5f)};
+
+    if (camera_shake_time_remaining_ > 0.0f) {
+        const float shake_alpha = std::clamp(camera_shake_time_remaining_ / Constants::kCameraShakeDurationSeconds, 0.0f,
+                                             1.0f);
+        const float amplitude = Constants::kCameraShakePixels * shake_alpha;
+        std::uniform_real_distribution<float> shake_dist(-amplitude, amplitude);
+        base_offset.x += shake_dist(rng_);
+        base_offset.y += shake_dist(rng_);
+    }
+
+    camera_.offset = base_offset;
 }
 
 Vector2 GameApp::GetRenderPlayerPosition(int player_id) const {

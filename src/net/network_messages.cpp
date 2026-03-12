@@ -175,10 +175,28 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
         });
     }
 
+    out["map_objects"] = nlohmann::json::array();
+    for (const auto& object : message.map_objects) {
+        out["map_objects"].push_back({
+            {"id", object.id},
+            {"prototype_id", object.prototype_id},
+            {"cell_x", object.cell_x},
+            {"cell_y", object.cell_y},
+            {"object_type", object.object_type},
+            {"hp", object.hp},
+            {"state", object.state},
+            {"state_time", Quantize2(object.state_time)},
+            {"death_duration", Quantize2(object.death_duration)},
+            {"collision_enabled", object.collision_enabled},
+            {"alive", object.alive},
+        });
+    }
+
     out["removed_player_ids"] = message.removed_player_ids;
     out["removed_rune_ids"] = message.removed_rune_ids;
     out["removed_projectile_ids"] = message.removed_projectile_ids;
     out["removed_ice_wall_ids"] = message.removed_ice_wall_ids;
+    out["removed_map_object_ids"] = message.removed_map_object_ids;
 
     return out;
 }
@@ -284,6 +302,25 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
         }
     }
 
+    const auto objects_it = json.find("map_objects");
+    if (objects_it != json.end() && objects_it->is_array()) {
+        for (const auto& item : *objects_it) {
+            MapObjectSnapshot object;
+            object.id = item.value("id", -1);
+            object.prototype_id = item.value("prototype_id", std::string{});
+            object.cell_x = item.value("cell_x", 0);
+            object.cell_y = item.value("cell_y", 0);
+            object.object_type = item.value("object_type", 0);
+            object.hp = item.value("hp", 0);
+            object.state = item.value("state", 0);
+            object.state_time = item.value("state_time", 0.0f);
+            object.death_duration = item.value("death_duration", 0.0f);
+            object.collision_enabled = item.value("collision_enabled", false);
+            object.alive = item.value("alive", true);
+            out.map_objects.push_back(object);
+        }
+    }
+
     const auto removed_players_it = json.find("removed_player_ids");
     if (removed_players_it != json.end() && removed_players_it->is_array()) {
         for (const auto& item : *removed_players_it) {
@@ -306,6 +343,12 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     if (removed_walls_it != json.end() && removed_walls_it->is_array()) {
         for (const auto& item : *removed_walls_it) {
             out.removed_ice_wall_ids.push_back(item.get<int>());
+        }
+    }
+    const auto removed_objects_it = json.find("removed_map_object_ids");
+    if (removed_objects_it != json.end() && removed_objects_it->is_array()) {
+        for (const auto& item : *removed_objects_it) {
+            out.removed_map_object_ids.push_back(item.get<int>());
         }
     }
 

@@ -6,10 +6,12 @@
 #include <unordered_map>
 #include <vector>
 #include <deque>
+#include <random>
 
 #include <raylib.h>
 
 #include "assets/map_loader.h"
+#include "assets/objects_database.h"
 #include "assets/sprite_metadata.h"
 #include "config/config_manager.h"
 #include "config/controls_manager.h"
@@ -63,10 +65,13 @@ class GameApp {
     void UpdateArena(float dt);
     void UpdateRespawns(float dt);
     void UpdateDamagePopups(float dt);
+    void UpdateMapObjects(float dt);
     void UpdateIceWalls(float dt);
     void UpdateProjectiles(float dt);
     void UpdateExplosions(float dt);
+    void UpdateLightningEffects(float dt);
     void ResolvePlayerCollisions();
+    void ResolvePlayerVsMapObjects(Player& player);
     void ResolvePlayerVsIceWalls(Player& player);
     void PushPlayersOutOfIceWall(const GridCoord& cell);
     void HandleMeleeHit(Player& attacker);
@@ -74,7 +79,8 @@ class GameApp {
     void UpdateProjectileEmitters();
     void UpdateParticles(float dt);
     void SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id);
-    void SpawnDamagePopup(Vector2 world_pos, int amount);
+    void SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds);
+    void SpawnDamagePopup(Vector2 world_pos, int amount, bool is_heal = false);
     bool ApplyDamageToPlayer(Player& target, int attacker_player_id, int damage, const char* source,
                              bool count_kill_for_attacker);
     void HandlePlayerDeath(Player& victim, int killer_player_id, bool count_kill_for_attacker);
@@ -93,6 +99,13 @@ class GameApp {
 
     Player* FindPlayerById(int id);
     const Player* FindPlayerById(int id) const;
+    MapObjectInstance* FindMapObjectById(int id);
+    const MapObjectInstance* FindMapObjectById(int id) const;
+    const ObjectPrototype* FindObjectPrototype(const std::string& prototype_id) const;
+    void RebuildMapObjectsFromSeeds();
+    void SpawnObjectInstanceAtCell(const std::string& prototype_id, const GridCoord& cell);
+    bool ApplyObjectDamage(int object_instance_id, int amount, int source_player_id, const char* source);
+    bool TryConsumeObject(int object_instance_id, int player_id);
 
     void RenderWorld();
     void RenderMap();
@@ -109,6 +122,11 @@ class GameApp {
     void RenderNetworkDebugPanel();
     void UpdateCameraTarget();
     Vector2 GetRenderPlayerPosition(int player_id) const;
+    bool IsWorldPointInsideCameraView(Vector2 world_pos) const;
+    void PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const;
+    void LoadAudioAssets();
+    void UnloadAudioAssets();
+    void UpdateAudioFrame();
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
@@ -119,10 +137,16 @@ class GameApp {
     ControlsBindings controls_bindings_;
     UserSettings settings_;
     MapLoader map_loader_;
+    ObjectsDatabase objects_database_;
     SpriteMetadataLoader sprite_metadata_;
     SpriteMetadataLoader sprite_metadata_tall_;
     SpellPatternLoader spell_patterns_;
     SmokeEmitter smoke_emitter_;
+
+    struct LoadedSfx {
+        Sound sound = {};
+        bool loaded = false;
+    };
 
     GameState state_;
     EventQueue event_queue_;
@@ -157,9 +181,11 @@ class GameApp {
     std::string host_display_ip_ = "127.0.0.1";
     std::string resolved_map_path_;
     std::string resolved_tile_mapping_path_;
+    std::string resolved_objects_config_path_;
     std::string resolved_sprite_metadata_path_;
     std::string resolved_sprite_metadata_tall_path_;
     std::string resolved_spell_pattern_path_;
+    std::string resolved_menu_background_path_;
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;
     double connect_attempt_start_seconds_ = 0.0;
@@ -175,4 +201,23 @@ class GameApp {
     bool pending_primary_pressed_ = false;
     bool pending_select_fire_ = false;
     bool pending_select_water_ = false;
+    std::vector<MapObjectSeed> pending_object_spawns_;
+    std::mt19937 rng_;
+    Texture2D menu_background_texture_ = {};
+    bool has_menu_background_texture_ = false;
+    float camera_shake_time_remaining_ = 0.0f;
+
+    bool audio_device_ready_ = false;
+    LoadedSfx sfx_fireball_created_;
+    LoadedSfx sfx_melee_attack_;
+    LoadedSfx sfx_create_rune_;
+    LoadedSfx sfx_explosion_;
+    LoadedSfx sfx_vase_breaking_;
+    LoadedSfx sfx_ice_wall_freeze_;
+    LoadedSfx sfx_ice_wall_melt_;
+    LoadedSfx sfx_player_death_;
+    LoadedSfx sfx_player_damaged_;
+    LoadedSfx sfx_drink_potion_;
+    Music bgm_forest_day_ = {};
+    bool has_bgm_forest_day_ = false;
 };

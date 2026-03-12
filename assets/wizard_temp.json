@@ -1,0 +1,74 @@
+
+"wizard_red_idle":{
+      "facings":{
+        "side":{
+          "frames": [[17,2]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[18,0]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[18,2]], 
+          "fps": 3
+        }
+      }
+    },
+
+    "wizard_red_walking":{
+      "facings":{
+        "side":{
+          "frames": [[17,2],[17,3]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[18,0],[18,1]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[18,2],[18,3]], 
+          "fps": 3
+        }
+      }
+    },
+
+    "wizard_red_slash":{
+      "facings":{
+        "side":{
+          "frames": [[17,2],[17,3]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[18,0],[18,1]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[18,2],[18,3]], 
+          "fps": 3
+        }
+      }
+    },
+
+    "wizard_red_create_rune":{
+      "facings":{
+        "side":{
+          "frames": [[17,2],[17,3]], 
+          "fps": 3
+        },
+        "top":{
+          "frames": [[18,0],[18,1]], 
+          "fps": 3
+        },
+        "bot":{
+          "frames": [[18,2],[18,3]], 
+          "fps": 3
+        }
+      }
+    },
+[0,0] -> [17,2]
+[0,1] -> [17,3]
+[1,0] -> [18,0]
+[1,1] -> [18,1]
+[2,0] -> [18,2]
+[2,1] -> [18,3]

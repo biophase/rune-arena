@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "objects": {
+    "grass": {
+      "type": "Terrain",
+      "map_key": [0, 255, 0],
+      "terrain_tile": "tile_grass",
+      "sprite": { "sheet": "base32", "idle": "tile_grass" },
+      "walkable": true,
+      "stops_projectiles": false
+    },
+    "water": {
+      "type": "Terrain",
+      "map_key": [0, 0, 255],
+      "terrain_tile": "tile_water",
+      "sprite": { "sheet": "base32", "idle": "tile_water" },
+      "walkable": false,
+      "stops_projectiles": false
+    },
+    "team_spawn_point": {
+      "type": "Terrain",
+      "map_key": [255, 255, 255],
+      "terrain_tile": "team_spawn_point",
+      "sprite": { "sheet": "base32", "idle": "tile_grass" },
+      "walkable": true,
+      "stops_projectiles": false
+    },
+    "column_1": {
+      "type": "Decoration",
+      "map_key": [170, 17, 173],
+      "sprite": { "sheet": "tall32x64", "idle": "column_1" },
+      "walkable": false,
+      "stops_projectiles": true
+    },
+    "column_2": {
+      "type": "Decoration",
+      "map_key": [181, 81, 196],
+      "sprite": { "sheet": "tall32x64", "idle": "column_2" },
+      "walkable": false,
+      "stops_projectiles": true
+    },
+    "column_3": {
+      "type": "Decoration",
+      "map_key": [123, 81, 196],
+      "sprite": { "sheet": "tall32x64", "idle": "column_3" },
+      "walkable": false,
+      "stops_projectiles": true
+    },
+    "column_4": {
+      "type": "Decoration",
+      "map_key": [85, 48, 166],
+      "sprite": { "sheet": "tall32x64", "idle": "column_4" },
+      "walkable": false,
+      "stops_projectiles": true
+    },
+    "vase_1": {
+      "type": "Destructible",
+      "map_key": [179, 34, 227],
+      "sprite": { "sheet": "tall32x64", "idle": "vase_1", "death": "vase_destroyed" },
+      "walkable": true,
+      "stops_projectiles": true,
+      "destructible": {
+        "hp": 5,
+        "on_destroy": {
+          "drops": [
+            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+          ]
+        }
+      }
+    },
+    "vase_2": {
+      "type": "Destructible",
+      "map_key": [107, 88, 40],
+      "sprite": { "sheet": "tall32x64", "idle": "vase_2", "death": "vase_destroyed" },
+      "walkable": true,
+      "stops_projectiles": true,
+      "destructible": {
+        "hp": 5,
+        "on_destroy": {
+          "drops": [
+            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+          ]
+        }
+      }
+    },
+    "vase_3": {
+      "type": "Destructible",
+      "map_key": [41, 50, 179],
+      "sprite": { "sheet": "tall32x64", "idle": "vase_3", "death": "vase_destroyed" },
+      "walkable": true,
+      "stops_projectiles": true,
+      "destructible": {
+        "hp": 5,
+        "on_destroy": {
+          "drops": [
+            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+          ]
+        }
+      }
+    },
+    "vase_4": {
+      "type": "Destructible",
+      "map_key": [42, 50, 179],
+      "sprite": { "sheet": "tall32x64", "idle": "vase_4", "death": "vase_destroyed" },
+      "walkable": true,
+      "stops_projectiles": true,
+      "destructible": {
+        "hp": 5,
+        "on_destroy": {
+          "drops": [
+            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+          ]
+        }
+      }
+    },
+    "health_small": {
+      "type": "Consumable",
+      "map_key": null,
+      "sprite": { "sheet": "base32", "idle": "health_potion_small" },
+      "walkable": true,
+      "stops_projectiles": false,
+      "consumable": {
+        "effects": [
+          { "type": "increase_current_health", "amount": 50 }
+        ]
+      }
+    }
+  }
+}

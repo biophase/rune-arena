@@ -1,2 +1,16 @@
 -dont spawn ice on water with ice spell
 - rework mapping with extra dynamic info about entity
+
+
+
+
+sounds
+- fireball created
+- melee attack
+- create rune
+- explosion
+- vase breaking
+- ice wall freezing
+- ice wall melting
+- player death
+- player damaged

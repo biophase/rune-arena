@@ -8,7 +8,9 @@
 #include "game/game_types.h"
 #include "game/damage_popup.h"
 #include "game/ice_wall.h"
+#include "game/map_object.h"
 #include "game/explosion.h"
+#include "game/lightning_effect.h"
 #include "game/match_state.h"
 #include "game/player.h"
 #include "game/projectile.h"
@@ -21,6 +23,7 @@ struct MapData {
     int cell_size = 32;
     std::vector<TileType> tiles;
     std::vector<std::string> decorations;
+    std::vector<MapObjectSeed> object_seeds;
     std::vector<GridCoord> spawn_points;
 
     bool IsInside(const GridCoord& cell) const {
@@ -48,7 +51,9 @@ struct GameState {
     std::vector<Rune> runes;
     std::vector<Projectile> projectiles;
     std::vector<Explosion> explosions;
+    std::vector<LightningEffect> lightning_effects;
     std::vector<IceWallPiece> ice_walls;
+    std::vector<MapObjectInstance> map_objects;
     std::vector<Particle> particles;
     std::vector<DamagePopup> damage_popups;
     MapData map;

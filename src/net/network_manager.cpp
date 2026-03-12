@@ -60,6 +60,13 @@ bool AreEqual(const IceWallSnapshot& a, const IceWallSnapshot& b) {
            a.hp == b.hp && a.alive == b.alive;
 }
 
+bool AreEqual(const MapObjectSnapshot& a, const MapObjectSnapshot& b) {
+    return a.id == b.id && a.prototype_id == b.prototype_id && a.cell_x == b.cell_x && a.cell_y == b.cell_y &&
+           a.object_type == b.object_type && a.hp == b.hp && a.state == b.state &&
+           a.state_time == b.state_time && a.death_duration == b.death_duration &&
+           a.collision_enabled == b.collision_enabled && a.alive == b.alive;
+}
+
 template <typename T>
 std::unordered_map<int, const T*> BuildIdMap(const std::vector<T>& entities) {
     std::unordered_map<int, const T*> by_id;
@@ -107,6 +114,8 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
     delta.removed_projectile_ids.clear();
     delta.ice_walls.clear();
     delta.removed_ice_wall_ids.clear();
+    delta.map_objects.clear();
+    delta.removed_map_object_ids.clear();
 
     const auto base_players = BuildIdMap(base.players);
     const auto current_players = BuildIdMap(current.players);
@@ -164,6 +173,20 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
         }
     }
 
+    const auto base_objects = BuildIdMap(base.map_objects);
+    const auto current_objects = BuildIdMap(current.map_objects);
+    for (const auto& object : current.map_objects) {
+        auto it = base_objects.find(object.id);
+        if (it == base_objects.end() || !AreEqual(object, *it->second)) {
+            delta.map_objects.push_back(object);
+        }
+    }
+    for (const auto& object : base.map_objects) {
+        if (current_objects.find(object.id) == current_objects.end()) {
+            delta.removed_map_object_ids.push_back(object.id);
+        }
+    }
+
     return delta;
 }
 
@@ -210,10 +233,16 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
         UpsertById(out.ice_walls, wall);
     }
 
+    RemoveByIds(out.map_objects, delta.removed_map_object_ids);
+    for (const auto& object : delta.map_objects) {
+        UpsertById(out.map_objects, object);
+    }
+
     out.removed_player_ids.clear();
     out.removed_rune_ids.clear();
     out.removed_projectile_ids.clear();
     out.removed_ice_wall_ids.clear();
+    out.removed_map_object_ids.clear();
     return out;
 }
 
@@ -633,6 +662,7 @@ void NetworkManager::BroadcastSnapshot(const ServerSnapshotMessage& message) {
     full.removed_rune_ids.clear();
     full.removed_projectile_ids.clear();
     full.removed_ice_wall_ids.clear();
+    full.removed_map_object_ids.clear();
 
     host_snapshot_history_[full.snapshot_id] = full;
     TrimSnapshotHistory(host_snapshot_history_, full.snapshot_id);
