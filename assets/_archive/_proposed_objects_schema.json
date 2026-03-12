@@ -1,0 +1,53 @@
+{
+    "grass":{
+        "type" : "Terrain",
+        "sprite" : "tile_grass",
+        "map_key" : [0,255,0],
+        "walkable" : true,
+        "stops_projectiles" : false
+    },
+
+    "water":{
+        "type" : "Terrain",
+        "sprite" : "tile_grass",
+        "map_key" : [0,0,255],
+        "walkable" : false,
+        "stops_projectiles" : false
+    },
+
+    "column_1":{
+        "type" : "Decoration",
+        "sprite" : "column_1",
+        "map_key" : [171, 17, 173],
+        "walkable" : false,
+        "stops_projectiles" : true,
+        "destructible":false
+    },
+    "vase_1":{
+        "type" : "Destructible",
+        "sprite" : {
+            "idle":"vase_1",
+            "death":"vase_destroyed"
+        },
+        "map_key" : [179, 34, 227],
+        "walkable" : true,
+        "stops_projectiles" : true,
+        "destructible":true,
+        "drop_table_destroyed":{
+            "health_small" : 0.5
+        }
+    },
+    "health_small":{
+        "type" : "Consumable",
+        "sprite" : "health_potion_small",
+        "map_key" : null,
+        "walkable" : true,
+        "stops_projectiles" : false,
+        "destructible":false,
+        "effects":{
+            "increase_current_health" : 50
+        }
+
+    }
+
+}

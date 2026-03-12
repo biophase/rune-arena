@@ -1,0 +1,22 @@
+{
+    "vase_1":{
+        "health":5,
+        "drops":{},
+        "destroy_animation":"vase_destroyed"
+    },
+    "vase_2":{
+        "health":5,
+        "drops":{},
+        "destroy_animation":"vase_destroyed"
+    },
+    "vase_3":{
+        "health":5,
+        "drops":{},
+        "destroy_animation":"vase_destroyed"
+    },
+    "vase_4":{
+        "health":5,
+        "drops":{},
+        "destroy_animation":"vase_destroyed"
+    }
+}

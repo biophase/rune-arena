@@ -1,0 +1,2 @@
+-dont spawn ice on water with ice spell
+- rework mapping with extra dynamic info about entity

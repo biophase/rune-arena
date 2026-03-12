@@ -96,6 +96,7 @@ class GameApp {
 
     void RenderWorld();
     void RenderMap();
+    void RenderNonTerrainDepthSorted();
     void RenderRunes();
     void RenderIceWalls();
     void RenderPlayers();
@@ -119,6 +120,7 @@ class GameApp {
     UserSettings settings_;
     MapLoader map_loader_;
     SpriteMetadataLoader sprite_metadata_;
+    SpriteMetadataLoader sprite_metadata_tall_;
     SpellPatternLoader spell_patterns_;
     SmokeEmitter smoke_emitter_;
 
@@ -156,6 +158,7 @@ class GameApp {
     std::string resolved_map_path_;
     std::string resolved_tile_mapping_path_;
     std::string resolved_sprite_metadata_path_;
+    std::string resolved_sprite_metadata_tall_path_;
     std::string resolved_spell_pattern_path_;
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;

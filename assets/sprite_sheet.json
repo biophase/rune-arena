@@ -82,8 +82,101 @@
       }
     },
 
+    "zone":{
+      "facings":{
+        "default":{
+          "frames": [[0,2]],
+          "fps":8
+        }
+      }
+    },
 
     "tile_grass":{
+      "dual_grid":{
+        "bit_order":"TL_TR_BR_BL",
+        "masks":{
+          "0":{
+            "frames_foreground": [[12,0],[12,0]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "1":{
+            "frames_foreground": [[12,1],[12,1]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "2":{
+            "frames_foreground": [[12,2],[12,2]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "3":{
+            "frames_foreground": [[12,3],[12,3]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "4":{
+            "frames_foreground": [[13,0],[13,0]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "5":{
+            "frames_foreground": [[13,1],[13,1]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "6":{
+            "frames_foreground": [[13,2],[13,2]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "7":{
+            "frames_foreground": [[13,3],[13,3]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "8":{
+            "frames_foreground": [[14,0],[14,0]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "9":{
+            "frames_foreground": [[14,1],[14,1]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "10":{
+            "frames_foreground": [[14,2],[14,2]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "11":{
+            "frames_foreground": [[14,3],[14,3]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "12":{
+            "frames_foreground": [[15,0],[15,0]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "13":{
+            "frames_foreground": [[15,1],[15,1]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "14":{
+            "frames_foreground": [[15,2],[15,2]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          },
+          "15":{
+            "frames_foreground": [[15,3],[15,3]],
+            "frames_background": [[3,0],[3,1]],
+            "fps":3
+          }
+        }
+      },
       "bitmask":{
         "90":{
           "frames_foreground": [[2,2],[2,3],[2,2],[2,3],[2,2],[2,3]],

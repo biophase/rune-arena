@@ -26,6 +26,7 @@ struct SpriteFacingData {
 struct SpriteAnimationData {
     std::unordered_map<std::string, SpriteFacingData> facings;
     std::unordered_map<int, SpriteFacingData> bitmask_variants;
+    std::unordered_map<int, SpriteFacingData> dual_grid_variants;
 };
 
 class SpriteMetadataLoader {
@@ -38,9 +39,15 @@ class SpriteMetadataLoader {
 
     bool IsLoaded() const;
     const Texture2D& GetTexture(bool use_mirrored = false) const;
+    int GetCellWidth() const;
+    int GetCellHeight() const;
     bool HasAnimation(const std::string& animation_name) const;
+    bool HasDualGridAnimation(const std::string& animation_name) const;
     bool HasBitmaskAnimation(const std::string& animation_name) const;
     Rectangle GetFrame(const std::string& animation_name, const std::string& facing, float time_seconds) const;
+    bool HasDualGridLayer(const std::string& animation_name, int mask, SpriteFrameLayer layer) const;
+    bool GetDualGridFrame(const std::string& animation_name, int mask, float time_seconds, SpriteFrameLayer layer,
+                          Rectangle& out_frame) const;
     bool HasBitmaskLayer(const std::string& animation_name, int bitmask, SpriteFrameLayer layer) const;
     bool GetBitmaskFrame(const std::string& animation_name, int bitmask, float time_seconds, SpriteFrameLayer layer,
                          Rectangle& out_frame) const;
@@ -51,6 +58,7 @@ class SpriteMetadataLoader {
   private:
     const SpriteFacingData* ResolveFacing(const std::string& animation_name,
                                           const std::string& facing) const;
+    const SpriteFacingData* ResolveDualGridVariant(const std::string& animation_name, int mask) const;
     const SpriteFacingData* ResolveBitmaskVariant(const std::string& animation_name, int bitmask) const;
     bool ResolveFrameFromData(const SpriteFacingData& frame_data, float time_seconds, SpriteFrameLayer layer,
                               Rectangle& out_frame) const;

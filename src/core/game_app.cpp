@@ -127,6 +127,7 @@ bool GameApp::Initialize() {
     resolved_map_path_ = ResolveRuntimePath(Constants::kDefaultMapPath);
     resolved_tile_mapping_path_ = ResolveRuntimePath(Constants::kTileMappingPath);
     resolved_sprite_metadata_path_ = ResolveRuntimePath(Constants::kSpriteMetadataPath);
+    resolved_sprite_metadata_tall_path_ = ResolveRuntimePath(Constants::kSpriteMetadataTallPath);
     resolved_spell_pattern_path_ = ResolveRuntimePath(Constants::kSpellPatternPath);
 
     if (!map_loader_.Load(resolved_map_path_, resolved_tile_mapping_path_, state_.map)) {
@@ -135,10 +136,12 @@ bool GameApp::Initialize() {
         state_.map.height = 16;
         state_.map.cell_size = Constants::kRuneCellSize;
         state_.map.tiles.assign(static_cast<size_t>(state_.map.width * state_.map.height), TileType::Grass);
+        state_.map.decorations.assign(static_cast<size_t>(state_.map.width * state_.map.height), "");
         state_.map.spawn_points = {{2, 2}, {state_.map.width - 3, state_.map.height - 3}};
     }
 
     sprite_metadata_.LoadFromFile(resolved_sprite_metadata_path_);
+    sprite_metadata_tall_.LoadFromFile(resolved_sprite_metadata_tall_path_);
     spell_patterns_.LoadFromFile(resolved_spell_pattern_path_);
     camera_.target = {0.0f, 0.0f};
     camera_.offset = {static_cast<float>(settings_.window_width) * 0.5f,
@@ -206,6 +209,7 @@ void GameApp::Shutdown() {
     lan_discovery_.Stop();
     network_manager_.Stop();
     sprite_metadata_.Unload();
+    sprite_metadata_tall_.Unload();
     CloseWindow();
 }
 
@@ -1991,15 +1995,299 @@ void GameApp::RenderWorld() {
 
     BeginMode2D(camera_);
     RenderMap();
-    RenderRunes();
-    RenderIceWalls();
-    RenderProjectiles();
-    RenderParticles();
-    RenderPlayers();
+    RenderNonTerrainDepthSorted();
     RenderMeleeAttacks();
     RenderDamagePopups();
     RenderRunePlacementOverlay();
     EndMode2D();
+}
+
+void GameApp::RenderNonTerrainDepthSorted() {
+    enum class RenderKind {
+        Decoration,
+        Rune,
+        IceWall,
+        Projectile,
+        Particle,
+        Player,
+    };
+
+    struct RenderItem {
+        RenderKind kind = RenderKind::Player;
+        float sort_y = 0.0f;
+        size_t index = 0;
+    };
+
+    const auto kind_priority = [](RenderKind kind) {
+        switch (kind) {
+            case RenderKind::Decoration:
+                return 0;
+            case RenderKind::Rune:
+                return 1;
+            case RenderKind::IceWall:
+                return 2;
+            case RenderKind::Projectile:
+                return 3;
+            case RenderKind::Particle:
+                return 4;
+            case RenderKind::Player:
+            default:
+                return 5;
+        }
+    };
+
+    std::vector<RenderItem> items;
+    items.reserve(state_.players.size() + state_.runes.size() + state_.projectiles.size() + state_.particles.size() +
+                  state_.ice_walls.size() + state_.map.decorations.size());
+
+    for (size_t i = 0; i < state_.map.decorations.size(); ++i) {
+        if (state_.map.decorations[i].empty()) {
+            continue;
+        }
+        const int cell_x = static_cast<int>(i % static_cast<size_t>(std::max(1, state_.map.width)));
+        const int cell_y = static_cast<int>(i / static_cast<size_t>(std::max(1, state_.map.width)));
+        items.push_back(
+            {RenderKind::Decoration, (static_cast<float>(cell_y) + 1.0f) * static_cast<float>(state_.map.cell_size), i});
+    }
+
+    for (size_t i = 0; i < state_.runes.size(); ++i) {
+        if (!state_.runes[i].active) {
+            continue;
+        }
+        const Vector2 center = CellToWorldCenter(state_.runes[i].cell);
+        items.push_back({RenderKind::Rune, center.y, i});
+    }
+
+    for (size_t i = 0; i < state_.ice_walls.size(); ++i) {
+        if (!state_.ice_walls[i].alive) {
+            continue;
+        }
+        const float base_y = (static_cast<float>(state_.ice_walls[i].cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
+        items.push_back({RenderKind::IceWall, base_y, i});
+    }
+
+    for (size_t i = 0; i < state_.projectiles.size(); ++i) {
+        if (!state_.projectiles[i].alive) {
+            continue;
+        }
+        items.push_back({RenderKind::Projectile, state_.projectiles[i].pos.y, i});
+    }
+
+    for (size_t i = 0; i < state_.particles.size(); ++i) {
+        if (!state_.particles[i].alive) {
+            continue;
+        }
+        items.push_back({RenderKind::Particle, state_.particles[i].pos.y, i});
+    }
+
+    for (size_t i = 0; i < state_.players.size(); ++i) {
+        const Player& player = state_.players[i];
+        const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+        items.push_back({RenderKind::Player, draw_pos.y + player.radius, i});
+    }
+
+    std::sort(items.begin(), items.end(), [&](const RenderItem& a, const RenderItem& b) {
+        const float dy = a.sort_y - b.sort_y;
+        if (std::fabs(dy) > 0.001f) {
+            return dy < 0.0f;
+        }
+        return kind_priority(a.kind) < kind_priority(b.kind);
+    });
+
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
+    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
+
+    for (const RenderItem& item : items) {
+        switch (item.kind) {
+            case RenderKind::Decoration: {
+                if (!has_tall_texture || state_.map.width <= 0) {
+                    break;
+                }
+                const std::string& animation_name = state_.map.decorations[item.index];
+                if (animation_name.empty() || !sprite_metadata_tall_.HasAnimation(animation_name)) {
+                    break;
+                }
+                const int cell_x = static_cast<int>(item.index % static_cast<size_t>(state_.map.width));
+                const int cell_y = static_cast<int>(item.index / static_cast<size_t>(state_.map.width));
+
+                const float dst_w = static_cast<float>(sprite_metadata_tall_.GetCellWidth());
+                const float dst_h = static_cast<float>(sprite_metadata_tall_.GetCellHeight());
+                Rectangle dst = {static_cast<float>(cell_x * state_.map.cell_size),
+                                 static_cast<float>(cell_y * state_.map.cell_size) -
+                                     (dst_h - static_cast<float>(state_.map.cell_size)),
+                                 dst_w, dst_h};
+                dst = SnapRect(dst);
+
+                const Rectangle src = InsetSourceRect(
+                    sprite_metadata_tall_.GetFrame(animation_name, "default", render_time_seconds_),
+                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(tall_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                break;
+            }
+            case RenderKind::Rune: {
+                const Rune& rune = state_.runes[item.index];
+                const Vector2 center = CellToWorldCenter(rune.cell);
+                const char* animation_name = rune.rune_type == RuneType::Fire ? "fire_rune" : "water_rune";
+
+                if (has_texture && sprite_metadata_.HasAnimation(animation_name)) {
+                    const Rectangle src = InsetSourceRect(
+                        sprite_metadata_.GetFrame(animation_name, "default",
+                                                  render_time_seconds_ + rune.placement_order * 0.05f),
+                        Constants::kAtlasSampleInsetPixels);
+                    Rectangle dst = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
+                    dst = SnapRect(dst);
+                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+                } else {
+                    const Color color =
+                        (rune.rune_type == RuneType::Fire) ? Color{255, 140, 44, 220} : Color{66, 180, 255, 220};
+                    DrawCircleV(center, 8.0f, color);
+                    DrawCircleLinesV(center, 8.0f, Color{20, 24, 32, 255});
+                }
+                break;
+            }
+            case RenderKind::IceWall: {
+                const IceWallPiece& wall = state_.ice_walls[item.index];
+                const Vector2 center = CellToWorldCenter(wall.cell);
+                Rectangle dst = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
+                dst = SnapRect(dst);
+
+                const char* animation_name = "ice_wall_idle";
+                float animation_time = render_time_seconds_;
+                if (wall.state == IceWallState::Materializing) {
+                    animation_name = "ice_wall_born";
+                    animation_time = wall.state_time;
+                } else if (wall.state == IceWallState::Dying) {
+                    animation_name = "ice_wall_death";
+                    animation_time = wall.state_time;
+                }
+
+                if (has_texture && sprite_metadata_.HasAnimation(animation_name)) {
+                    const Rectangle src =
+                        InsetSourceRect(sprite_metadata_.GetFrame(animation_name, "default", animation_time),
+                                        Constants::kAtlasSampleInsetPixels);
+                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+                } else {
+                    const Color fallback =
+                        (wall.state == IceWallState::Dying) ? Color{140, 180, 230, 180} : Color{180, 220, 255, 255};
+                    DrawRectangleRec(dst, fallback);
+                    DrawRectangleLinesEx(dst, 1.0f, Color{60, 95, 140, 255});
+                }
+                break;
+            }
+            case RenderKind::Projectile: {
+                const Projectile& projectile = state_.projectiles[item.index];
+                if (has_texture && sprite_metadata_.HasAnimation(projectile.animation_key)) {
+                    const Rectangle src =
+                        InsetSourceRect(sprite_metadata_.GetFrame(projectile.animation_key, "default", render_time_seconds_),
+                                        Constants::kAtlasSampleInsetPixels);
+                    Rectangle dst = {projectile.pos.x - 16.0f, projectile.pos.y - 16.0f, 32.0f, 32.0f};
+                    dst = SnapRect(dst);
+                    const Color tint = projectile.owner_team == Constants::kTeamRed ? Color{255, 215, 215, 255}
+                                                                                    : Color{215, 230, 255, 255};
+                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+                } else {
+                    DrawCircleV(projectile.pos, projectile.radius,
+                                projectile.owner_team == Constants::kTeamRed ? Color{255, 92, 48, 255}
+                                                                             : Color{80, 180, 255, 255});
+                }
+                break;
+            }
+            case RenderKind::Particle: {
+                const Particle& particle = state_.particles[item.index];
+                if (has_texture && sprite_metadata_.HasAnimation(particle.animation_key)) {
+                    const Rectangle src =
+                        InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
+                                        Constants::kAtlasSampleInsetPixels);
+                    Rectangle dst = {particle.pos.x - 16.0f, particle.pos.y - 16.0f, 32.0f, 32.0f};
+                    dst = SnapRect(dst);
+                    const unsigned char alpha = particle.animation_key == "explosion" ? 255 : 200;
+                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, alpha});
+                } else {
+                    DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
+                }
+                break;
+            }
+            case RenderKind::Player: {
+                const Player& player = state_.players[item.index];
+                const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+                if (!player.alive) {
+                    DrawCircleV(draw_pos, player.radius, Color{70, 70, 70, 180});
+                    break;
+                }
+
+                const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
+                std::string animation = "wizard_idle";
+                if (player.action_state == PlayerActionState::Slashing) {
+                    animation = "wizard_slash";
+                } else if (player.action_state == PlayerActionState::RunePlacing) {
+                    animation = "wizard_create_rune";
+                } else if (is_moving) {
+                    animation = "wizard_walking";
+                }
+
+                const char* facing = FacingToSpriteFacing(player.facing);
+                Rectangle dst = {draw_pos.x - 16.0f, draw_pos.y - 16.0f, 32.0f, 32.0f};
+                dst = SnapRect(dst);
+                const Rectangle sprite_rect = dst;
+
+                if (has_texture && sprite_metadata_.HasAnimation(animation)) {
+                    const bool mirror = player.facing == FacingDirection::Left;
+                    Rectangle src = sprite_metadata_.GetFrame(animation, facing, render_time_seconds_);
+                    if (mirror) {
+                        src = sprite_metadata_.GetMirroredFrameRect(src);
+                    }
+                    src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
+
+                    Color tint = WHITE;
+                    if (player.team == Constants::kTeamRed) {
+                        tint = Color{255, 215, 215, 255};
+                    } else {
+                        tint = Color{215, 230, 255, 255};
+                    }
+
+                    const Texture2D draw_texture = sprite_metadata_.GetTexture(mirror);
+                    DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, tint);
+                } else {
+                    const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
+                    DrawCircleV(draw_pos, player.radius, fallback);
+                }
+
+                const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
+                                        static_cast<unsigned char>(Constants::kPlayerHealthBarFillG),
+                                        static_cast<unsigned char>(Constants::kPlayerHealthBarFillB), 255};
+                const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
+                                           static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
+                                           static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
+
+                Rectangle health_bar = {sprite_rect.x, sprite_rect.y - Constants::kPlayerHealthBarOffsetY,
+                                        Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
+                health_bar = SnapRect(health_bar);
+                DrawRectangleRec(health_bar, bar_missing);
+
+                const float hp_ratio =
+                    std::clamp(static_cast<float>(player.hp) / static_cast<float>(Constants::kMaxHp), 0.0f, 1.0f);
+                if (hp_ratio > 0.0f) {
+                    Rectangle fill = health_bar;
+                    fill.width = std::roundf(fill.width * hp_ratio);
+                    if (fill.width > 0.0f) {
+                        DrawRectangleRec(fill, bar_fill);
+                    }
+                }
+
+                const int font_size = Constants::kPlayerHealthTextFontSize;
+                const char* hp_text = TextFormat("%d", std::max(0, player.hp));
+                const int text_width = MeasureText(hp_text, font_size);
+                const int text_x =
+                    static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(text_width)) * 0.5f);
+                const int text_y =
+                    static_cast<int>(health_bar.y + (health_bar.height - static_cast<float>(font_size)) * 0.5f);
+                DrawText(hp_text, text_x, text_y, font_size, BLACK);
+                break;
+            }
+        }
+    }
 }
 
 void GameApp::RenderMap() {
@@ -2009,9 +2297,38 @@ void GameApp::RenderMap() {
 
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
     const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
+    const bool has_water_animation = has_texture && sprite_metadata_.HasAnimation("tile_water");
+    const bool has_zone_overlay = has_texture && sprite_metadata_.HasAnimation("zone");
     const auto is_grass_family = [](TileType tile) {
         return tile == TileType::Grass || tile == TileType::SpawnPoint;
+    };
+
+    const auto sample_grass_for_dual_grid = [&](int x, int y) {
+        if (state_.map.width <= 0 || state_.map.height <= 0) {
+            return false;
+        }
+        x = std::clamp(x, 0, state_.map.width - 1);
+        y = std::clamp(y, 0, state_.map.height - 1);
+        return is_grass_family(state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)]);
+    };
+
+    const auto compute_grass_dual_grid_mask = [&](int x, int y) {
+        int mask = 0;
+        if (sample_grass_for_dual_grid(x, y)) {
+            mask |= 1;  // TL
+        }
+        if (sample_grass_for_dual_grid(x + 1, y)) {
+            mask |= 2;  // TR
+        }
+        if (sample_grass_for_dual_grid(x + 1, y + 1)) {
+            mask |= 4;  // BR
+        }
+        if (sample_grass_for_dual_grid(x, y + 1)) {
+            mask |= 8;  // BL
+        }
+        return mask;
     };
 
     const auto compute_grass_bitmask = [&](int x, int y) {
@@ -2076,7 +2393,67 @@ void GameApp::RenderMap() {
                                               255}
                                       : WHITE;
 
-            if (has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
+            const auto draw_zone_overlay = [&]() {
+                if (!dimmed) {
+                    return;
+                }
+                if (has_zone_overlay) {
+                    const Rectangle zone_src =
+                        InsetSourceRect(sprite_metadata_.GetFrame("zone", "default", render_time_seconds_),
+                                        Constants::kAtlasSampleInsetPixels);
+                    DrawTexturePro(texture, zone_src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 128});
+                } else {
+                    DrawRectangleRec(dst, Color{0, 0, 0, 128});
+                }
+            };
+
+            if (has_texture && has_grass_dual_grid) {
+                const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
+                const Rectangle terrain_dst =
+                    SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
+
+                if (has_water_animation) {
+                    const Rectangle water_src = InsetSourceRect(
+                        sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
+                        Constants::kAtlasSampleInsetPixels);
+                    DrawTexturePro(texture, water_src, terrain_dst, {0, 0}, 0.0f, WHITE);
+                } else {
+                    DrawRectangleRec(terrain_dst, Color{26, 96, 152, 255});
+                }
+
+                const int mask = compute_grass_dual_grid_mask(x, y);
+                const bool has_background =
+                    sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Background);
+                const bool has_foreground =
+                    sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Foreground);
+
+                Rectangle src = {};
+                if (has_background &&
+                    sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_,
+                                                      SpriteFrameLayer::Background, src)) {
+                    DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
+                                   0.0f, WHITE);
+                }
+                if (has_foreground &&
+                    sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_,
+                                                      SpriteFrameLayer::Foreground, src)) {
+                    DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
+                                   0.0f, WHITE);
+                }
+                if (!has_background && !has_foreground &&
+                    sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_, SpriteFrameLayer::Single,
+                                                      src)) {
+                    DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
+                                   0.0f, WHITE);
+                }
+
+                draw_zone_overlay();
+
+                if (tile == TileType::SpawnPoint) {
+                    DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
+                                Color{240, 240, 240, 180});
+                }
+            } else if (has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
                 if (has_grass_bitmask) {
                     const int mask = compute_grass_bitmask(x, y);
                     const bool has_background =
@@ -2113,11 +2490,13 @@ void GameApp::RenderMap() {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                 Color{240, 240, 240, 180});
                 }
+                draw_zone_overlay();
             } else if (has_texture && tile == TileType::Water) {
                 const Rectangle src = InsetSourceRect(
                     sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
                     Constants::kAtlasSampleInsetPixels);
                 DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+                draw_zone_overlay();
             } else {
                 Color fallback = Color{34, 120, 34, 255};
                 if (tile == TileType::Water) fallback = Color{26, 96, 152, 255};
@@ -2127,6 +2506,7 @@ void GameApp::RenderMap() {
                                      static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness), 255};
                 }
                 DrawRectangleRec(dst, fallback);
+                draw_zone_overlay();
             }
         }
     }

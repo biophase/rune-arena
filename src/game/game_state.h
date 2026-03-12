@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include <raylib.h>
@@ -19,6 +20,7 @@ struct MapData {
     int height = 0;
     int cell_size = 32;
     std::vector<TileType> tiles;
+    std::vector<std::string> decorations;
     std::vector<GridCoord> spawn_points;
 
     bool IsInside(const GridCoord& cell) const {

@@ -96,6 +96,7 @@ constexpr std::array<std::string_view, 1> kPlaceableTiles = {"tile_grass"};
 constexpr const char* kDefaultMapPath = "assets/maps/default.png";
 constexpr const char* kTileMappingPath = "assets/maps/tiles_mapping.json";
 constexpr const char* kSpriteMetadataPath = "assets/sprite_sheet.json";
+constexpr const char* kSpriteMetadataTallPath = "assets/sprite_sheet_32x64.json";
 constexpr const char* kSpellPatternPath = "assets/spell_patterns.json";
 
 constexpr const char* kConfigFolderName = "RuneArena";

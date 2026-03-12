@@ -1,5 +1,6 @@
 #include "assets/sprite_metadata.h"
 
+#include <cctype>
 #include <cmath>
 #include <exception>
 #include <filesystem>
@@ -108,6 +109,25 @@ bool HasFramesForLayer(const SpriteFacingData& frame_data, SpriteFrameLayer laye
     }
 }
 
+bool IsIntegerKey(const std::string& key) {
+    if (key.empty()) {
+        return false;
+    }
+    size_t start = 0;
+    if (key[0] == '-') {
+        if (key.size() == 1) {
+            return false;
+        }
+        start = 1;
+    }
+    for (size_t i = start; i < key.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(key[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 SpriteMetadataLoader::~SpriteMetadataLoader() { Unload(); }
@@ -187,6 +207,9 @@ bool SpriteMetadataLoader::LoadFromFile(const std::string& json_path) {
         const auto bitmask_it = animation_it.value().find("bitmask");
         if (bitmask_it != animation_it.value().end() && bitmask_it->is_object()) {
             for (auto mask_it = bitmask_it->begin(); mask_it != bitmask_it->end(); ++mask_it) {
+                if (!IsIntegerKey(mask_it.key())) {
+                    continue;
+                }
                 int mask_value = 0;
                 try {
                     mask_value = std::stoi(mask_it.key());
@@ -206,7 +229,40 @@ bool SpriteMetadataLoader::LoadFromFile(const std::string& json_path) {
             }
         }
 
-        if (!animation_data.facings.empty() || !animation_data.bitmask_variants.empty()) {
+        const auto dual_grid_it = animation_it.value().find("dual_grid");
+        if (dual_grid_it != animation_it.value().end() && dual_grid_it->is_object()) {
+            const nlohmann::json* dual_grid_masks = &(*dual_grid_it);
+            const auto masks_it = dual_grid_it->find("masks");
+            if (masks_it != dual_grid_it->end() && masks_it->is_object()) {
+                dual_grid_masks = &(*masks_it);
+            }
+
+            for (auto mask_it = dual_grid_masks->begin(); mask_it != dual_grid_masks->end(); ++mask_it) {
+                if (!IsIntegerKey(mask_it.key())) {
+                    continue;
+                }
+
+                int mask_value = 0;
+                try {
+                    mask_value = std::stoi(mask_it.key());
+                } catch (const std::exception&) {
+                    TraceLog(LOG_WARNING, "Invalid dual-grid key '%s' for animation '%s'", mask_it.key().c_str(),
+                             animation_it.key().c_str());
+                    continue;
+                }
+
+                SpriteFacingData variant_data;
+                const std::string variant_name = std::string("dual_grid:") + mask_it.key();
+                ParseFrameData(mask_it.value(), cell_width_, cell_height_, num_columns_, num_rows,
+                               animation_it.key().c_str(), variant_name.c_str(), variant_data);
+                if (variant_data.HasAnyFrames()) {
+                    animation_data.dual_grid_variants[mask_value] = variant_data;
+                }
+            }
+        }
+
+        if (!animation_data.facings.empty() || !animation_data.bitmask_variants.empty() ||
+            !animation_data.dual_grid_variants.empty()) {
             animations_[animation_it.key()] = animation_data;
         }
     }
@@ -238,8 +294,17 @@ const Texture2D& SpriteMetadataLoader::GetTexture(bool use_mirrored) const {
     return texture_;
 }
 
+int SpriteMetadataLoader::GetCellWidth() const { return cell_width_; }
+
+int SpriteMetadataLoader::GetCellHeight() const { return cell_height_; }
+
 bool SpriteMetadataLoader::HasAnimation(const std::string& animation_name) const {
     return animations_.find(animation_name) != animations_.end();
+}
+
+bool SpriteMetadataLoader::HasDualGridAnimation(const std::string& animation_name) const {
+    const auto it = animations_.find(animation_name);
+    return it != animations_.end() && !it->second.dual_grid_variants.empty();
 }
 
 bool SpriteMetadataLoader::HasBitmaskAnimation(const std::string& animation_name) const {
@@ -269,6 +334,33 @@ const SpriteFacingData* SpriteMetadataLoader::ResolveFacing(const std::string& a
         return &side_it->second;
     }
 
+    return nullptr;
+}
+
+const SpriteFacingData* SpriteMetadataLoader::ResolveDualGridVariant(const std::string& animation_name, int mask) const {
+    const auto animation_it = animations_.find(animation_name);
+    if (animation_it == animations_.end()) {
+        return nullptr;
+    }
+
+    const auto exact_it = animation_it->second.dual_grid_variants.find(mask);
+    if (exact_it != animation_it->second.dual_grid_variants.end()) {
+        return &exact_it->second;
+    }
+
+    const auto full_it = animation_it->second.dual_grid_variants.find(15);
+    if (full_it != animation_it->second.dual_grid_variants.end()) {
+        return &full_it->second;
+    }
+
+    const auto empty_it = animation_it->second.dual_grid_variants.find(0);
+    if (empty_it != animation_it->second.dual_grid_variants.end()) {
+        return &empty_it->second;
+    }
+
+    if (!animation_it->second.dual_grid_variants.empty()) {
+        return &animation_it->second.dual_grid_variants.begin()->second;
+    }
     return nullptr;
 }
 
@@ -337,6 +429,23 @@ Rectangle SpriteMetadataLoader::GetFrame(const std::string& animation_name, cons
         return Rectangle{0, 0, static_cast<float>(cell_width_), static_cast<float>(cell_height_)};
     }
     return frame;
+}
+
+bool SpriteMetadataLoader::HasDualGridLayer(const std::string& animation_name, int mask, SpriteFrameLayer layer) const {
+    const SpriteFacingData* data = ResolveDualGridVariant(animation_name, mask);
+    if (!data) {
+        return false;
+    }
+    return HasFramesForLayer(*data, layer);
+}
+
+bool SpriteMetadataLoader::GetDualGridFrame(const std::string& animation_name, int mask, float time_seconds,
+                                            SpriteFrameLayer layer, Rectangle& out_frame) const {
+    const SpriteFacingData* data = ResolveDualGridVariant(animation_name, mask);
+    if (!data) {
+        return false;
+    }
+    return ResolveFrameFromData(*data, time_seconds, layer, out_frame);
 }
 
 bool SpriteMetadataLoader::HasBitmaskLayer(const std::string& animation_name, int bitmask, SpriteFrameLayer layer) const {
