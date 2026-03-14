@@ -14,3 +14,27 @@ sounds
 - ice wall melting
 - player death
 - player damaged
+
+
+
+choose team in lobby
+dash
+add mana
+single runes interact with dash
+attack interacts with single runes
+add "storm" rune (high mana)
+storm with fire -> add amplifying fire bolt
+storm with water -> chain lightnign
+mapmaker
+
+wave spell (think of balance for ,elee)
+
+something which hides runes
+something which disables enemies from placing runes
+
+
+
+
+---
+
+
