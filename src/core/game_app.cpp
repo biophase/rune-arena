@@ -1100,6 +1100,10 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
         local_player->rune_placing_mode = false;
         local_player->rune_place_cooldown_remaining = local_player->rune_place_cooldown_duration;
     }
+    if (!is_stunned && !is_pulled && input.grappling_pressed && !local_player->rune_placing_mode &&
+        local_player->grappling_cooldown_remaining <= 0.0f) {
+        TryStartGrapplingHook(*local_player, Vector2{input.aim_x, input.aim_y}, false);
+    }
 
     // Movement/facing prediction for client feel; authoritative state is reconciled on snapshots.
     Vector2 movement = {input.move_x, input.move_y};
@@ -3604,7 +3608,7 @@ bool GameApp::IsPlayerBeingPulled(int player_id) const {
                        });
 }
 
-bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world) {
+bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world, bool play_audio) {
     if (!player.alive || player.grappling_cooldown_remaining > 0.0f || IsPlayerBeingPulled(player.id)) {
         return false;
     }
@@ -3619,7 +3623,7 @@ bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world) {
     const Vector2 collision_offset = {0.0f, -0.5f * static_cast<float>(state_.map.cell_size)};
 
     GrapplingHook hook;
-    hook.id = state_.next_entity_id++;
+    hook.id = network_manager_.IsHost() ? state_.next_entity_id++ : next_predicted_entity_id_--;
     hook.owner_player_id = player.id;
     hook.owner_team = player.team;
     hook.head_pos = player.pos;
@@ -3702,7 +3706,9 @@ bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world) {
     player.rune_placing_mode = false;
     player.inventory_mode = false;
     state_.grappling_hooks.push_back(hook);
-    PlaySfxIfVisible(sfx_grappling_throw_.sound, sfx_grappling_throw_.loaded, player.pos);
+    if (play_audio) {
+        PlaySfxIfVisible(sfx_grappling_throw_.sound, sfx_grappling_throw_.loaded, player.pos);
+    }
     return true;
 }
 
@@ -3728,7 +3734,9 @@ void GameApp::UpdateGrapplingHooks(float dt) {
                 if (hook.latched) {
                     hook.phase = GrapplingHookPhase::Pulling;
                     hook.pull_elapsed_seconds = 0.0f;
-                    PlaySfxIfVisible(sfx_grappling_latch_.sound, sfx_grappling_latch_.loaded, hook.latch_point);
+                    if (hook.id >= 0) {
+                        PlaySfxIfVisible(sfx_grappling_latch_.sound, sfx_grappling_latch_.loaded, hook.latch_point);
+                    }
                 } else {
                     hook.phase = GrapplingHookPhase::Retracting;
                 }

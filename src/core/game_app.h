@@ -88,7 +88,7 @@ class GameApp {
     void UpdateParticles(float dt);
     void SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id);
     void SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds, bool volatile_variant = false);
-    bool TryStartGrapplingHook(Player& player, Vector2 target_world);
+    bool TryStartGrapplingHook(Player& player, Vector2 target_world, bool play_audio = true);
     void SpawnDamagePopup(Vector2 world_pos, int amount, bool is_heal = false);
     bool ApplyDamageToPlayer(Player& target, int attacker_player_id, int damage, const char* source,
                              bool count_kill_for_attacker);
@@ -239,6 +239,7 @@ class GameApp {
     int pending_activate_item_slot_ = -1;
     bool pending_toggle_inventory_mode_ = false;
     std::vector<MapObjectSeed> pending_object_spawns_;
+    int next_predicted_entity_id_ = -1;
     std::mt19937 rng_;
     std::mt19937 visual_rng_;
     Texture2D menu_background_texture_ = {};
