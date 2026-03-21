@@ -2035,7 +2035,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                     replay.vel = Vector2Scale(Vector2Normalize(replay.vel), Constants::kPlayerMaxSpeed);
                 }
                 replay.pos = Vector2Add(replay.pos, Vector2Scale(replay.vel, step_dt));
-                CollisionWorld::ResolvePlayerVsWorldLocal(state_.map, replay);
+                const bool replay_is_pulled = IsPlayerBeingPulled(replay.id);
+                CollisionWorld::ResolvePlayerVsWorldLocal(state_.map, replay, !replay_is_pulled);
                 ResolvePlayerVsMapObjects(replay);
                 ResolvePlayerVsIceWallsLocal(replay);
             }
