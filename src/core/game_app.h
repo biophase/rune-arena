@@ -271,6 +271,8 @@ class GameApp {
     LoadedSfx sfx_static_bolt_impact_;
     LoadedSfx sfx_grappling_throw_;
     LoadedSfx sfx_grappling_latch_;
+    LoadedSfx sfx_earth_rune_launch_;
+    LoadedSfx sfx_earth_rune_impact_;
     std::array<LoadedSfx, 5> sfx_footstep_dirt_{};
     Music bgm_forest_day_ = {};
     bool has_bgm_forest_day_ = false;

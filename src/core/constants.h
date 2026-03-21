@@ -212,6 +212,8 @@ constexpr const char* kSfxGrapplingThrowPath =
     "assets/sfx/ogg/SFX/Attacks/Bow Attacks Hits and Blocks/Bow Attack 1.ogg";
 constexpr const char* kSfxGrapplingLatchPath =
     "assets/sfx/ogg/SFX/Attacks/Bow Attacks Hits and Blocks/Bow Impact Hit 1.ogg";
+constexpr const char* kSfxEarthRuneLaunchPath = "assets/sfx/EM_EARTH_LAUNCH_01.ogg";
+constexpr const char* kSfxEarthRuneImpactPath = "assets/sfx/EM_EARTH_IMPACT_01.ogg";
 constexpr std::array<const char*, 5> kSfxFootstepDirtPaths = {
     "assets/sfx/ogg/SFX/Footsteps/Dirt/Dirt Walk 1.ogg",
     "assets/sfx/ogg/SFX/Footsteps/Dirt/Dirt Walk 2.ogg",
@@ -240,6 +242,8 @@ constexpr float kSfxVolumeStaticUpgrade = 0.72f;
 constexpr float kSfxVolumeStaticBoltImpact = 0.78f;
 constexpr float kSfxVolumeGrapplingThrow = 0.68f;
 constexpr float kSfxVolumeGrapplingLatch = 0.72f;
+constexpr float kSfxVolumeEarthRuneLaunch = 0.74f;
+constexpr float kSfxVolumeEarthRuneImpact = 0.78f;
 constexpr float kSfxVolumeFootstepDirt = 0.50f;
 constexpr float kFireStormAmbientVolume = 0.42f;
 constexpr float kFireStormAmbientLoopStartSeconds = 0.20f;

@@ -632,6 +632,8 @@ void GameApp::LoadAudioAssets() {
     load_sfx(sfx_static_bolt_impact_, Constants::kSfxStaticBoltImpactPath, Constants::kSfxVolumeStaticBoltImpact);
     load_sfx(sfx_grappling_throw_, Constants::kSfxGrapplingThrowPath, Constants::kSfxVolumeGrapplingThrow);
     load_sfx(sfx_grappling_latch_, Constants::kSfxGrapplingLatchPath, Constants::kSfxVolumeGrapplingLatch);
+    load_sfx(sfx_earth_rune_launch_, Constants::kSfxEarthRuneLaunchPath, Constants::kSfxVolumeEarthRuneLaunch);
+    load_sfx(sfx_earth_rune_impact_, Constants::kSfxEarthRuneImpactPath, Constants::kSfxVolumeEarthRuneImpact);
     for (size_t i = 0; i < sfx_footstep_dirt_.size(); ++i) {
         load_sfx(sfx_footstep_dirt_[i], Constants::kSfxFootstepDirtPaths[i], Constants::kSfxVolumeFootstepDirt);
     }
@@ -696,6 +698,8 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_static_bolt_impact_);
     unload_sfx(sfx_grappling_throw_);
     unload_sfx(sfx_grappling_latch_);
+    unload_sfx(sfx_earth_rune_launch_);
+    unload_sfx(sfx_earth_rune_impact_);
     for (auto& clip : sfx_footstep_dirt_) {
         unload_sfx(clip);
     }
@@ -1596,9 +1600,15 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     previous_rune_ids.reserve(state_.runes.size());
     std::unordered_map<int, bool> previous_rune_active;
     previous_rune_active.reserve(state_.runes.size());
+    std::unordered_map<int, EarthRuneTrapState> previous_earth_rune_states;
+    previous_earth_rune_states.reserve(state_.runes.size());
+    std::unordered_map<int, bool> previous_earth_rune_roots_spawned;
+    previous_earth_rune_roots_spawned.reserve(state_.runes.size());
     for (const auto& rune : state_.runes) {
         previous_rune_ids.insert(rune.id);
         previous_rune_active[rune.id] = rune.active;
+        previous_earth_rune_states[rune.id] = rune.earth_trap_state;
+        previous_earth_rune_roots_spawned[rune.id] = rune.earth_roots_spawned;
     }
     std::unordered_map<int, Vector2> previous_projectile_positions;
     previous_projectile_positions.reserve(state_.projectiles.size());
@@ -1802,6 +1812,29 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 start = caster->pos;
             }
             SpawnLightningEffect(start, CellToWorldCenter(rune.cell), 0.3f, rune.volatile_cast);
+        }
+        for (const auto& rune : state_.runes) {
+            if (rune.rune_type != RuneType::Earth || !rune.active) {
+                continue;
+            }
+            const auto previous_state_it = previous_earth_rune_states.find(rune.id);
+            const EarthRuneTrapState previous_state =
+                (previous_state_it != previous_earth_rune_states.end()) ? previous_state_it->second
+                                                                        : EarthRuneTrapState::IdleRune;
+            if (previous_state != EarthRuneTrapState::Slamming && rune.earth_trap_state == EarthRuneTrapState::Slamming) {
+                PlaySfxIfVisible(sfx_earth_rune_launch_.sound, sfx_earth_rune_launch_.loaded, CellToWorldCenter(rune.cell));
+            }
+            const auto previous_roots_it = previous_earth_rune_roots_spawned.find(rune.id);
+            const bool roots_spawned_before =
+                (previous_roots_it != previous_earth_rune_roots_spawned.end()) ? previous_roots_it->second : false;
+            if (!roots_spawned_before && rune.earth_roots_spawned) {
+                const Vector2 impact_center = CellToWorldCenter(rune.cell);
+                PlaySfxIfVisible(sfx_earth_rune_impact_.sound, sfx_earth_rune_impact_.loaded, impact_center);
+                if (IsWorldPointInsideCameraView(impact_center)) {
+                    camera_shake_time_remaining_ =
+                        std::max(camera_shake_time_remaining_, Constants::kCameraShakeDurationSeconds);
+                }
+            }
         }
     }
 
@@ -3378,6 +3411,7 @@ void GameApp::UpdateRunes(float dt) {
                 }
                 rune.earth_roots_spawned = false;
                 rune.creates_influence_zone = false;
+                PlaySfxIfVisible(sfx_earth_rune_launch_.sound, sfx_earth_rune_launch_.loaded, CellToWorldCenter(rune.cell));
                 break;
             }
             case EarthRuneTrapState::Slamming: {
@@ -3386,6 +3420,12 @@ void GameApp::UpdateRunes(float dt) {
                     rune.earth_state_time >= rune.earth_state_duration * Constants::kEarthRuneSlamSpawnRootsProgress) {
                     rune.earth_roots_group_id = SpawnEarthRootsGroup(rune.owner_player_id, rune.owner_team, rune.cell);
                     rune.earth_roots_spawned = true;
+                    const Vector2 impact_center = CellToWorldCenter(rune.cell);
+                    PlaySfxIfVisible(sfx_earth_rune_impact_.sound, sfx_earth_rune_impact_.loaded, impact_center);
+                    if (IsWorldPointInsideCameraView(impact_center)) {
+                        camera_shake_time_remaining_ =
+                            std::max(camera_shake_time_remaining_, Constants::kCameraShakeDurationSeconds);
+                    }
                 }
                 if (rune.earth_state_time >= rune.earth_state_duration) {
                     rune.earth_trap_state = EarthRuneTrapState::RootedIdle;
