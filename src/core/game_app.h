@@ -151,6 +151,7 @@ class GameApp {
     void LoadAudioAssets();
     void UnloadAudioAssets();
     void UpdateAudioFrame();
+    void UpdateLocalFootstepAudio();
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
@@ -262,9 +263,13 @@ class GameApp {
     LoadedSfx sfx_static_bolt_impact_;
     LoadedSfx sfx_grappling_throw_;
     LoadedSfx sfx_grappling_latch_;
+    std::array<LoadedSfx, 5> sfx_footstep_dirt_{};
     Music bgm_forest_day_ = {};
     bool has_bgm_forest_day_ = false;
     Music fire_storm_ambient_ = {};
     bool has_fire_storm_ambient_ = false;
     float fire_storm_ambient_gain_ = 0.0f;
+    Vector2 local_footstep_prev_pos_ = {0.0f, 0.0f};
+    bool has_local_footstep_prev_pos_ = false;
+    float local_footstep_distance_accumulator_ = 0.0f;
 };

@@ -590,6 +590,9 @@ void GameApp::LoadAudioAssets() {
     load_sfx(sfx_static_bolt_impact_, Constants::kSfxStaticBoltImpactPath, Constants::kSfxVolumeStaticBoltImpact);
     load_sfx(sfx_grappling_throw_, Constants::kSfxGrapplingThrowPath, Constants::kSfxVolumeGrapplingThrow);
     load_sfx(sfx_grappling_latch_, Constants::kSfxGrapplingLatchPath, Constants::kSfxVolumeGrapplingLatch);
+    for (size_t i = 0; i < sfx_footstep_dirt_.size(); ++i) {
+        load_sfx(sfx_footstep_dirt_[i], Constants::kSfxFootstepDirtPaths[i], Constants::kSfxVolumeFootstepDirt);
+    }
 
     auto load_music = [&](Music& music, bool& loaded, const char* path) {
         const std::string resolved = ResolveRuntimePath(path);
@@ -651,6 +654,9 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_static_bolt_impact_);
     unload_sfx(sfx_grappling_throw_);
     unload_sfx(sfx_grappling_latch_);
+    for (auto& clip : sfx_footstep_dirt_) {
+        unload_sfx(clip);
+    }
 
     if (has_fire_storm_ambient_) {
         StopMusicStream(fire_storm_ambient_);
@@ -669,6 +675,7 @@ void GameApp::UpdateAudioFrame() {
     if (!audio_device_ready_) {
         return;
     }
+    UpdateLocalFootstepAudio();
     if (has_bgm_forest_day_) {
         UpdateMusicStream(bgm_forest_day_);
     }
@@ -711,6 +718,53 @@ void GameApp::UpdateAudioFrame() {
             SeekMusicStream(fire_storm_ambient_, Constants::kFireStormAmbientLoopStartSeconds);
         }
         SetMusicVolume(fire_storm_ambient_, 0.0f);
+    }
+}
+
+void GameApp::UpdateLocalFootstepAudio() {
+    if (state_.local_player_id < 0) {
+        has_local_footstep_prev_pos_ = false;
+        local_footstep_distance_accumulator_ = 0.0f;
+        return;
+    }
+
+    const Player* local_player = FindPlayerById(state_.local_player_id);
+    if (local_player == nullptr || !local_player->alive) {
+        has_local_footstep_prev_pos_ = false;
+        local_footstep_distance_accumulator_ = 0.0f;
+        return;
+    }
+
+    const bool deliberate_movement = IsBindingDown(controls_bindings_.move_left) ||
+                                     IsBindingDown(controls_bindings_.move_right) ||
+                                     IsBindingDown(controls_bindings_.move_up) ||
+                                     IsBindingDown(controls_bindings_.move_down);
+    const bool blocked = HasStatusEffect(*local_player, StatusEffectType::Stunned) ||
+                         IsPlayerBeingPulled(local_player->id);
+    const float step_distance =
+        static_cast<float>(std::max(1, state_.map.cell_size)) * (2.0f / 3.0f);
+
+    if (!has_local_footstep_prev_pos_) {
+        local_footstep_prev_pos_ = local_player->pos;
+        has_local_footstep_prev_pos_ = true;
+        local_footstep_distance_accumulator_ = 0.0f;
+        return;
+    }
+
+    const float frame_distance = Vector2Distance(local_footstep_prev_pos_, local_player->pos);
+    local_footstep_prev_pos_ = local_player->pos;
+
+    if (!deliberate_movement || blocked) {
+        local_footstep_distance_accumulator_ = 0.0f;
+        return;
+    }
+
+    local_footstep_distance_accumulator_ += frame_distance;
+    while (local_footstep_distance_accumulator_ >= step_distance) {
+        local_footstep_distance_accumulator_ -= step_distance;
+        std::uniform_int_distribution<int> clip_dist(0, static_cast<int>(sfx_footstep_dirt_.size()) - 1);
+        LoadedSfx& clip = sfx_footstep_dirt_[static_cast<size_t>(clip_dist(visual_rng_))];
+        PlaySfxIfVisible(clip.sound, clip.loaded, local_player->pos);
     }
 }
 
@@ -1441,8 +1495,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     std::unordered_set<int> previous_rune_ids;
     previous_rune_ids.reserve(state_.runes.size());
+    std::unordered_map<int, bool> previous_rune_active;
+    previous_rune_active.reserve(state_.runes.size());
     for (const auto& rune : state_.runes) {
         previous_rune_ids.insert(rune.id);
+        previous_rune_active[rune.id] = rune.active;
     }
     std::unordered_map<int, Vector2> previous_projectile_positions;
     previous_projectile_positions.reserve(state_.projectiles.size());
@@ -1466,6 +1523,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         if (object.type == ObjectType::Consumable && object.alive) {
             previous_consumable_positions[object.id] = CellToWorldCenter(object.cell);
         }
+    }
+    std::unordered_map<int, GrapplingHookPhase> previous_grappling_hook_phases;
+    previous_grappling_hook_phases.reserve(state_.grappling_hooks.size());
+    for (const auto& hook : state_.grappling_hooks) {
+        previous_grappling_hook_phases[hook.id] = hook.phase;
     }
 
     Vector2 previous_local_pos = {0.0f, 0.0f};
@@ -1599,7 +1661,10 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     RebuildInfluenceZones();
     if (!network_manager_.IsHost()) {
         for (const auto& rune : state_.runes) {
-            if (!rune.active || previous_rune_ids.find(rune.id) != previous_rune_ids.end()) {
+            const auto previous_active_it = previous_rune_active.find(rune.id);
+            const bool became_active = rune.active &&
+                                       (previous_active_it == previous_rune_active.end() || !previous_active_it->second);
+            if (!became_active) {
                 continue;
             }
             Particle rune_cast_vfx;
@@ -1607,7 +1672,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             rune_cast_vfx.vel = {0.0f, 0.0f};
             rune_cast_vfx.acc = {0.0f, 0.0f};
             rune_cast_vfx.drag = 0.0f;
-            rune_cast_vfx.animation_key = "rune_cast_effect";
+            rune_cast_vfx.animation_key = rune.volatile_cast ? "rune_cast_volatile_effect" : "rune_cast_effect";
             rune_cast_vfx.facing = "default";
             rune_cast_vfx.age_seconds = 0.0f;
             rune_cast_vfx.max_cycles = 1;
@@ -1674,6 +1739,17 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             const bool was_static = previous_animation_it != previous_projectile_animation_keys.end() &&
                                     (previous_animation_it->second == "fire_bolt_static" ||
                                      previous_animation_it->second == "fire_storm_static_large");
+            Particle explosion_vfx;
+            explosion_vfx.pos = projectile_pos;
+            explosion_vfx.vel = {0.0f, 0.0f};
+            explosion_vfx.acc = {0.0f, 0.0f};
+            explosion_vfx.drag = 0.0f;
+            explosion_vfx.animation_key = "explosion";
+            explosion_vfx.facing = "default";
+            explosion_vfx.age_seconds = 0.0f;
+            explosion_vfx.max_cycles = 1;
+            explosion_vfx.alive = true;
+            state_.particles.push_back(explosion_vfx);
             if (was_static) {
                 PlaySfxIfVisible(sfx_static_bolt_impact_.sound, sfx_static_bolt_impact_.loaded, projectile_pos);
             } else {
@@ -1802,6 +1878,19 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         state_.grappling_hooks.push_back(hook);
     }
     if (!network_manager_.IsHost()) {
+        for (const auto& hook : state_.grappling_hooks) {
+            const auto previous_phase_it = previous_grappling_hook_phases.find(hook.id);
+            if (previous_phase_it == previous_grappling_hook_phases.end()) {
+                if (const Player* owner = FindPlayerById(hook.owner_player_id)) {
+                    PlaySfxIfVisible(sfx_grappling_throw_.sound, sfx_grappling_throw_.loaded, owner->pos);
+                }
+                continue;
+            }
+            if (previous_phase_it->second != GrapplingHookPhase::Pulling &&
+                hook.phase == GrapplingHookPhase::Pulling) {
+                PlaySfxIfVisible(sfx_grappling_latch_.sound, sfx_grappling_latch_.loaded, hook.latch_point);
+            }
+        }
         for (const auto& dummy : state_.fire_storm_dummies) {
             if (previous_dummy_ids.find(dummy.id) != previous_dummy_ids.end()) {
                 continue;
