@@ -244,6 +244,14 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
             payload.WriteF32(player.status_effects[j].remaining_seconds);
             payload.WriteF32(player.status_effects[j].total_seconds);
             payload.WriteF32(player.status_effects[j].magnitude_per_second);
+            payload.WriteBool(player.status_effects[j].visible);
+            payload.WriteBool(player.status_effects[j].is_buff);
+            payload.WriteI32(player.status_effects[j].source_id);
+            payload.WriteF32(player.status_effects[j].progress);
+            payload.WriteF32(player.status_effects[j].source_elapsed_seconds);
+            payload.WriteF32(player.status_effects[j].burn_duration_seconds);
+            payload.WriteF32(player.status_effects[j].movement_speed_multiplier);
+            payload.WriteBool(player.status_effects[j].source_active);
             payload.WriteString(player.status_effects[j].composite_effect_id);
         }
         payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.item_slots.size(), 65535)));
@@ -282,6 +290,11 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteF32(rune.activation_total_seconds);
         payload.WriteF32(rune.activation_remaining_seconds);
         payload.WriteBool(rune.creates_influence_zone);
+        payload.WriteI32(rune.earth_trap_state);
+        payload.WriteF32(rune.earth_state_time);
+        payload.WriteF32(rune.earth_state_duration);
+        payload.WriteBool(rune.earth_roots_spawned);
+        payload.WriteI32(rune.earth_roots_group_id);
     }
 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.projectiles.size(), 65535)));
@@ -361,6 +374,22 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteBool(cast.alive);
     }
 
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.earth_roots_groups.size(), 65535)));
+    for (size_t i = 0; i < message.earth_roots_groups.size() && i < 65535; ++i) {
+        const auto& group = message.earth_roots_groups[i];
+        payload.WriteI32(group.id);
+        payload.WriteI32(group.owner_player_id);
+        payload.WriteI32(group.owner_team);
+        payload.WriteI32(group.center_cell_x);
+        payload.WriteI32(group.center_cell_y);
+        payload.WriteI32(group.state);
+        payload.WriteF32(group.state_time);
+        payload.WriteF32(group.state_duration);
+        payload.WriteF32(group.idle_lifetime_remaining_seconds);
+        payload.WriteBool(group.active_for_gameplay);
+        payload.WriteBool(group.alive);
+    }
+
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.grappling_hooks.size(), 65535)));
     for (size_t i = 0; i < message.grappling_hooks.size() && i < 65535; ++i) {
         const auto& hook = message.grappling_hooks[i];
@@ -414,6 +443,10 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_fire_storm_cast_ids.size(), 65535)));
     for (size_t i = 0; i < message.removed_fire_storm_cast_ids.size() && i < 65535; ++i) {
         payload.WriteI32(message.removed_fire_storm_cast_ids[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_earth_roots_group_ids.size(), 65535)));
+    for (size_t i = 0; i < message.removed_earth_roots_group_ids.size() && i < 65535; ++i) {
+        payload.WriteI32(message.removed_earth_roots_group_ids[i]);
     }
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_grappling_hook_ids.size(), 65535)));
     for (size_t i = 0; i < message.removed_grappling_hook_ids.size() && i < 65535; ++i) {
@@ -475,6 +508,10 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             PlayerSnapshot::StatusEffectSnapshot status;
             if (!reader.ReadI32(status.type) || !reader.ReadF32(status.remaining_seconds) ||
                 !reader.ReadF32(status.total_seconds) || !reader.ReadF32(status.magnitude_per_second) ||
+                !reader.ReadBool(status.visible) || !reader.ReadBool(status.is_buff) ||
+                !reader.ReadI32(status.source_id) || !reader.ReadF32(status.progress) ||
+                !reader.ReadF32(status.source_elapsed_seconds) || !reader.ReadF32(status.burn_duration_seconds) ||
+                !reader.ReadF32(status.movement_speed_multiplier) || !reader.ReadBool(status.source_active) ||
                 !reader.ReadString(status.composite_effect_id)) {
                 return std::nullopt;
             }
@@ -524,7 +561,10 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             !reader.ReadI32(rune.x) || !reader.ReadI32(rune.y) || !reader.ReadI32(rune.rune_type) ||
             !reader.ReadI32(rune.placement_order) || !reader.ReadBool(rune.active) ||
             !reader.ReadBool(rune.volatile_cast) || !reader.ReadF32(rune.activation_total_seconds) ||
-            !reader.ReadF32(rune.activation_remaining_seconds) || !reader.ReadBool(rune.creates_influence_zone)) {
+            !reader.ReadF32(rune.activation_remaining_seconds) || !reader.ReadBool(rune.creates_influence_zone) ||
+            !reader.ReadI32(rune.earth_trap_state) || !reader.ReadF32(rune.earth_state_time) ||
+            !reader.ReadF32(rune.earth_state_duration) || !reader.ReadBool(rune.earth_roots_spawned) ||
+            !reader.ReadI32(rune.earth_roots_group_id)) {
             return std::nullopt;
         }
         out.runes.push_back(rune);
@@ -602,6 +642,21 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             return std::nullopt;
         }
         out.fire_storm_casts.push_back(cast);
+    }
+
+    uint16_t roots_count = 0;
+    if (!reader.ReadU16(roots_count)) return std::nullopt;
+    out.earth_roots_groups.reserve(roots_count);
+    for (uint16_t i = 0; i < roots_count; ++i) {
+        EarthRootsGroupSnapshot group;
+        if (!reader.ReadI32(group.id) || !reader.ReadI32(group.owner_player_id) || !reader.ReadI32(group.owner_team) ||
+            !reader.ReadI32(group.center_cell_x) || !reader.ReadI32(group.center_cell_y) ||
+            !reader.ReadI32(group.state) || !reader.ReadF32(group.state_time) ||
+            !reader.ReadF32(group.state_duration) || !reader.ReadF32(group.idle_lifetime_remaining_seconds) ||
+            !reader.ReadBool(group.active_for_gameplay) || !reader.ReadBool(group.alive)) {
+            return std::nullopt;
+        }
+        out.earth_roots_groups.push_back(group);
     }
 
     uint16_t hook_count = 0;
@@ -685,6 +740,15 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         int32_t id = 0;
         if (!reader.ReadI32(id)) return std::nullopt;
         out.removed_fire_storm_cast_ids.push_back(id);
+    }
+
+    uint16_t removed_roots_count = 0;
+    if (!reader.ReadU16(removed_roots_count)) return std::nullopt;
+    out.removed_earth_roots_group_ids.reserve(removed_roots_count);
+    for (uint16_t i = 0; i < removed_roots_count; ++i) {
+        int32_t id = 0;
+        if (!reader.ReadI32(id)) return std::nullopt;
+        out.removed_earth_roots_group_ids.push_back(id);
     }
 
     uint16_t removed_hook_count = 0;

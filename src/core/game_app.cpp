@@ -118,8 +118,36 @@ bool HasStatusEffect(const Player& player, StatusEffectType type) {
                        });
 }
 
+float SmoothRootSigmoid(float t) {
+    const float clamped = std::clamp(t, 0.0f, 1.0f);
+    const float x = (clamped - 0.5f) * 10.0f;
+    const float s = 1.0f / (1.0f + std::exp(-x));
+    const float kMin = 1.0f / (1.0f + std::exp(5.0f));
+    const float kMax = 1.0f / (1.0f + std::exp(-5.0f));
+    return (s - kMin) / (kMax - kMin);
+}
+
 bool IsStaticFireBolt(const Projectile& projectile) {
     return projectile.animation_key == "fire_bolt_static" || projectile.animation_key == "fire_storm_static_large";
+}
+
+struct StatusEffectUiSpec {
+    const char* animation = nullptr;
+    bool is_buff = true;
+};
+
+StatusEffectUiSpec GetStatusEffectUiSpec(StatusEffectType type) {
+    switch (type) {
+        case StatusEffectType::Regeneration:
+            return {"health_potion_small", true};
+        case StatusEffectType::Stunned:
+            return {"static_upgrade", false};
+        case StatusEffectType::Rooted:
+            return {"earth_rune_rooted_idle", false};
+        case StatusEffectType::RootedRecovery:
+            return {"earth_rune_rooted_idle", false};
+    }
+    return {"altar_rune_slot_generic", true};
 }
 
 Color GetRuneFallbackColor(RuneType rune_type) {
@@ -269,6 +297,20 @@ const char* GetRuneBornSpriteAnimationKey(RuneType rune_type) {
             return "rune_born";
     }
     return "rune_born";
+}
+
+const char* GetEarthRuneAnimationKey(const Rune& rune) {
+    switch (rune.earth_trap_state) {
+        case EarthRuneTrapState::IdleRune:
+            return "earth_rune_idle";
+        case EarthRuneTrapState::Slamming:
+            return "earth_rune_slam";
+        case EarthRuneTrapState::RootedIdle:
+            return "earth_rune_rooted_idle";
+        case EarthRuneTrapState::RootedDeath:
+            return "earth_rune_rooted_death";
+    }
+    return "earth_rune_idle";
 }
 
 float AimToDegrees(Vector2 aim_dir) {
@@ -1112,14 +1154,17 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
         movement = Vector2Normalize(movement);
     }
 
-    const Vector2 acceleration = (is_stunned || is_pulled) ? Vector2{0.0f, 0.0f}
-                                                            : Vector2Scale(movement, Constants::kPlayerAcceleration);
+    const float movement_multiplier = GetPlayerMovementSpeedMultiplier(*local_player);
+    const Vector2 acceleration = (is_stunned || is_pulled)
+                                     ? Vector2{0.0f, 0.0f}
+                                     : Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
     local_player->vel = Vector2Add(local_player->vel, Vector2Scale(acceleration, dt));
     const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * dt);
     local_player->vel = Vector2Scale(local_player->vel, damping);
     const float speed = Vector2Length(local_player->vel);
-    if (speed > Constants::kPlayerMaxSpeed) {
-        local_player->vel = Vector2Scale(Vector2Normalize(local_player->vel), Constants::kPlayerMaxSpeed);
+    if (speed > Constants::kPlayerMaxSpeed * movement_multiplier) {
+        local_player->vel =
+            Vector2Scale(Vector2Normalize(local_player->vel), Constants::kPlayerMaxSpeed * movement_multiplier);
     }
     local_player->pos = Vector2Add(local_player->pos, Vector2Scale(local_player->vel, dt));
     CollisionWorld::ResolvePlayerVsWorldLocal(state_.map, *local_player, !is_pulled);
@@ -1648,6 +1693,14 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             status.remaining_seconds = status_snapshot.remaining_seconds;
             status.total_seconds = status_snapshot.total_seconds;
             status.magnitude_per_second = status_snapshot.magnitude_per_second;
+            status.visible = status_snapshot.visible;
+            status.is_buff = status_snapshot.is_buff;
+            status.source_id = status_snapshot.source_id;
+            status.progress = status_snapshot.progress;
+            status.source_elapsed_seconds = status_snapshot.source_elapsed_seconds;
+            status.burn_duration_seconds = status_snapshot.burn_duration_seconds;
+            status.movement_speed_multiplier = status_snapshot.movement_speed_multiplier;
+            status.source_active = status_snapshot.source_active;
             status.composite_effect_id = status_snapshot.composite_effect_id;
             status.accumulated_magnitude = 0.0f;
             player.status_effects.push_back(status);
@@ -1715,6 +1768,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         rune.activation_total_seconds = rune_snapshot.activation_total_seconds;
         rune.activation_remaining_seconds = rune_snapshot.activation_remaining_seconds;
         rune.creates_influence_zone = rune_snapshot.creates_influence_zone;
+        rune.earth_trap_state = static_cast<EarthRuneTrapState>(rune_snapshot.earth_trap_state);
+        rune.earth_state_time = rune_snapshot.earth_state_time;
+        rune.earth_state_duration = rune_snapshot.earth_state_duration;
+        rune.earth_roots_spawned = rune_snapshot.earth_roots_spawned;
+        rune.earth_roots_group_id = rune_snapshot.earth_roots_group_id;
         state_.runes.push_back(rune);
     }
     RebuildInfluenceZones();
@@ -1809,6 +1867,18 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             explosion_vfx.max_cycles = 1;
             explosion_vfx.alive = true;
             state_.particles.push_back(explosion_vfx);
+            const float half_w = static_cast<float>(GetScreenWidth()) / std::max(0.001f, (2.0f * camera_.zoom));
+            const float half_h = static_cast<float>(GetScreenHeight()) / std::max(0.001f, (2.0f * camera_.zoom));
+            const float pad = Constants::kFireBoltExplosionRadius;
+            const bool in_camera_view =
+                projectile_pos.x >= (camera_.target.x - half_w - pad) &&
+                projectile_pos.x <= (camera_.target.x + half_w + pad) &&
+                projectile_pos.y >= (camera_.target.y - half_h - pad) &&
+                projectile_pos.y <= (camera_.target.y + half_h + pad);
+            if (in_camera_view) {
+                camera_shake_time_remaining_ =
+                    std::max(camera_shake_time_remaining_, Constants::kCameraShakeDurationSeconds);
+            }
             if (was_static) {
                 PlaySfxIfVisible(sfx_static_bolt_impact_.sound, sfx_static_bolt_impact_.loaded, projectile_pos);
             } else {
@@ -1923,6 +1993,21 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             PlaySfxIfVisible(sfx_fire_storm_cast_.sound, sfx_fire_storm_cast_.loaded,
                              CellToWorldCenter(cast.center_cell));
         }
+    }
+    state_.earth_roots_groups.clear();
+    for (const auto& roots_snapshot : snapshot.earth_roots_groups) {
+        EarthRootsGroup group;
+        group.id = roots_snapshot.id;
+        group.owner_player_id = roots_snapshot.owner_player_id;
+        group.owner_team = roots_snapshot.owner_team;
+        group.center_cell = {roots_snapshot.center_cell_x, roots_snapshot.center_cell_y};
+        group.state = static_cast<EarthRootsGroupState>(roots_snapshot.state);
+        group.state_time = roots_snapshot.state_time;
+        group.state_duration = roots_snapshot.state_duration;
+        group.idle_lifetime_remaining_seconds = roots_snapshot.idle_lifetime_remaining_seconds;
+        group.active_for_gameplay = roots_snapshot.active_for_gameplay;
+        group.alive = roots_snapshot.alive;
+        state_.earth_roots_groups.push_back(group);
     }
     state_.grappling_hooks.clear();
     for (const auto& hook_snapshot : snapshot.grappling_hooks) {
@@ -2067,13 +2152,15 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 }
                 const float step_dt = pending_input.local_dt > 0.0f ? pending_input.local_dt
                                                                     : static_cast<float>(Constants::kFixedDt);
-                const Vector2 acceleration = Vector2Scale(movement, Constants::kPlayerAcceleration);
+                const float movement_multiplier = GetPlayerMovementSpeedMultiplier(replay);
+                const Vector2 acceleration = Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
                 replay.vel = Vector2Add(replay.vel, Vector2Scale(acceleration, step_dt));
                 const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * step_dt);
                 replay.vel = Vector2Scale(replay.vel, damping);
                 const float speed = Vector2Length(replay.vel);
-                if (speed > Constants::kPlayerMaxSpeed) {
-                    replay.vel = Vector2Scale(Vector2Normalize(replay.vel), Constants::kPlayerMaxSpeed);
+                if (speed > Constants::kPlayerMaxSpeed * movement_multiplier) {
+                    replay.vel =
+                        Vector2Scale(Vector2Normalize(replay.vel), Constants::kPlayerMaxSpeed * movement_multiplier);
                 }
                 replay.pos = Vector2Add(replay.pos, Vector2Scale(replay.vel, step_dt));
                 const bool replay_is_pulled = IsPlayerBeingPulled(replay.id);
@@ -2206,6 +2293,14 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
             status_snapshot.remaining_seconds = status.remaining_seconds;
             status_snapshot.total_seconds = status.total_seconds;
             status_snapshot.magnitude_per_second = status.magnitude_per_second;
+            status_snapshot.visible = status.visible;
+            status_snapshot.is_buff = status.is_buff;
+            status_snapshot.source_id = status.source_id;
+            status_snapshot.progress = status.progress;
+            status_snapshot.source_elapsed_seconds = status.source_elapsed_seconds;
+            status_snapshot.burn_duration_seconds = status.burn_duration_seconds;
+            status_snapshot.movement_speed_multiplier = status.movement_speed_multiplier;
+            status_snapshot.source_active = status.source_active;
             status_snapshot.composite_effect_id = status.composite_effect_id;
             player_snapshot.status_effects.push_back(status_snapshot);
         }
@@ -2235,6 +2330,11 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
         rune_snapshot.activation_total_seconds = rune.activation_total_seconds;
         rune_snapshot.activation_remaining_seconds = rune.activation_remaining_seconds;
         rune_snapshot.creates_influence_zone = rune.creates_influence_zone;
+        rune_snapshot.earth_trap_state = static_cast<int>(rune.earth_trap_state);
+        rune_snapshot.earth_state_time = rune.earth_state_time;
+        rune_snapshot.earth_state_duration = rune.earth_state_duration;
+        rune_snapshot.earth_roots_spawned = rune.earth_roots_spawned;
+        rune_snapshot.earth_roots_group_id = rune.earth_roots_group_id;
         snapshot.runes.push_back(rune_snapshot);
     }
 
@@ -2312,6 +2412,21 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
         cast_snapshot.duration_seconds = cast.duration_seconds;
         cast_snapshot.alive = cast.alive;
         snapshot.fire_storm_casts.push_back(cast_snapshot);
+    }
+    for (const auto& group : state_.earth_roots_groups) {
+        EarthRootsGroupSnapshot roots_snapshot;
+        roots_snapshot.id = group.id;
+        roots_snapshot.owner_player_id = group.owner_player_id;
+        roots_snapshot.owner_team = group.owner_team;
+        roots_snapshot.center_cell_x = group.center_cell.x;
+        roots_snapshot.center_cell_y = group.center_cell.y;
+        roots_snapshot.state = static_cast<int>(group.state);
+        roots_snapshot.state_time = group.state_time;
+        roots_snapshot.state_duration = group.state_duration;
+        roots_snapshot.idle_lifetime_remaining_seconds = group.idle_lifetime_remaining_seconds;
+        roots_snapshot.active_for_gameplay = group.active_for_gameplay;
+        roots_snapshot.alive = group.alive;
+        snapshot.earth_roots_groups.push_back(roots_snapshot);
     }
     for (const auto& hook : state_.grappling_hooks) {
         GrapplingHookSnapshot hook_snapshot;
@@ -2429,6 +2544,7 @@ void GameApp::SimulateHostGameplay(float dt) {
     ResolvePlayerCollisions();
     UpdateIceWalls(dt);
     UpdateRunes(dt);
+    UpdateEarthRootsGroups(dt);
     UpdateArena(dt);
 
     for (auto& player : state_.players) {
@@ -2531,16 +2647,18 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         movement = Vector2Normalize(movement);
     }
 
-    Vector2 acceleration = (is_stunned || is_pulled) ? Vector2{0.0f, 0.0f}
-                                                     : Vector2Scale(movement, Constants::kPlayerAcceleration);
+    const float movement_multiplier = GetPlayerMovementSpeedMultiplier(player);
+    Vector2 acceleration = (is_stunned || is_pulled)
+                               ? Vector2{0.0f, 0.0f}
+                               : Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
     player.vel = Vector2Add(player.vel, Vector2Scale(acceleration, dt));
 
     const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * dt);
     player.vel = Vector2Scale(player.vel, damping);
 
     const float speed = Vector2Length(player.vel);
-    if (speed > Constants::kPlayerMaxSpeed) {
-        player.vel = Vector2Scale(Vector2Normalize(player.vel), Constants::kPlayerMaxSpeed);
+    if (speed > Constants::kPlayerMaxSpeed * movement_multiplier) {
+        player.vel = Vector2Scale(Vector2Normalize(player.vel), Constants::kPlayerMaxSpeed * movement_multiplier);
     }
 
     player.pos = Vector2Add(player.pos, Vector2Scale(player.vel, dt));
@@ -2647,6 +2765,28 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
             }
             case StatusEffectType::Stunned:
                 break;
+            case StatusEffectType::Rooted: {
+                status.source_elapsed_seconds += applied_dt;
+                const float burn_duration = std::max(0.001f, status.burn_duration_seconds);
+                const float normalized = std::clamp(status.source_elapsed_seconds / burn_duration, 0.0f, 1.0f);
+                status.progress = normalized;
+                status.movement_speed_multiplier = 1.0f - SmoothRootSigmoid(normalized);
+                if (status.source_active) {
+                    status.remaining_seconds =
+                        std::max(status.remaining_seconds, Constants::kEarthRootedVisibleDurationSeconds);
+                    status.total_seconds = std::max(status.total_seconds, Constants::kEarthRootedVisibleDurationSeconds);
+                }
+                break;
+            }
+            case StatusEffectType::RootedRecovery: {
+                status.source_elapsed_seconds += applied_dt;
+                const float recover_duration = std::max(0.001f, status.burn_duration_seconds);
+                const float normalized = std::clamp(status.source_elapsed_seconds / recover_duration, 0.0f, 1.0f);
+                const float base_progress = std::clamp(status.progress, 0.0f, 1.0f);
+                const float active_progress = std::max(0.0f, base_progress * (1.0f - normalized));
+                status.movement_speed_multiplier = 1.0f - SmoothRootSigmoid(active_progress);
+                break;
+            }
         }
     }
 
@@ -2662,6 +2802,19 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
         std::remove_if(player.status_effects.begin(), player.status_effects.end(),
                        [](const StatusEffectInstance& status) { return status.remaining_seconds <= 0.0f; }),
         player.status_effects.end());
+}
+
+float GameApp::GetPlayerMovementSpeedMultiplier(const Player& player) const {
+    float multiplier = 1.0f;
+    for (const auto& status : player.status_effects) {
+        if (status.remaining_seconds <= 0.0f) {
+            continue;
+        }
+        if (status.type == StatusEffectType::Rooted || status.type == StatusEffectType::RootedRecovery) {
+            multiplier = std::min(multiplier, std::clamp(status.movement_speed_multiplier, 0.0f, 1.0f));
+        }
+    }
+    return multiplier;
 }
 
 void GameApp::UpdateDamagePopups(float dt) {
@@ -2926,6 +3079,8 @@ void GameApp::AddRegenerationStatus(Player& player, float duration_seconds, floa
     status.total_seconds = status.remaining_seconds;
     status.magnitude_per_second = std::max(0.0f, amount_per_second);
     status.accumulated_magnitude = 0.0f;
+    status.visible = true;
+    status.is_buff = true;
     status.composite_effect_id = "heal_effect";
     player.status_effects.push_back(status);
 }
@@ -2946,7 +3101,42 @@ void GameApp::AddStunnedStatus(Player& player, float duration_seconds) {
     status.total_seconds = duration_seconds;
     status.magnitude_per_second = 0.0f;
     status.accumulated_magnitude = 0.0f;
+    status.visible = true;
+    status.is_buff = false;
     status.composite_effect_id.clear();
+    player.status_effects.push_back(status);
+}
+
+void GameApp::RefreshOrAddRootedStatus(Player& player, int source_id) {
+    for (auto& status : player.status_effects) {
+        if (status.type == StatusEffectType::RootedRecovery && status.source_id == source_id) {
+            status.remaining_seconds = 0.0f;
+        }
+    }
+    for (auto& status : player.status_effects) {
+        if (status.type != StatusEffectType::Rooted || status.source_id != source_id) {
+            continue;
+        }
+        status.visible = true;
+        status.is_buff = false;
+        status.source_active = true;
+        status.remaining_seconds = std::max(status.remaining_seconds, Constants::kEarthRootedVisibleDurationSeconds);
+        status.total_seconds = std::max(status.total_seconds, Constants::kEarthRootedVisibleDurationSeconds);
+        return;
+    }
+
+    StatusEffectInstance status;
+    status.type = StatusEffectType::Rooted;
+    status.remaining_seconds = Constants::kEarthRootedVisibleDurationSeconds;
+    status.total_seconds = Constants::kEarthRootedVisibleDurationSeconds;
+    status.visible = true;
+    status.is_buff = false;
+    status.source_id = source_id;
+    status.progress = 0.0f;
+    status.source_elapsed_seconds = 0.0f;
+    status.burn_duration_seconds = Constants::kEarthRootedBurnInSeconds;
+    status.movement_speed_multiplier = 1.0f;
+    status.source_active = true;
     player.status_effects.push_back(status);
 }
 
@@ -3136,19 +3326,97 @@ void GameApp::UpdateIceWalls(float dt) {
 
 void GameApp::UpdateRunes(float dt) {
     std::vector<RunePlacedEvent> activated_runes;
+    std::vector<int> expired_rune_ids;
     for (auto& rune : state_.runes) {
-        if (rune.active) {
+        if (!rune.active) {
+            rune.activation_remaining_seconds = std::max(0.0f, rune.activation_remaining_seconds - dt);
+            if (rune.activation_remaining_seconds > 0.0f) {
+                continue;
+            }
+
+            rune.active = true;
+            activated_runes.push_back(
+                RunePlacedEvent{rune.owner_player_id, rune.owner_team, rune.cell, rune.rune_type, rune.placement_order});
             continue;
         }
 
-        rune.activation_remaining_seconds = std::max(0.0f, rune.activation_remaining_seconds - dt);
-        if (rune.activation_remaining_seconds > 0.0f) {
+        if (rune.rune_type != RuneType::Earth) {
             continue;
         }
 
-        rune.active = true;
-        activated_runes.push_back(
-            RunePlacedEvent{rune.owner_player_id, rune.owner_team, rune.cell, rune.rune_type, rune.placement_order});
+        switch (rune.earth_trap_state) {
+            case EarthRuneTrapState::IdleRune: {
+                bool enemy_in_range = false;
+                for (const auto& player : state_.players) {
+                    if (!player.alive || player.team == rune.owner_team) {
+                        continue;
+                    }
+                    const GridCoord player_cell = WorldToCell(player.pos);
+                    if (std::abs(player_cell.x - rune.cell.x) <= 1 && std::abs(player_cell.y - rune.cell.y) <= 1) {
+                        enemy_in_range = true;
+                        break;
+                    }
+                }
+                if (!enemy_in_range) {
+                    break;
+                }
+                rune.earth_trap_state = EarthRuneTrapState::Slamming;
+                rune.earth_state_time = 0.0f;
+                int frame_count = 0;
+                float fps = 1.0f;
+                rune.earth_state_duration = Constants::kEarthRuneSlamFallbackSeconds;
+                if (sprite_metadata_.GetAnimationStats("earth_rune_slam", "default", frame_count, fps) && frame_count > 0) {
+                    rune.earth_state_duration = static_cast<float>(frame_count) / std::max(0.001f, fps);
+                }
+                rune.earth_roots_spawned = false;
+                rune.creates_influence_zone = false;
+                break;
+            }
+            case EarthRuneTrapState::Slamming: {
+                rune.earth_state_time += dt;
+                if (!rune.earth_roots_spawned &&
+                    rune.earth_state_time >= rune.earth_state_duration * Constants::kEarthRuneSlamSpawnRootsProgress) {
+                    rune.earth_roots_group_id = SpawnEarthRootsGroup(rune.owner_player_id, rune.owner_team, rune.cell);
+                    rune.earth_roots_spawned = true;
+                }
+                if (rune.earth_state_time >= rune.earth_state_duration) {
+                    rune.earth_trap_state = EarthRuneTrapState::RootedIdle;
+                    rune.earth_state_time = 0.0f;
+                    rune.earth_state_duration = Constants::kEarthRuneTrapPersistSeconds;
+                }
+                break;
+            }
+            case EarthRuneTrapState::RootedIdle:
+                rune.earth_state_time += dt;
+                if (rune.earth_state_time >= rune.earth_state_duration) {
+                    rune.earth_trap_state = EarthRuneTrapState::RootedDeath;
+                    rune.earth_state_time = 0.0f;
+                    int frame_count = 0;
+                    float fps = 1.0f;
+                    rune.earth_state_duration = Constants::kEarthRuneRootedDeathFallbackSeconds;
+                    if (sprite_metadata_.GetAnimationStats("earth_rune_rooted_death", "default", frame_count, fps) &&
+                        frame_count > 0) {
+                        rune.earth_state_duration = static_cast<float>(frame_count) / std::max(0.001f, fps);
+                    }
+                }
+                break;
+            case EarthRuneTrapState::RootedDeath:
+                rune.earth_state_time += dt;
+                if (rune.earth_state_time >= rune.earth_state_duration) {
+                    expired_rune_ids.push_back(rune.id);
+                }
+                break;
+        }
+    }
+
+    if (!expired_rune_ids.empty()) {
+        state_.runes.erase(
+            std::remove_if(state_.runes.begin(), state_.runes.end(),
+                           [&](const Rune& rune) {
+                               return std::find(expired_rune_ids.begin(), expired_rune_ids.end(), rune.id) !=
+                                      expired_rune_ids.end();
+                           }),
+            state_.runes.end());
     }
 
     if (!activated_runes.empty()) {
@@ -3159,6 +3427,126 @@ void GameApp::UpdateRunes(float dt) {
     } else if (!state_.influence_zones.empty()) {
         RebuildInfluenceZones();
     }
+}
+
+int GameApp::SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell) {
+    EarthRootsGroup group;
+    group.id = state_.next_entity_id++;
+    group.owner_player_id = owner_player_id;
+    group.owner_team = owner_team;
+    group.center_cell = center_cell;
+    group.state = EarthRootsGroupState::Born;
+    group.state_time = 0.0f;
+    int frame_count = 0;
+    float fps = 1.0f;
+    group.state_duration = 0.5f;
+    if (sprite_metadata_.GetAnimationStats("roots_born_back", "default", frame_count, fps) && frame_count > 0) {
+        group.state_duration = static_cast<float>(frame_count) / std::max(0.001f, fps);
+    }
+    group.idle_lifetime_remaining_seconds = Constants::kEarthRuneTrapPersistSeconds;
+    group.active_for_gameplay = true;
+    group.alive = true;
+    state_.earth_roots_groups.push_back(group);
+    return group.id;
+}
+
+void GameApp::UpdateEarthRootsGroups(float dt) {
+    for (auto& player : state_.players) {
+        for (auto& status : player.status_effects) {
+            if (status.type == StatusEffectType::Rooted) {
+                status.source_active = false;
+            }
+        }
+    }
+
+    for (auto& group : state_.earth_roots_groups) {
+        if (!group.alive) {
+            continue;
+        }
+
+        if (group.active_for_gameplay) {
+            for (auto& player : state_.players) {
+                if (!player.alive || player.team == group.owner_team) {
+                    continue;
+                }
+                const GridCoord cell = WorldToCell(player.pos);
+                if (std::abs(cell.x - group.center_cell.x) <= 1 && std::abs(cell.y - group.center_cell.y) <= 1) {
+                    RefreshOrAddRootedStatus(player, group.id);
+                }
+            }
+        }
+
+        group.state_time += dt;
+        switch (group.state) {
+            case EarthRootsGroupState::Born:
+                if (group.state_time >= group.state_duration) {
+                    group.state = EarthRootsGroupState::Idle;
+                    group.state_time = 0.0f;
+                    group.state_duration = 0.0f;
+                }
+                break;
+            case EarthRootsGroupState::Idle:
+                group.idle_lifetime_remaining_seconds = std::max(0.0f, group.idle_lifetime_remaining_seconds - dt);
+                if (group.idle_lifetime_remaining_seconds <= 0.0f) {
+                    group.state = EarthRootsGroupState::Dying;
+                    group.state_time = 0.0f;
+                    group.active_for_gameplay = false;
+                    int frame_count = 0;
+                    float fps = 1.0f;
+                    group.state_duration = 0.5f;
+                    if (sprite_metadata_.GetAnimationStats("roots_death_back", "default", frame_count, fps) && frame_count > 0) {
+                        group.state_duration = static_cast<float>(frame_count) / std::max(0.001f, fps);
+                    }
+                }
+                break;
+            case EarthRootsGroupState::Dying:
+                if (group.state_time >= group.state_duration) {
+                    group.alive = false;
+                }
+                break;
+        }
+    }
+
+    for (auto& player : state_.players) {
+        std::vector<StatusEffectInstance> recovery_to_add;
+        for (auto& status : player.status_effects) {
+            if (status.type != StatusEffectType::Rooted || status.remaining_seconds <= 0.0f || status.source_active) {
+                continue;
+            }
+            StatusEffectInstance recovery;
+            recovery.type = StatusEffectType::RootedRecovery;
+            recovery.remaining_seconds = Constants::kEarthRootedRecoverSeconds;
+            recovery.total_seconds = Constants::kEarthRootedRecoverSeconds;
+            recovery.visible = false;
+            recovery.is_buff = false;
+            recovery.source_id = status.source_id;
+            recovery.progress = status.progress;
+            recovery.source_elapsed_seconds = 0.0f;
+            recovery.burn_duration_seconds = Constants::kEarthRootedRecoverSeconds;
+            recovery.movement_speed_multiplier = status.movement_speed_multiplier;
+            recovery.source_active = false;
+            recovery_to_add.push_back(recovery);
+            status.remaining_seconds = 0.0f;
+        }
+        for (auto& recovery : recovery_to_add) {
+            bool replaced = false;
+            for (auto& existing : player.status_effects) {
+                if (existing.type == StatusEffectType::RootedRecovery && existing.source_id == recovery.source_id) {
+                    existing = recovery;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                player.status_effects.push_back(recovery);
+            }
+        }
+    }
+
+    state_.earth_roots_groups.erase(
+        std::remove_if(state_.earth_roots_groups.begin(), state_.earth_roots_groups.end(),
+                       [](const EarthRootsGroup& group) { return !group.alive; }),
+        state_.earth_roots_groups.end());
 }
 
 void GameApp::RebuildInfluenceZones() {
@@ -4617,6 +5005,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
         MapObject,
         CompositeEffectPart,
         FireStormDummyPart,
+        EarthRootsPart,
         StatusEffectPart,
         Rune,
         IceWall,
@@ -4645,23 +5034,25 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 return 2;
             case RenderKind::FireStormDummyPart:
                 return 3;
-            case RenderKind::StatusEffectPart:
+            case RenderKind::EarthRootsPart:
                 return 4;
-            case RenderKind::Rune:
+            case RenderKind::StatusEffectPart:
                 return 5;
-            case RenderKind::IceWall:
+            case RenderKind::Rune:
                 return 6;
-            case RenderKind::LightningSegment:
+            case RenderKind::IceWall:
                 return 7;
-            case RenderKind::GrapplingHookSegment:
+            case RenderKind::LightningSegment:
                 return 8;
-            case RenderKind::Projectile:
+            case RenderKind::GrapplingHookSegment:
                 return 9;
-            case RenderKind::Particle:
+            case RenderKind::Projectile:
                 return 10;
+            case RenderKind::Particle:
+                return 11;
             case RenderKind::Player:
             default:
-                return 11;
+                return 12;
         }
     };
 
@@ -4695,7 +5086,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
     }
     items.reserve(state_.players.size() + state_.runes.size() + state_.projectiles.size() + state_.particles.size() +
                   state_.ice_walls.size() + state_.map.decorations.size() + state_.map_objects.size() +
-                  lightning_segment_total + grappling_segment_total);
+                  lightning_segment_total + grappling_segment_total + state_.earth_roots_groups.size() * 17);
 
     for (size_t i = 0; i < state_.map.decorations.size(); ++i) {
         if (state_.map.decorations[i].empty()) {
@@ -4773,6 +5164,24 @@ void GameApp::RenderNonTerrainDepthSorted() {
                         const float sort_y = origin.y + 0.5f * cell + part.sort_anchor_y_tiles * cell;
                         items.push_back({RenderKind::FireStormDummyPart, sort_y, i, 1, j});
                     }
+                }
+            }
+        }
+    }
+
+    for (size_t i = 0; i < state_.earth_roots_groups.size(); ++i) {
+        const EarthRootsGroup& group = state_.earth_roots_groups[i];
+        if (!group.alive) {
+            continue;
+        }
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                const size_t tile_index = static_cast<size_t>((dy + 1) * 3 + (dx + 1));
+                const GridCoord cell = {group.center_cell.x + dx, group.center_cell.y + dy};
+                const Vector2 center = CellToWorldCenter(cell);
+                items.push_back({RenderKind::EarthRootsPart, center.y, i, tile_index, 0});
+                if (!(dx == 0 && dy == 0)) {
+                    items.push_back({RenderKind::EarthRootsPart, center.y + 8.0f, i, tile_index, 1});
                 }
             }
         }
@@ -5140,14 +5549,55 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 DrawTexturePro(texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
                 break;
             }
+            case RenderKind::EarthRootsPart: {
+                if (item.index >= state_.earth_roots_groups.size() || !has_texture) {
+                    break;
+                }
+                const EarthRootsGroup& group = state_.earth_roots_groups[item.index];
+                const int tile_index = static_cast<int>(item.aux_index);
+                const int dx = tile_index % 3 - 1;
+                const int dy = tile_index / 3 - 1;
+                const GridCoord cell = {group.center_cell.x + dx, group.center_cell.y + dy};
+                const Vector2 center = CellToWorldCenter(cell);
+                const bool front = item.sub_index == 1;
+                const char* animation_name = nullptr;
+                float animation_time = 0.0f;
+                switch (group.state) {
+                    case EarthRootsGroupState::Born:
+                        animation_name = front ? "roots_born_front" : "roots_born_back";
+                        animation_time = group.state_time;
+                        break;
+                    case EarthRootsGroupState::Idle:
+                        animation_name = front ? "roots_idle_front" : "roots_idle_back";
+                        animation_time = 0.0f;
+                        break;
+                    case EarthRootsGroupState::Dying:
+                        animation_name = front ? "roots_death_front" : "roots_death_back";
+                        animation_time = group.state_time;
+                        break;
+                }
+                if (animation_name == nullptr || !sprite_metadata_.HasAnimation(animation_name)) {
+                    break;
+                }
+                const Rectangle src = InsetSourceRect(
+                    sprite_metadata_.GetFrame(animation_name, "default", animation_time),
+                    Constants::kAtlasSampleInsetPixels);
+                Rectangle dst = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
+                DrawTexturePro(texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
+                break;
+            }
             case RenderKind::Rune: {
                 const Rune& rune = state_.runes[item.index];
                 const Vector2 center = CellToWorldCenter(rune.cell);
-                const char* animation_name =
-                    rune.active ? GetRuneSpriteAnimationKey(rune.rune_type) : GetRuneBornSpriteAnimationKey(rune.rune_type);
-                const float animation_time =
-                    rune.active ? (render_time_seconds_ + rune.placement_order * 0.05f)
-                                : (rune.activation_total_seconds - rune.activation_remaining_seconds);
+                const char* animation_name = rune.active
+                                                 ? (rune.rune_type == RuneType::Earth ? GetEarthRuneAnimationKey(rune)
+                                                                                      : GetRuneSpriteAnimationKey(rune.rune_type))
+                                                 : GetRuneBornSpriteAnimationKey(rune.rune_type);
+                const float animation_time = rune.active
+                                                 ? (rune.rune_type == RuneType::Earth
+                                                        ? rune.earth_state_time
+                                                        : (render_time_seconds_ + rune.placement_order * 0.05f))
+                                                 : (rune.activation_total_seconds - rune.activation_remaining_seconds);
 
                 const char* fallback_animation = rune.active ? "" : "rune_born";
                 if (has_texture &&
@@ -6173,6 +6623,73 @@ void GameApp::RenderBottomHud() {
                    static_cast<unsigned char>(Constants::kHudManaBarB), 255},
              TextFormat("%d / %d", static_cast<int>(std::roundf(local_player->mana)),
                         static_cast<int>(std::roundf(local_player->max_mana))));
+
+    const std::vector<const StatusEffectInstance*> active_statuses = [&]() {
+        std::vector<const StatusEffectInstance*> result;
+        result.reserve(local_player->status_effects.size());
+        const StatusEffectInstance* rooted_dominant = nullptr;
+        for (const auto& status : local_player->status_effects) {
+            if (status.remaining_seconds <= 0.0f || !status.visible) {
+                continue;
+            }
+            if (status.type == StatusEffectType::Rooted) {
+                if (rooted_dominant == nullptr ||
+                    status.movement_speed_multiplier < rooted_dominant->movement_speed_multiplier - 0.0001f ||
+                    (std::fabs(status.movement_speed_multiplier - rooted_dominant->movement_speed_multiplier) <= 0.0001f &&
+                     status.remaining_seconds > rooted_dominant->remaining_seconds)) {
+                    rooted_dominant = &status;
+                }
+                continue;
+            }
+            result.push_back(&status);
+        }
+        if (rooted_dominant != nullptr) {
+            result.push_back(rooted_dominant);
+        }
+        return result;
+    }();
+    if (!active_statuses.empty()) {
+        const float icon_diameter = 21.0f * scale;
+        const float icon_spacing = 5.0f * scale;
+        const float total_width =
+            static_cast<float>(active_statuses.size()) * icon_diameter +
+            static_cast<float>(std::max<int>(0, static_cast<int>(active_statuses.size()) - 1)) * icon_spacing;
+        const float start_x = hud_x + (panel_width - total_width) * 0.5f;
+        const float center_y = hud_y - 13.0f * scale;
+        const Color badge_fill = Color{28, 32, 38, 235};
+        const Color buff_color = Color{92, 214, 112, 255};
+        const Color debuff_color = Color{224, 84, 84, 255};
+        for (size_t i = 0; i < active_statuses.size(); ++i) {
+            const StatusEffectInstance& status = *active_statuses[i];
+            const StatusEffectUiSpec spec = GetStatusEffectUiSpec(status.type);
+            const Vector2 center = {start_x + icon_diameter * 0.5f + static_cast<float>(i) * (icon_diameter + icon_spacing),
+                                    center_y};
+            const float radius = icon_diameter * 0.5f;
+            DrawCircleV(center, radius, badge_fill);
+
+            if (sprite_metadata_.IsLoaded() && spec.animation != nullptr && sprite_metadata_.HasAnimation(spec.animation)) {
+                const float animation_time = render_time_seconds_;
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame(spec.animation, "default", animation_time),
+                                    Constants::kAtlasSampleInsetPixels);
+                const float icon_size = icon_diameter * 1.44f;
+                Rectangle icon_dst = {center.x - icon_size * 0.5f, center.y - icon_size * 0.5f, icon_size, icon_size};
+                DrawTexturePro(sprite_metadata_.GetTexture(), src, SnapRect(icon_dst), {0, 0}, 0.0f, WHITE);
+            } else {
+                DrawCircleV(center, radius * 0.45f, Color{180, 184, 196, 255});
+            }
+
+            const float ratio =
+                (status.total_seconds > 0.0f) ? std::clamp(status.remaining_seconds / status.total_seconds, 0.0f, 1.0f) : 0.0f;
+            if (ratio > 0.0f) {
+                const float start_angle = -90.0f;
+                const float end_angle = start_angle + 360.0f * ratio;
+                const Color ring_color = status.is_buff ? buff_color : debuff_color;
+                DrawRing(center, radius - 2.5f * scale, radius, start_angle, end_angle, 48, ring_color);
+            }
+            DrawCircleLinesV(center, radius, BLACK);
+        }
+    }
 
     const Vector2 mouse = GetMousePosition();
     const float slot_row_height = Constants::kHudSlotSize * scale;

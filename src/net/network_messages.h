@@ -73,11 +73,24 @@ struct PlayerSnapshot {
         float remaining_seconds = 0.0f;
         float total_seconds = 0.0f;
         float magnitude_per_second = 0.0f;
+        bool visible = true;
+        bool is_buff = false;
+        int source_id = -1;
+        float progress = 0.0f;
+        float source_elapsed_seconds = 0.0f;
+        float burn_duration_seconds = 0.0f;
+        float movement_speed_multiplier = 1.0f;
+        bool source_active = false;
         std::string composite_effect_id;
 
         bool operator==(const StatusEffectSnapshot& other) const {
             return type == other.type && remaining_seconds == other.remaining_seconds &&
                    total_seconds == other.total_seconds && magnitude_per_second == other.magnitude_per_second &&
+                   visible == other.visible && is_buff == other.is_buff && source_id == other.source_id &&
+                   progress == other.progress && source_elapsed_seconds == other.source_elapsed_seconds &&
+                   burn_duration_seconds == other.burn_duration_seconds &&
+                   movement_speed_multiplier == other.movement_speed_multiplier &&
+                   source_active == other.source_active &&
                    composite_effect_id == other.composite_effect_id;
         }
     };
@@ -104,6 +117,11 @@ struct RuneSnapshot {
     float activation_total_seconds = 0.0f;
     float activation_remaining_seconds = 0.0f;
     bool creates_influence_zone = true;
+    int earth_trap_state = 0;
+    float earth_state_time = 0.0f;
+    float earth_state_duration = 0.0f;
+    bool earth_roots_spawned = false;
+    int earth_roots_group_id = -1;
 };
 
 struct ProjectileSnapshot {
@@ -173,6 +191,20 @@ struct FireStormCastSnapshot {
     bool alive = true;
 };
 
+struct EarthRootsGroupSnapshot {
+    int id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
+    int center_cell_x = 0;
+    int center_cell_y = 0;
+    int state = 0;
+    float state_time = 0.0f;
+    float state_duration = 0.0f;
+    float idle_lifetime_remaining_seconds = 0.0f;
+    bool active_for_gameplay = false;
+    bool alive = true;
+};
+
 struct GrapplingHookSnapshot {
     int id = -1;
     int owner_player_id = -1;
@@ -228,6 +260,8 @@ struct ServerSnapshotMessage {
     std::vector<int> removed_fire_storm_dummy_ids;
     std::vector<FireStormCastSnapshot> fire_storm_casts;
     std::vector<int> removed_fire_storm_cast_ids;
+    std::vector<EarthRootsGroupSnapshot> earth_roots_groups;
+    std::vector<int> removed_earth_roots_group_ids;
     std::vector<GrapplingHookSnapshot> grappling_hooks;
     std::vector<int> removed_grappling_hook_ids;
 };

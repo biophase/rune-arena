@@ -8,6 +8,7 @@
 #include "game/game_types.h"
 #include "game/composite_effect.h"
 #include "game/damage_popup.h"
+#include "game/earth_roots_group.h"
 #include "game/fire_storm_cast.h"
 #include "game/fire_storm_dummy.h"
 #include "game/grappling_hook.h"
@@ -68,6 +69,7 @@ struct GameState {
     std::vector<CompositeEffectInstance> composite_effects;
     std::vector<FireStormCast> fire_storm_casts;
     std::vector<FireStormDummy> fire_storm_dummies;
+    std::vector<EarthRootsGroup> earth_roots_groups;
     std::vector<GrapplingHook> grappling_hooks;
     std::vector<DamagePopup> damage_popups;
     std::vector<InfluenceZoneCell> influence_zones;

@@ -69,7 +69,12 @@ bool AreEqual(const RuneSnapshot& a, const RuneSnapshot& b) {
            a.active == b.active && a.volatile_cast == b.volatile_cast &&
            a.activation_total_seconds == b.activation_total_seconds &&
            a.activation_remaining_seconds == b.activation_remaining_seconds &&
-           a.creates_influence_zone == b.creates_influence_zone;
+           a.creates_influence_zone == b.creates_influence_zone &&
+           a.earth_trap_state == b.earth_trap_state &&
+           a.earth_state_time == b.earth_state_time &&
+           a.earth_state_duration == b.earth_state_duration &&
+           a.earth_roots_spawned == b.earth_roots_spawned &&
+           a.earth_roots_group_id == b.earth_roots_group_id;
 }
 
 bool AreEqual(const ProjectileSnapshot& a, const ProjectileSnapshot& b) {
@@ -104,6 +109,14 @@ bool AreEqual(const FireStormCastSnapshot& a, const FireStormCastSnapshot& b) {
     return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
            a.center_cell_x == b.center_cell_x && a.center_cell_y == b.center_cell_y &&
            a.elapsed_seconds == b.elapsed_seconds && a.duration_seconds == b.duration_seconds && a.alive == b.alive;
+}
+
+bool AreEqual(const EarthRootsGroupSnapshot& a, const EarthRootsGroupSnapshot& b) {
+    return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.center_cell_x == b.center_cell_x && a.center_cell_y == b.center_cell_y &&
+           a.state == b.state && a.state_time == b.state_time && a.state_duration == b.state_duration &&
+           a.idle_lifetime_remaining_seconds == b.idle_lifetime_remaining_seconds &&
+           a.active_for_gameplay == b.active_for_gameplay && a.alive == b.alive;
 }
 
 template <typename T>
@@ -159,6 +172,8 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
     delta.removed_fire_storm_dummy_ids.clear();
     delta.fire_storm_casts.clear();
     delta.removed_fire_storm_cast_ids.clear();
+    delta.earth_roots_groups.clear();
+    delta.removed_earth_roots_group_ids.clear();
     delta.grappling_hooks.clear();
     delta.removed_grappling_hook_ids.clear();
 
@@ -260,6 +275,20 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
         }
     }
 
+    const auto base_roots = BuildIdMap(base.earth_roots_groups);
+    const auto current_roots = BuildIdMap(current.earth_roots_groups);
+    for (const auto& group : current.earth_roots_groups) {
+        auto it = base_roots.find(group.id);
+        if (it == base_roots.end() || !AreEqual(group, *it->second)) {
+            delta.earth_roots_groups.push_back(group);
+        }
+    }
+    for (const auto& group : base.earth_roots_groups) {
+        if (current_roots.find(group.id) == current_roots.end()) {
+            delta.removed_earth_roots_group_ids.push_back(group.id);
+        }
+    }
+
     const auto base_hooks = BuildIdMap(base.grappling_hooks);
     const auto current_hooks = BuildIdMap(current.grappling_hooks);
     for (const auto& hook : current.grappling_hooks) {
@@ -332,6 +361,10 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
     for (const auto& cast : delta.fire_storm_casts) {
         UpsertById(out.fire_storm_casts, cast);
     }
+    RemoveByIds(out.earth_roots_groups, delta.removed_earth_roots_group_ids);
+    for (const auto& group : delta.earth_roots_groups) {
+        UpsertById(out.earth_roots_groups, group);
+    }
     RemoveByIds(out.grappling_hooks, delta.removed_grappling_hook_ids);
     for (const auto& hook : delta.grappling_hooks) {
         UpsertById(out.grappling_hooks, hook);
@@ -344,6 +377,7 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
     out.removed_map_object_ids.clear();
     out.removed_fire_storm_dummy_ids.clear();
     out.removed_fire_storm_cast_ids.clear();
+    out.removed_earth_roots_group_ids.clear();
     out.removed_grappling_hook_ids.clear();
     return out;
 }

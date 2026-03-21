@@ -77,6 +77,7 @@ class GameApp {
     void UpdateCompositeEffects(float dt);
     void UpdateFireStormCasts(float dt);
     void UpdateFireStormDummies(float dt);
+    void UpdateEarthRootsGroups(float dt);
     void ResolvePlayerCollisions();
     void ResolvePlayerVsMapObjects(Player& player);
     void ResolvePlayerVsIceWalls(Player& player);
@@ -101,6 +102,7 @@ class GameApp {
     bool TryPlaceFireStormDummy(Player& player, const GridCoord& cell);
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
                                    float idle_lifetime_seconds);
+    int SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell);
     void CheckSpellPatterns(const RunePlacedEvent& event);
 
     bool IsTileRunePlaceable(const GridCoord& cell) const;
@@ -125,6 +127,7 @@ class GameApp {
     void ApplyImmediateHeal(Player& player, int amount);
     void AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddStunnedStatus(Player& player, float duration_seconds);
+    void RefreshOrAddRootedStatus(Player& player, int source_id);
     void RebuildInfluenceZones();
     int SpawnCompositeEffect(const std::string& effect_id, Vector2 origin_world);
     float GetCompositeEffectDurationSeconds(const std::string& effect_id) const;
@@ -146,6 +149,7 @@ class GameApp {
     void UpdateCameraTarget();
     Vector2 GetRenderPlayerPosition(int player_id) const;
     bool IsWorldPointInsideCameraView(Vector2 world_pos) const;
+    float GetPlayerMovementSpeedMultiplier(const Player& player) const;
     void PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const;
     bool HasVisibleIdleFireStormDummy() const;
     void LoadAudioAssets();

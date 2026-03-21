@@ -150,6 +150,14 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
                 {"remaining_seconds", Quantize2(status.remaining_seconds)},
                 {"total_seconds", Quantize2(status.total_seconds)},
                 {"magnitude_per_second", Quantize2(status.magnitude_per_second)},
+                {"visible", status.visible},
+                {"is_buff", status.is_buff},
+                {"source_id", status.source_id},
+                {"progress", Quantize2(status.progress)},
+                {"source_elapsed_seconds", Quantize2(status.source_elapsed_seconds)},
+                {"burn_duration_seconds", Quantize2(status.burn_duration_seconds)},
+                {"movement_speed_multiplier", Quantize2(status.movement_speed_multiplier)},
+                {"source_active", status.source_active},
                 {"composite_effect_id", status.composite_effect_id},
             });
         }
@@ -170,6 +178,11 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"activation_total_seconds", Quantize2(rune.activation_total_seconds)},
             {"activation_remaining_seconds", Quantize2(rune.activation_remaining_seconds)},
             {"creates_influence_zone", rune.creates_influence_zone},
+            {"earth_trap_state", rune.earth_trap_state},
+            {"earth_state_time", Quantize2(rune.earth_state_time)},
+            {"earth_state_duration", Quantize2(rune.earth_state_duration)},
+            {"earth_roots_spawned", rune.earth_roots_spawned},
+            {"earth_roots_group_id", rune.earth_roots_group_id},
         });
     }
 
@@ -253,6 +266,22 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"alive", cast.alive},
         });
     }
+    out["earth_roots_groups"] = nlohmann::json::array();
+    for (const auto& group : message.earth_roots_groups) {
+        out["earth_roots_groups"].push_back({
+            {"id", group.id},
+            {"owner_player_id", group.owner_player_id},
+            {"owner_team", group.owner_team},
+            {"center_cell_x", group.center_cell_x},
+            {"center_cell_y", group.center_cell_y},
+            {"state", group.state},
+            {"state_time", Quantize2(group.state_time)},
+            {"state_duration", Quantize2(group.state_duration)},
+            {"idle_lifetime_remaining_seconds", Quantize2(group.idle_lifetime_remaining_seconds)},
+            {"active_for_gameplay", group.active_for_gameplay},
+            {"alive", group.alive},
+        });
+    }
     out["grappling_hooks"] = nlohmann::json::array();
     for (const auto& hook : message.grappling_hooks) {
         out["grappling_hooks"].push_back({
@@ -287,6 +316,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["removed_map_object_ids"] = message.removed_map_object_ids;
     out["removed_fire_storm_dummy_ids"] = message.removed_fire_storm_dummy_ids;
     out["removed_fire_storm_cast_ids"] = message.removed_fire_storm_cast_ids;
+    out["removed_earth_roots_group_ids"] = message.removed_earth_roots_group_ids;
     out["removed_grappling_hook_ids"] = message.removed_grappling_hook_ids;
 
     return out;
@@ -345,6 +375,14 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
                     status.remaining_seconds = status_item.value("remaining_seconds", 0.0f);
                     status.total_seconds = status_item.value("total_seconds", 0.0f);
                     status.magnitude_per_second = status_item.value("magnitude_per_second", 0.0f);
+                    status.visible = status_item.value("visible", true);
+                    status.is_buff = status_item.value("is_buff", false);
+                    status.source_id = status_item.value("source_id", -1);
+                    status.progress = status_item.value("progress", 0.0f);
+                    status.source_elapsed_seconds = status_item.value("source_elapsed_seconds", 0.0f);
+                    status.burn_duration_seconds = status_item.value("burn_duration_seconds", 0.0f);
+                    status.movement_speed_multiplier = status_item.value("movement_speed_multiplier", 1.0f);
+                    status.source_active = status_item.value("source_active", false);
                     status.composite_effect_id = status_item.value("composite_effect_id", std::string{});
                     player.status_effects.push_back(status);
                 }
@@ -377,6 +415,11 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             rune.activation_total_seconds = item.value("activation_total_seconds", 0.0f);
             rune.activation_remaining_seconds = item.value("activation_remaining_seconds", 0.0f);
             rune.creates_influence_zone = item.value("creates_influence_zone", true);
+            rune.earth_trap_state = item.value("earth_trap_state", 0);
+            rune.earth_state_time = item.value("earth_state_time", 0.0f);
+            rune.earth_state_duration = item.value("earth_state_duration", 0.0f);
+            rune.earth_roots_spawned = item.value("earth_roots_spawned", false);
+            rune.earth_roots_group_id = item.value("earth_roots_group_id", -1);
             out.runes.push_back(rune);
         }
     }
@@ -471,6 +514,24 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             out.fire_storm_casts.push_back(cast);
         }
     }
+    const auto roots_it = json.find("earth_roots_groups");
+    if (roots_it != json.end() && roots_it->is_array()) {
+        for (const auto& item : *roots_it) {
+            EarthRootsGroupSnapshot group;
+            group.id = item.value("id", -1);
+            group.owner_player_id = item.value("owner_player_id", -1);
+            group.owner_team = item.value("owner_team", 0);
+            group.center_cell_x = item.value("center_cell_x", 0);
+            group.center_cell_y = item.value("center_cell_y", 0);
+            group.state = item.value("state", 0);
+            group.state_time = item.value("state_time", 0.0f);
+            group.state_duration = item.value("state_duration", 0.0f);
+            group.idle_lifetime_remaining_seconds = item.value("idle_lifetime_remaining_seconds", 0.0f);
+            group.active_for_gameplay = item.value("active_for_gameplay", false);
+            group.alive = item.value("alive", true);
+            out.earth_roots_groups.push_back(group);
+        }
+    }
     const auto hooks_it = json.find("grappling_hooks");
     if (hooks_it != json.end() && hooks_it->is_array()) {
         for (const auto& item : *hooks_it) {
@@ -540,6 +601,12 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     if (removed_casts_it != json.end() && removed_casts_it->is_array()) {
         for (const auto& item : *removed_casts_it) {
             out.removed_fire_storm_cast_ids.push_back(item.get<int>());
+        }
+    }
+    const auto removed_roots_it = json.find("removed_earth_roots_group_ids");
+    if (removed_roots_it != json.end() && removed_roots_it->is_array()) {
+        for (const auto& item : *removed_roots_it) {
+            out.removed_earth_roots_group_ids.push_back(item.get<int>());
         }
     }
     const auto removed_hooks_it = json.find("removed_grappling_hook_ids");
