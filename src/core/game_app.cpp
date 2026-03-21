@@ -272,7 +272,7 @@ const char* GetRuneBornSpriteAnimationKey(RuneType rune_type) {
 }
 
 float AimToDegrees(Vector2 aim_dir) {
-    return std::atan2f(aim_dir.y, aim_dir.x) * (180.0f / PI);
+    return static_cast<float>(std::atan2(aim_dir.y, aim_dir.x) * (180.0 / PI));
 }
 
 Rectangle SnapRect(Rectangle rect) {
@@ -4838,7 +4838,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
 
                 const int segments = std::max(2, static_cast<int>(item.aux_index));
                 const int seg = static_cast<int>(item.sub_index);
-                const float rotation = std::atan2f(delta.y, delta.x) * RAD2DEG;
+                const float rotation = static_cast<float>(std::atan2(delta.y, delta.x) * RAD2DEG);
                 const bool use_latched_animation =
                     hook.phase == GrapplingHookPhase::Pulling || hook.phase == GrapplingHookPhase::Retracting;
                 const char* animation = nullptr;
@@ -4984,7 +4984,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 const Vector2 p1 = Vector2Add(effect.start, Vector2Scale(delta, t1));
                 const Vector2 seg_vec = Vector2Subtract(p1, p0);
                 const float seg_len = std::max(1.0f, Vector2Length(seg_vec));
-                const float rotation = std::atan2f(delta.y, delta.x) * RAD2DEG;
+                const float rotation = static_cast<float>(std::atan2(delta.y, delta.x) * RAD2DEG);
 
                 float anim_time = effect.dying ? effect.death_elapsed : effect.elapsed;
                 if (!effect.dying && seg < effect.segment_phase_offsets_seconds.size()) {
