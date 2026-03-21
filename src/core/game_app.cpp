@@ -1955,7 +1955,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
         for (const auto& [object_id, world_pos] : previous_consumable_positions) {
             if (current_object_ids.find(object_id) == current_object_ids.end()) {
-                PlaySfxIfVisible(sfx_drink_potion_.sound, sfx_drink_potion_.loaded, world_pos);
+                PlaySfxIfVisible(sfx_item_pickup_.sound, sfx_item_pickup_.loaded, world_pos);
             }
         }
     }
@@ -2771,6 +2771,12 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
                 const float normalized = std::clamp(status.source_elapsed_seconds / burn_duration, 0.0f, 1.0f);
                 status.progress = normalized;
                 status.movement_speed_multiplier = 1.0f - SmoothRootSigmoid(normalized);
+                status.accumulated_magnitude += Constants::kEarthRootedDamagePerSecond * applied_dt;
+                const int whole_damage = static_cast<int>(std::floor(status.accumulated_magnitude + 0.0001f));
+                if (whole_damage > 0) {
+                    status.accumulated_magnitude -= static_cast<float>(whole_damage);
+                    ApplyDamageToPlayer(player, -1, whole_damage, "earth_roots", false);
+                }
                 if (status.source_active) {
                     status.remaining_seconds =
                         std::max(status.remaining_seconds, Constants::kEarthRootedVisibleDurationSeconds);
@@ -3137,6 +3143,7 @@ void GameApp::RefreshOrAddRootedStatus(Player& player, int source_id) {
     status.burn_duration_seconds = Constants::kEarthRootedBurnInSeconds;
     status.movement_speed_multiplier = 1.0f;
     status.source_active = true;
+    status.accumulated_magnitude = 0.0f;
     player.status_effects.push_back(status);
 }
 
@@ -3366,7 +3373,8 @@ void GameApp::UpdateRunes(float dt) {
                 float fps = 1.0f;
                 rune.earth_state_duration = Constants::kEarthRuneSlamFallbackSeconds;
                 if (sprite_metadata_.GetAnimationStats("earth_rune_slam", "default", frame_count, fps) && frame_count > 0) {
-                    rune.earth_state_duration = static_cast<float>(frame_count) / std::max(0.001f, fps);
+                    rune.earth_state_duration =
+                        (static_cast<float>(frame_count) / std::max(0.001f, fps)) * Constants::kEarthRuneSlamSlowdown;
                 }
                 rune.earth_roots_spawned = false;
                 rune.creates_influence_zone = false;
@@ -5595,7 +5603,9 @@ void GameApp::RenderNonTerrainDepthSorted() {
                                                  : GetRuneBornSpriteAnimationKey(rune.rune_type);
                 const float animation_time = rune.active
                                                  ? (rune.rune_type == RuneType::Earth
-                                                        ? rune.earth_state_time
+                                                        ? ((rune.earth_trap_state == EarthRuneTrapState::Slamming)
+                                                               ? (rune.earth_state_time / Constants::kEarthRuneSlamSlowdown)
+                                                               : rune.earth_state_time)
                                                         : (render_time_seconds_ + rune.placement_order * 0.05f))
                                                  : (rune.activation_total_seconds - rune.activation_remaining_seconds);
 
