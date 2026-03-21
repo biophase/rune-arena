@@ -3387,12 +3387,14 @@ void GameApp::UpdateRunes(float dt) {
         switch (rune.earth_trap_state) {
             case EarthRuneTrapState::IdleRune: {
                 bool enemy_in_range = false;
+                const Vector2 rune_center = CellToWorldCenter(rune.cell);
+                const float trigger_radius =
+                    Constants::kEarthRuneTrapRangeTiles * static_cast<float>(state_.map.cell_size);
                 for (const auto& player : state_.players) {
                     if (!player.alive || player.team == rune.owner_team) {
                         continue;
                     }
-                    const GridCoord player_cell = WorldToCell(player.pos);
-                    if (std::abs(player_cell.x - rune.cell.x) <= 1 && std::abs(player_cell.y - rune.cell.y) <= 1) {
+                    if (Vector2Distance(player.pos, rune_center) <= trigger_radius) {
                         enemy_in_range = true;
                         break;
                     }
