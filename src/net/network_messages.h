@@ -19,6 +19,7 @@ struct ClientInputMessage {
     std::string request_item_id;
     bool toggle_inventory_mode = false;
     int seq = 0;
+    float local_dt = 0.0f;
 };
 
 struct ClientMoveMessage {

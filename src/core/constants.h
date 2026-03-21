@@ -19,6 +19,7 @@ constexpr float kClientVisualSmoothing = 16.0f;
 constexpr float kRemoteInterpolationDelaySeconds = 0.08f; // reduce to improve feel
 constexpr float kPredictionHardSnapThresholdPx = 32.0f;
 constexpr float kPredictionReconcileGain = 8.0f;
+constexpr float kPredictionCorrectionTelemetryThresholdPx = 1.0f;
 constexpr int kMoveInputBufferSize = 256;
 constexpr float kDefaultShrinkTilesPerSecond = 1.0f;
 constexpr float kShrinkTilesPerSecondStep = 0.25f;

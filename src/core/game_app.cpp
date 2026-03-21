@@ -768,6 +768,14 @@ void GameApp::UpdateLocalFootstepAudio() {
     }
 }
 
+Vector2 GameApp::GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const {
+    auto it = render_grappling_hook_head_positions_.find(hook_id);
+    if (it != render_grappling_hook_head_positions_.end()) {
+        return it->second;
+    }
+    return fallback;
+}
+
 bool GameApp::IsWorldPointInsideCameraView(Vector2 world_pos) const {
     if (camera_.zoom <= 0.0001f) {
         return false;
@@ -906,6 +914,7 @@ void GameApp::UpdateMatch(float dt) {
         UpdateClientVisualSmoothing(dt);
     } else {
         ClientInputMessage local_input = BuildLocalInput(network_manager_.GetAssignedLocalPlayerId());
+        local_input.local_dt = dt;
         ApplyClientLocalInputPreview(local_input, dt);
 
         ClientMoveMessage move_message;
@@ -964,6 +973,7 @@ void GameApp::UpdateClientVisualSmoothing(float dt) {
     (void)dt;
     if (state_.players.empty()) {
         render_player_positions_.clear();
+        render_grappling_hook_head_positions_.clear();
         return;
     }
 
@@ -975,6 +985,7 @@ void GameApp::UpdateClientVisualSmoothing(float dt) {
             updated_positions[player.id] = player.pos;
         }
         render_player_positions_.swap(updated_positions);
+        render_grappling_hook_head_positions_.clear();
         return;
     }
 
@@ -1008,6 +1019,33 @@ void GameApp::UpdateClientVisualSmoothing(float dt) {
         }
     }
     render_player_positions_.swap(updated_positions);
+
+    std::unordered_map<int, Vector2> updated_hook_positions;
+    updated_hook_positions.reserve(state_.grappling_hooks.size());
+    for (const auto& hook : state_.grappling_hooks) {
+        auto samples_it = grappling_head_position_samples_.find(hook.id);
+        if (samples_it == grappling_head_position_samples_.end() || samples_it->second.empty()) {
+            updated_hook_positions[hook.id] = hook.head_pos;
+            continue;
+        }
+
+        auto& samples = samples_it->second;
+        while (samples.size() > 2 && samples[1].time_seconds <= target_time) {
+            samples.pop_front();
+        }
+
+        if (samples.size() >= 2 && samples.front().time_seconds <= target_time &&
+            samples[1].time_seconds >= target_time) {
+            const double t0 = samples.front().time_seconds;
+            const double t1 = samples[1].time_seconds;
+            const float alpha =
+                static_cast<float>(std::clamp((target_time - t0) / std::max(0.00001, t1 - t0), 0.0, 1.0));
+            updated_hook_positions[hook.id] = Vector2Lerp(samples.front().pos, samples[1].pos, alpha);
+        } else {
+            updated_hook_positions[hook.id] = samples.back().pos;
+        }
+    }
+    render_grappling_hook_head_positions_.swap(updated_hook_positions);
 }
 
 void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, float dt) {
@@ -1493,6 +1531,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     for (const auto& dummy : state_.fire_storm_dummies) {
         previous_dummy_ids.insert(dummy.id);
     }
+    std::unordered_set<int> previous_fire_storm_cast_ids;
+    previous_fire_storm_cast_ids.reserve(state_.fire_storm_casts.size());
+    for (const auto& cast : state_.fire_storm_casts) {
+        previous_fire_storm_cast_ids.insert(cast.id);
+    }
     std::unordered_set<int> previous_rune_ids;
     previous_rune_ids.reserve(state_.runes.size());
     std::unordered_map<int, bool> previous_rune_active;
@@ -1856,6 +1899,15 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         cast.alive = cast_snapshot.alive;
         state_.fire_storm_casts.push_back(cast);
     }
+    if (!network_manager_.IsHost()) {
+        for (const auto& cast : state_.fire_storm_casts) {
+            if (previous_fire_storm_cast_ids.find(cast.id) != previous_fire_storm_cast_ids.end()) {
+                continue;
+            }
+            PlaySfxIfVisible(sfx_fire_storm_cast_.sound, sfx_fire_storm_cast_.loaded,
+                             CellToWorldCenter(cast.center_cell));
+        }
+    }
     state_.grappling_hooks.clear();
     for (const auto& hook_snapshot : snapshot.grappling_hooks) {
         GrapplingHook hook;
@@ -1876,6 +1928,27 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         hook.max_pull_duration_seconds = hook_snapshot.max_pull_duration_seconds;
         hook.alive = hook_snapshot.alive;
         state_.grappling_hooks.push_back(hook);
+        if (!network_manager_.IsHost()) {
+            auto& samples = grappling_head_position_samples_[hook.id];
+            samples.push_back(RemotePositionSample{now_seconds, hook.head_pos});
+            while (samples.size() > 32) {
+                samples.pop_front();
+            }
+        }
+    }
+    if (!network_manager_.IsHost()) {
+        std::unordered_set<int> current_hook_ids;
+        current_hook_ids.reserve(state_.grappling_hooks.size());
+        for (const auto& hook : state_.grappling_hooks) {
+            current_hook_ids.insert(hook.id);
+        }
+        for (auto it = grappling_head_position_samples_.begin(); it != grappling_head_position_samples_.end();) {
+            if (current_hook_ids.find(it->first) == current_hook_ids.end()) {
+                it = grappling_head_position_samples_.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
     if (!network_manager_.IsHost()) {
         for (const auto& hook : state_.grappling_hooks) {
@@ -1947,15 +2020,17 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 if (Vector2LengthSqr(movement) > 0.0001f) {
                     movement = Vector2Normalize(movement);
                 }
+                const float step_dt = pending_input.local_dt > 0.0f ? pending_input.local_dt
+                                                                    : static_cast<float>(Constants::kFixedDt);
                 const Vector2 acceleration = Vector2Scale(movement, Constants::kPlayerAcceleration);
-                replay.vel = Vector2Add(replay.vel, Vector2Scale(acceleration, static_cast<float>(Constants::kFixedDt)));
-                const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * static_cast<float>(Constants::kFixedDt));
+                replay.vel = Vector2Add(replay.vel, Vector2Scale(acceleration, step_dt));
+                const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * step_dt);
                 replay.vel = Vector2Scale(replay.vel, damping);
                 const float speed = Vector2Length(replay.vel);
                 if (speed > Constants::kPlayerMaxSpeed) {
                     replay.vel = Vector2Scale(Vector2Normalize(replay.vel), Constants::kPlayerMaxSpeed);
                 }
-                replay.pos = Vector2Add(replay.pos, Vector2Scale(replay.vel, static_cast<float>(Constants::kFixedDt)));
+                replay.pos = Vector2Add(replay.pos, Vector2Scale(replay.vel, step_dt));
                 CollisionWorld::ResolvePlayerVsWorldLocal(state_.map, replay);
                 ResolvePlayerVsMapObjects(replay);
                 ResolvePlayerVsIceWallsLocal(replay);
@@ -1977,7 +2052,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             local_player->aim_dir = replay.aim_dir;
             local_player->facing = replay.facing;
 
-            if (error > 0.01f) {
+            if (error > Constants::kPredictionCorrectionTelemetryThresholdPx) {
                 network_manager_.AddReconciliationCorrection();
             }
             render_player_positions_[local_player->id] = local_player->pos;
@@ -4546,7 +4621,9 @@ void GameApp::RenderNonTerrainDepthSorted() {
         }
         const Vector2 start = Vector2Add(GetRenderPlayerPosition(owner->id),
                                          {0.0f, 0.5f * static_cast<float>(state_.map.cell_size)});
-        const Vector2 end = (hook.phase == GrapplingHookPhase::Pulling) ? hook.latch_point : hook.head_pos;
+        const Vector2 end = (hook.phase == GrapplingHookPhase::Pulling)
+                                ? hook.latch_point
+                                : GetRenderGrapplingHookHeadPosition(hook.id, hook.head_pos);
         const float distance = Vector2Distance(start, end);
         grappling_segment_total += static_cast<size_t>(std::max(2, static_cast<int>(std::floor(
             distance / std::max(1.0f, static_cast<float>(state_.map.cell_size))))));
