@@ -6,7 +6,11 @@
 #include <raylib.h>
 
 #include "game/game_types.h"
+#include "game/composite_effect.h"
 #include "game/damage_popup.h"
+#include "game/fire_storm_cast.h"
+#include "game/fire_storm_dummy.h"
+#include "game/grappling_hook.h"
 #include "game/ice_wall.h"
 #include "game/map_object.h"
 #include "game/explosion.h"
@@ -45,6 +49,12 @@ struct MapData {
     }
 };
 
+struct InfluenceZoneCell {
+    int source_rune_id = -1;
+    int team = 0;
+    GridCoord cell;
+};
+
 struct GameState {
     MatchState match;
     std::vector<Player> players;
@@ -55,7 +65,12 @@ struct GameState {
     std::vector<IceWallPiece> ice_walls;
     std::vector<MapObjectInstance> map_objects;
     std::vector<Particle> particles;
+    std::vector<CompositeEffectInstance> composite_effects;
+    std::vector<FireStormCast> fire_storm_casts;
+    std::vector<FireStormDummy> fire_storm_dummies;
+    std::vector<GrapplingHook> grappling_hooks;
     std::vector<DamagePopup> damage_popups;
+    std::vector<InfluenceZoneCell> influence_zones;
     MapData map;
 
     int local_player_id = -1;

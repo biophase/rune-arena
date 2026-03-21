@@ -37,4 +37,51 @@ something which disables enemies from placing runes
 
 ---
 
+I reverted the changes and want to start this last list again. You can recheck but i don't belive any of these changes are already in the repo. So please implement these (with some new additions and specifications.) i also removed influence_zone.h
+
+- add mana cost per rune creation (2.0 for both fire and water). If player doesn't have mana for a spell they can't cast the rune or enter rune placement mode. If a player doesnt have enough mana for a rune this is also indicated with the rune icon (in the hud to be implemented) having reduced brightness and being slightly blue tinted.
+- natural mana regeneration is 1.00 / sec though can be increased or decreased with effects.
+- add rune-specific cooldowns. When a rune is cast all other runes cooldowns are set to max(MIN_RUNE_COOLDOWN, current rune cooldown). MIN_RUNE_COOLDOWN is a game constant and will be =0.5seconds. The cast rune however is set to its cooldown. fire rune has 1.3 cooldown, water has 1.1 seconds
+- max mana is 50 (though not hard coded and subject to in-game enhancments / pickups later). 
+- casting a rune also has some time until the rune is actually activated. this is indicated by a  "rune_born" animation, that is scaled so that the time it takes to play all frames of the animation are equal to the time it takes for that specific rune to activate. The time to activate a rune is a rune-specific property and for fire and water runes it is equal to 0.2 seconds. The pattern checking is triggered only after the rune becomes active. Non-active runes are not considered in a pattern check.
+- add a clear visual UI hud at the bottom of the screen (replacing current placeholder rune global cooldown). Since i don't have a background sprite just use a constant color for background (some grayish color). make it be a constant width and be able to hold a row of around 8 runes / items. The frist 4 slots are for runes and the second 4 are for items. At the top of the hud (above the rune slots) also add two bars: health and mana. A player sees their own health and mana in the bottom hud ui with current / max. Remove the number from the overhead health ui (though keep the health bars). The default setup is "fire rune in slot 1" , "water rune in slot 2". This will be changable later so keep the slots flexible. Also rename and rewire the controls logic. Instead of hotkey for "fire rune" -> hot key for rune slot 1, hotkey for rune slot 2, ... 4. Also add hotkeys for items. If a rune/item is on cooldown then pleace indicate that with a typical overlay that reduces the brightness of the icon and is gradually removed in a clock-like fashion (see world of warcraft, warcraft games, etc.). Use a green-ish color (same as overhead display) for health and a blueish low saturated color for mana. 
+- casting a rune creates a 3x3 tiles large magical-influence zone (using the "influence_zone_blue" / "influence_zone_red" sprite animation) that belongs to the team casting centered at the casted rune. this zone has the lifetime of the rune (i.e. is removed when a rune is used in a spell or otherwise destroyed). If a team casts a rune into the influence zone of another team (e.g. blue casts in the red influence zone) the cast is considered "volatile". A volatile cast requires 3.0X the mana and 2.0X the time until the rune becomes active. The cast plays the (lightning_volatile_magic_idle, lightning_volatile_magic_death and rune_cast_volatile_effect effects instead of the typal cast effects). Creating a volatile rune removes the other teams influence on that specific tile but doesnt create an influence zone itself. Runes that are created in a volatile cast act as normal runes otherwise. 
+
+- potions are now placed in an item slot. They can be consumed at a later point after picked up. Items can be activated (same as runes) . The user can reorder runes and items by a drag and drop mechanic. The drag and drop mode (In game known as "Inventory mdoe") is normally switched off but can be enabled by pressing the tab key (customizable in controls). During inventory mode we apply a filter on the gameplay to allow the user to focus on the hud and UI. The filter used for now is simple (we simply darken the gameplay - reduce the bridghntess). During inventory mode there is a text popup in the center of the scereen saying ("Inventory mode (Press tab to toggle off/on)"). During the drag and drop if an item is already present in the target slot of a drag and drop the items positions are switched. Items can't be put in runes slots and vise versa. 
+
+- match length is a lobby setting, defaults to 5 minutes (modify the display to be in minutes | seconds with increments of 30 seconds, rather than just seconds). It is part of the game mode "most kills". However players can also choose "best of" as a mode, which gives the number of total kills (requires an odd number to be entered as integer parameter).
+- zone shrinkage start time is a lobby setting, defaults to 2.5 minutes must (be less or equal total match length if the mode supports a match length).
+- catalist rune (doesnt do anything for now). uses c/C for pattern matching
+
+- rune casting has a range of 8 tiles. the grid overlay indicates out of range tiles (by not being rendered there -> similar to on water tiles, etc.)
+
+
+---
+map editor
+
+
+mana effect
+heal effect
+altar mechanic for storm rune spawning
+
+
+---
+
+- fire storm spell
+
+
+- water totem
+- fire totem
+
+- healing potion rework
+- mana potion item and drop rates
+
+- volatile spell effect
+
+
+
+
+- lightning storm spell
+
+
 

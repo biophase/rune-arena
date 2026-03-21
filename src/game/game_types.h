@@ -17,6 +17,20 @@ enum class PlayerActionState {
 enum class RuneType {
     Fire = 0,
     Water = 1,
+    Catalyst = 2,
+    Earth = 3,
+    FireStormDummy = 4,
+    None = -1,
+};
+
+enum class MatchModeType {
+    MostKillsTimed = 0,
+    BestOfKills = 1,
+};
+
+enum class SlotFamily {
+    Rune,
+    Item,
 };
 
 enum class TileType {

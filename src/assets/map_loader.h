@@ -7,9 +7,5 @@
 
 class MapLoader {
   public:
-    bool Load(const std::string& image_path, const std::string& mapping_path, const ObjectsDatabase* objects_db,
-              MapData& out_map) const;
-
-  private:
-    static TileType TileTypeFromName(const std::string& tile_name);
+    bool Load(const std::string& image_path, const ObjectsDatabase* objects_db, MapData& out_map) const;
 };

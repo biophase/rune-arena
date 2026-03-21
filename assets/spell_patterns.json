@@ -7,10 +7,15 @@
         "water_rune" :{
             "old":"w",
             "latest":"W"
+        },
+        "catalist_rune" :{
+            "old":"c",
+            "latest":"C"
         }
     },
     "spell_patterns":{
         "fire_bolt":{
+            "order_relevent" : true,
             "directions":{
                 "right":
                 [
@@ -33,6 +38,7 @@
             }
         },
         "ice_wall":{
+            "order_relevent" : true,
             "directions":{
                 "horizontal":[
                     [
@@ -49,6 +55,20 @@
                     ]
                 ]
 
+            }
+        },
+        "fire_storm":{
+            "order_relevent" : false,
+            "directions":{
+                "default":[
+                    [
+                        [
+                            ["f",   null,   "f" ],
+                            [null,  "c",    null],
+                            ["f",   null,   "f" ]
+                        ]
+                    ]
+                ]
             }
         }
     }

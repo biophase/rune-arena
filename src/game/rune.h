@@ -9,5 +9,9 @@ struct Rune {
     GridCoord cell;
     RuneType rune_type = RuneType::Fire;
     int placement_order = 0;
-    bool active = true;
+    bool active = false;
+    bool volatile_cast = false;
+    float activation_total_seconds = 0.0f;
+    float activation_remaining_seconds = 0.0f;
+    bool creates_influence_zone = true;
 };

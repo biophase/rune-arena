@@ -1,0 +1,129 @@
+{
+  "effects": {
+    "fire_storm_cast": {
+      "parts": [
+        {
+          "animation": "fire_storm_spell_effect",
+          "sheet": "large96x96",
+          "layer": "ground",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": -0.5
+        }
+      ]
+    },
+    "fire_storm_born": {
+      "parts": [
+        {
+          "animation": "fire_storm_born_top",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.4
+        },
+        {
+          "animation": "fire_storm_born_ground",
+          "layer": "ground",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": -0.5
+        },
+        {
+          "animation": "fire_storm_born_bot",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.8
+        }
+      ]
+    },
+    "fire_storm_idle": {
+      "parts": [
+        {
+          "animation": "fire_storm_ground",
+          "layer": "ground",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": -0.5
+        },
+        {
+          "animation": "fire_storm_top",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": -0.4
+        },
+        {
+          "animation": "fire_storm_bottom",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.0
+        }
+      ]
+    },
+    "fire_storm_lightning": {
+      "parts": [
+        {
+          "animation": "fire_storm_ground",
+          "layer": "ground",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": -0.5
+        },
+        {
+          "animation": "fire_storm_top_lightning",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": -0.4
+        },
+        {
+          "animation": "fire_storm_bottom_lightning",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.0
+        }
+      ]
+    },
+    "fire_storm_death": {
+      "parts": [
+        {
+          "animation": "fire_storm_death_top",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.4
+        },
+        {
+          "animation": "fire_storm_ground",
+          "layer": "ground",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": -0.5
+        },
+        {
+          "animation": "fire_storm_death_bot",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.8
+        }
+      ]
+    },
+    "heal_effect": {
+      "parts": [
+        {
+          "animation": "heal_effect_top",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.4
+        },
+        {
+          "animation": "heal_effect_bot",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.8
+        }
+      ]
+    }
+  }
+}

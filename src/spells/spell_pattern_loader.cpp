@@ -22,10 +22,18 @@ bool ParsePatternGrid(const nlohmann::json& node, std::vector<std::vector<std::s
         std::vector<std::string> row;
         row.reserve(row_json.size());
         for (const auto& cell_json : row_json) {
+            if (cell_json.is_null()) {
+                row.push_back("");
+                continue;
+            }
             if (!cell_json.is_string()) {
                 return false;
             }
-            row.push_back(cell_json.get<std::string>());
+            std::string cell = cell_json.get<std::string>();
+            if (cell == "_") {
+                cell.clear();
+            }
+            row.push_back(std::move(cell));
         }
 
         if (expected_cols < 0) {
@@ -82,6 +90,8 @@ bool SpellPatternLoader::LoadFromFile(const std::string& path) {
             RuneType rune_type = RuneType::Fire;
             if (it.key().find("water") != std::string::npos) {
                 rune_type = RuneType::Water;
+            } else if (it.key().find("catal") != std::string::npos) {
+                rune_type = RuneType::Catalyst;
             }
             auto add_symbol = [&](const std::string& symbol_text, PlacementConstraint explicit_constraint) {
                 PlacementConstraint constraint = explicit_constraint;
@@ -125,6 +135,13 @@ bool SpellPatternLoader::LoadFromFile(const std::string& path) {
     for (auto it = patterns_it->begin(); it != patterns_it->end(); ++it) {
         SpellPatternDefinition definition;
         definition.spell_name = it.key();
+        const auto order_relevant_it = it.value().find("order_relevant");
+        const auto order_relevent_it = it.value().find("order_relevent");
+        if (order_relevant_it != it.value().end() && order_relevant_it->is_boolean()) {
+            definition.order_relevant = order_relevant_it->get<bool>();
+        } else if (order_relevent_it != it.value().end() && order_relevent_it->is_boolean()) {
+            definition.order_relevant = order_relevent_it->get<bool>();
+        }
 
         const auto directions_it = it.value().find("directions");
         if (directions_it == it.value().end() || !directions_it->is_object()) {

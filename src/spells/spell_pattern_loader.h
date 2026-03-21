@@ -25,6 +25,7 @@ struct RuneSymbolInfo {
 
 struct SpellPatternDefinition {
     std::string spell_name;
+    bool order_relevant = true;
     std::vector<DirectionalPattern> directional_patterns;
 };
 

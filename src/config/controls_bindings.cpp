@@ -67,6 +67,41 @@ std::string BindingToString(int binding_code) {
         }
     }
 
+    switch (binding_code) {
+        case KEY_SPACE:
+            return "Space";
+        case KEY_TAB:
+            return "Tab";
+        case KEY_ENTER:
+            return "Enter";
+        case KEY_ESCAPE:
+            return "Esc";
+        case KEY_LEFT:
+            return "Left";
+        case KEY_RIGHT:
+            return "Right";
+        case KEY_UP:
+            return "Up";
+        case KEY_DOWN:
+            return "Down";
+        case KEY_LEFT_SHIFT:
+            return "LShift";
+        case KEY_RIGHT_SHIFT:
+            return "RShift";
+        case KEY_LEFT_CONTROL:
+            return "LCtrl";
+        case KEY_RIGHT_CONTROL:
+            return "RCtrl";
+        case KEY_LEFT_ALT:
+            return "LAlt";
+        case KEY_RIGHT_ALT:
+            return "RAlt";
+        case KEY_BACKSPACE:
+            return "Backspace";
+        default:
+            break;
+    }
+
     const char* key_name = GetKeyName(binding_code);
     if (key_name != nullptr && key_name[0] != '\0') {
         return std::string(key_name);

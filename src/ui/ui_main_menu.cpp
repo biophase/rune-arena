@@ -19,14 +19,22 @@ struct ActionRow {
     int ControlsBindings::*member;
 };
 
-constexpr std::array<ActionRow, 7> kActionRows = {{
+constexpr std::array<ActionRow, 15> kActionRows = {{
     {"Move Left", &ControlsBindings::move_left},
     {"Move Right", &ControlsBindings::move_right},
     {"Move Up", &ControlsBindings::move_up},
     {"Move Down", &ControlsBindings::move_down},
     {"Primary Action", &ControlsBindings::primary_action},
-    {"Select Fire Rune", &ControlsBindings::select_fire_rune},
-    {"Select Water Rune", &ControlsBindings::select_water_rune},
+    {"Grappling Hook", &ControlsBindings::grappling_hook_action},
+    {"Rune Slot 1", &ControlsBindings::select_rune_slot_1},
+    {"Rune Slot 2", &ControlsBindings::select_rune_slot_2},
+    {"Rune Slot 3", &ControlsBindings::select_rune_slot_3},
+    {"Rune Slot 4", &ControlsBindings::select_rune_slot_4},
+    {"Item Slot 1", &ControlsBindings::activate_item_slot_1},
+    {"Item Slot 2", &ControlsBindings::activate_item_slot_2},
+    {"Item Slot 3", &ControlsBindings::activate_item_slot_3},
+    {"Item Slot 4", &ControlsBindings::activate_item_slot_4},
+    {"Inventory Toggle", &ControlsBindings::toggle_inventory_mode},
 }};
 
 }  // namespace

@@ -17,6 +17,8 @@ struct Projectile {
     float radius = Constants::kProjectileRadius;
     int damage = Constants::kProjectileDamage;
     std::string animation_key = "projectile_fire_bolt";
+    float upgrade_pause_remaining = 0.0f;
+    Vector2 resume_vel = {0.0f, 0.0f};
 
     bool emitter_enabled = false;
     int emitter_emit_every_frames = Constants::kProjectileSmokeEmitEveryFrames;

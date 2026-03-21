@@ -17,8 +17,10 @@ nlohmann::json ToJson(const ClientInputMessage& message) {
         {"aim_x", message.aim_x},
         {"aim_y", message.aim_y},
         {"primary_pressed", message.primary_pressed},
-        {"select_fire", message.select_fire},
-        {"select_water", message.select_water},
+        {"grappling_pressed", message.grappling_pressed},
+        {"request_rune_type", message.request_rune_type},
+        {"request_item_id", message.request_item_id},
+        {"toggle_inventory_mode", message.toggle_inventory_mode},
         {"seq", message.seq},
     };
 }
@@ -32,8 +34,10 @@ std::optional<ClientInputMessage> ClientInputFromJson(const nlohmann::json& json
     out.aim_x = json.value("aim_x", 0.0f);
     out.aim_y = json.value("aim_y", 0.0f);
     out.primary_pressed = json.value("primary_pressed", false);
-    out.select_fire = json.value("select_fire", false);
-    out.select_water = json.value("select_water", false);
+    out.grappling_pressed = json.value("grappling_pressed", false);
+    out.request_rune_type = json.value("request_rune_type", -1);
+    out.request_item_id = json.value("request_item_id", std::string{});
+    out.toggle_inventory_mode = json.value("toggle_inventory_mode", false);
     out.seq = json.value("seq", 0);
     return out;
 }
@@ -66,8 +70,10 @@ nlohmann::json ToJson(const ClientActionMessage& message) {
         {"seq", message.seq},
         {"last_received_snapshot_id", message.last_received_snapshot_id},
         {"primary_pressed", message.primary_pressed},
-        {"select_fire", message.select_fire},
-        {"select_water", message.select_water},
+        {"grappling_pressed", message.grappling_pressed},
+        {"request_rune_type", message.request_rune_type},
+        {"request_item_id", message.request_item_id},
+        {"toggle_inventory_mode", message.toggle_inventory_mode},
     };
 }
 
@@ -77,8 +83,10 @@ std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& js
     out.seq = json.value("seq", 0);
     out.last_received_snapshot_id = json.value("last_received_snapshot_id", 0);
     out.primary_pressed = json.value("primary_pressed", false);
-    out.select_fire = json.value("select_fire", false);
-    out.select_water = json.value("select_water", false);
+    out.grappling_pressed = json.value("grappling_pressed", false);
+    out.request_rune_type = json.value("request_rune_type", -1);
+    out.request_item_id = json.value("request_item_id", std::string{});
+    out.toggle_inventory_mode = json.value("toggle_inventory_mode", false);
     return out;
 }
 
@@ -120,10 +128,31 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"rune_placing_mode", player.rune_placing_mode},
             {"selected_rune_type", player.selected_rune_type},
             {"rune_place_cooldown_remaining", player.rune_place_cooldown_remaining},
+            {"mana", Quantize2(player.mana)},
+            {"max_mana", Quantize2(player.max_mana)},
+            {"grappling_cooldown_remaining", Quantize2(player.grappling_cooldown_remaining)},
+            {"grappling_cooldown_total", Quantize2(player.grappling_cooldown_total)},
+            {"rune_cooldown_remaining", player.rune_cooldown_remaining},
+            {"rune_cooldown_total", player.rune_cooldown_total},
+            {"status_effects", nlohmann::json::array()},
+            {"item_slots", player.item_slots},
+            {"item_slot_counts", player.item_slot_counts},
+            {"item_slot_cooldown_remaining", player.item_slot_cooldown_remaining},
+            {"item_slot_cooldown_total", player.item_slot_cooldown_total},
             {"awaiting_respawn", player.awaiting_respawn},
             {"respawn_remaining", player.respawn_remaining},
             {"last_processed_move_seq", player.last_processed_move_seq},
         });
+        auto& status_array = out["players"].back()["status_effects"];
+        for (const auto& status : player.status_effects) {
+            status_array.push_back({
+                {"type", status.type},
+                {"remaining_seconds", Quantize2(status.remaining_seconds)},
+                {"total_seconds", Quantize2(status.total_seconds)},
+                {"magnitude_per_second", Quantize2(status.magnitude_per_second)},
+                {"composite_effect_id", status.composite_effect_id},
+            });
+        }
     }
 
     out["runes"] = nlohmann::json::array();
@@ -137,6 +166,10 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"rune_type", rune.rune_type},
             {"placement_order", rune.placement_order},
             {"active", rune.active},
+            {"volatile_cast", rune.volatile_cast},
+            {"activation_total_seconds", Quantize2(rune.activation_total_seconds)},
+            {"activation_remaining_seconds", Quantize2(rune.activation_remaining_seconds)},
+            {"creates_influence_zone", rune.creates_influence_zone},
         });
     }
 
@@ -192,11 +225,69 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
         });
     }
 
+    out["fire_storm_dummies"] = nlohmann::json::array();
+    for (const auto& dummy : message.fire_storm_dummies) {
+        out["fire_storm_dummies"].push_back({
+            {"id", dummy.id},
+            {"owner_player_id", dummy.owner_player_id},
+            {"owner_team", dummy.owner_team},
+            {"cell_x", dummy.cell_x},
+            {"cell_y", dummy.cell_y},
+            {"state", dummy.state},
+            {"state_time", Quantize2(dummy.state_time)},
+            {"state_duration", Quantize2(dummy.state_duration)},
+            {"idle_lifetime_remaining_seconds", Quantize2(dummy.idle_lifetime_remaining_seconds)},
+            {"alive", dummy.alive},
+        });
+    }
+    out["fire_storm_casts"] = nlohmann::json::array();
+    for (const auto& cast : message.fire_storm_casts) {
+        out["fire_storm_casts"].push_back({
+            {"id", cast.id},
+            {"owner_player_id", cast.owner_player_id},
+            {"owner_team", cast.owner_team},
+            {"center_cell_x", cast.center_cell_x},
+            {"center_cell_y", cast.center_cell_y},
+            {"elapsed_seconds", Quantize2(cast.elapsed_seconds)},
+            {"duration_seconds", Quantize2(cast.duration_seconds)},
+            {"alive", cast.alive},
+        });
+    }
+    out["grappling_hooks"] = nlohmann::json::array();
+    for (const auto& hook : message.grappling_hooks) {
+        out["grappling_hooks"].push_back({
+            {"id", hook.id},
+            {"owner_player_id", hook.owner_player_id},
+            {"owner_team", hook.owner_team},
+            {"head_pos_x", Quantize2(hook.head_pos_x)},
+            {"head_pos_y", Quantize2(hook.head_pos_y)},
+            {"target_pos_x", Quantize2(hook.target_pos_x)},
+            {"target_pos_y", Quantize2(hook.target_pos_y)},
+            {"latch_point_x", Quantize2(hook.latch_point_x)},
+            {"latch_point_y", Quantize2(hook.latch_point_y)},
+            {"pull_destination_x", Quantize2(hook.pull_destination_x)},
+            {"pull_destination_y", Quantize2(hook.pull_destination_y)},
+            {"phase", hook.phase},
+            {"latch_target_type", hook.latch_target_type},
+            {"latch_target_id", hook.latch_target_id},
+            {"latch_cell_x", hook.latch_cell_x},
+            {"latch_cell_y", hook.latch_cell_y},
+            {"latched", hook.latched},
+            {"animation_time", Quantize2(hook.animation_time)},
+            {"pull_elapsed_seconds", Quantize2(hook.pull_elapsed_seconds)},
+            {"max_pull_duration_seconds", Quantize2(hook.max_pull_duration_seconds)},
+            {"alive", hook.alive},
+        });
+    }
+
     out["removed_player_ids"] = message.removed_player_ids;
     out["removed_rune_ids"] = message.removed_rune_ids;
     out["removed_projectile_ids"] = message.removed_projectile_ids;
     out["removed_ice_wall_ids"] = message.removed_ice_wall_ids;
     out["removed_map_object_ids"] = message.removed_map_object_ids;
+    out["removed_fire_storm_dummy_ids"] = message.removed_fire_storm_dummy_ids;
+    out["removed_fire_storm_cast_ids"] = message.removed_fire_storm_cast_ids;
+    out["removed_grappling_hook_ids"] = message.removed_grappling_hook_ids;
 
     return out;
 }
@@ -240,6 +331,29 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.rune_placing_mode = item.value("rune_placing_mode", false);
             player.selected_rune_type = item.value("selected_rune_type", 0);
             player.rune_place_cooldown_remaining = item.value("rune_place_cooldown_remaining", 0.0f);
+            player.mana = item.value("mana", 0.0f);
+            player.max_mana = item.value("max_mana", 0.0f);
+            player.grappling_cooldown_remaining = item.value("grappling_cooldown_remaining", 0.0f);
+            player.grappling_cooldown_total = item.value("grappling_cooldown_total", 0.0f);
+            player.rune_cooldown_remaining = item.value("rune_cooldown_remaining", std::vector<float>{});
+            player.rune_cooldown_total = item.value("rune_cooldown_total", std::vector<float>{});
+            const auto status_it = item.find("status_effects");
+            if (status_it != item.end() && status_it->is_array()) {
+                for (const auto& status_item : *status_it) {
+                    PlayerSnapshot::StatusEffectSnapshot status;
+                    status.type = status_item.value("type", 0);
+                    status.remaining_seconds = status_item.value("remaining_seconds", 0.0f);
+                    status.total_seconds = status_item.value("total_seconds", 0.0f);
+                    status.magnitude_per_second = status_item.value("magnitude_per_second", 0.0f);
+                    status.composite_effect_id = status_item.value("composite_effect_id", std::string{});
+                    player.status_effects.push_back(status);
+                }
+            }
+            player.item_slots = item.value("item_slots", std::vector<std::string>{});
+            player.item_slot_counts = item.value("item_slot_counts", std::vector<int>{});
+            player.item_slot_cooldown_remaining =
+                item.value("item_slot_cooldown_remaining", std::vector<float>{});
+            player.item_slot_cooldown_total = item.value("item_slot_cooldown_total", std::vector<float>{});
             player.awaiting_respawn = item.value("awaiting_respawn", false);
             player.respawn_remaining = item.value("respawn_remaining", 0.0f);
             player.last_processed_move_seq = item.value("last_processed_move_seq", 0);
@@ -258,7 +372,11 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             rune.y = item.value("y", 0);
             rune.rune_type = item.value("rune_type", 0);
             rune.placement_order = item.value("placement_order", 0);
-            rune.active = item.value("active", true);
+            rune.active = item.value("active", false);
+            rune.volatile_cast = item.value("volatile_cast", false);
+            rune.activation_total_seconds = item.value("activation_total_seconds", 0.0f);
+            rune.activation_remaining_seconds = item.value("activation_remaining_seconds", 0.0f);
+            rune.creates_influence_zone = item.value("creates_influence_zone", true);
             out.runes.push_back(rune);
         }
     }
@@ -321,6 +439,67 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
         }
     }
 
+    const auto dummies_it = json.find("fire_storm_dummies");
+    if (dummies_it != json.end() && dummies_it->is_array()) {
+        for (const auto& item : *dummies_it) {
+            FireStormDummySnapshot dummy;
+            dummy.id = item.value("id", -1);
+            dummy.owner_player_id = item.value("owner_player_id", -1);
+            dummy.owner_team = item.value("owner_team", 0);
+            dummy.cell_x = item.value("cell_x", 0);
+            dummy.cell_y = item.value("cell_y", 0);
+            dummy.state = item.value("state", 0);
+            dummy.state_time = item.value("state_time", 0.0f);
+            dummy.state_duration = item.value("state_duration", 0.0f);
+            dummy.idle_lifetime_remaining_seconds = item.value("idle_lifetime_remaining_seconds", -1.0f);
+            dummy.alive = item.value("alive", true);
+            out.fire_storm_dummies.push_back(dummy);
+        }
+    }
+    const auto casts_it = json.find("fire_storm_casts");
+    if (casts_it != json.end() && casts_it->is_array()) {
+        for (const auto& item : *casts_it) {
+            FireStormCastSnapshot cast;
+            cast.id = item.value("id", -1);
+            cast.owner_player_id = item.value("owner_player_id", -1);
+            cast.owner_team = item.value("owner_team", 0);
+            cast.center_cell_x = item.value("center_cell_x", 0);
+            cast.center_cell_y = item.value("center_cell_y", 0);
+            cast.elapsed_seconds = item.value("elapsed_seconds", 0.0f);
+            cast.duration_seconds = item.value("duration_seconds", 0.0f);
+            cast.alive = item.value("alive", true);
+            out.fire_storm_casts.push_back(cast);
+        }
+    }
+    const auto hooks_it = json.find("grappling_hooks");
+    if (hooks_it != json.end() && hooks_it->is_array()) {
+        for (const auto& item : *hooks_it) {
+            GrapplingHookSnapshot hook;
+            hook.id = item.value("id", -1);
+            hook.owner_player_id = item.value("owner_player_id", -1);
+            hook.owner_team = item.value("owner_team", 0);
+            hook.head_pos_x = item.value("head_pos_x", 0.0f);
+            hook.head_pos_y = item.value("head_pos_y", 0.0f);
+            hook.target_pos_x = item.value("target_pos_x", 0.0f);
+            hook.target_pos_y = item.value("target_pos_y", 0.0f);
+            hook.latch_point_x = item.value("latch_point_x", 0.0f);
+            hook.latch_point_y = item.value("latch_point_y", 0.0f);
+            hook.pull_destination_x = item.value("pull_destination_x", 0.0f);
+            hook.pull_destination_y = item.value("pull_destination_y", 0.0f);
+            hook.phase = item.value("phase", 0);
+            hook.latch_target_type = item.value("latch_target_type", 0);
+            hook.latch_target_id = item.value("latch_target_id", -1);
+            hook.latch_cell_x = item.value("latch_cell_x", 0);
+            hook.latch_cell_y = item.value("latch_cell_y", 0);
+            hook.latched = item.value("latched", false);
+            hook.animation_time = item.value("animation_time", 0.0f);
+            hook.pull_elapsed_seconds = item.value("pull_elapsed_seconds", 0.0f);
+            hook.max_pull_duration_seconds = item.value("max_pull_duration_seconds", 0.0f);
+            hook.alive = item.value("alive", true);
+            out.grappling_hooks.push_back(hook);
+        }
+    }
+
     const auto removed_players_it = json.find("removed_player_ids");
     if (removed_players_it != json.end() && removed_players_it->is_array()) {
         for (const auto& item : *removed_players_it) {
@@ -351,6 +530,24 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             out.removed_map_object_ids.push_back(item.get<int>());
         }
     }
+    const auto removed_dummies_it = json.find("removed_fire_storm_dummy_ids");
+    if (removed_dummies_it != json.end() && removed_dummies_it->is_array()) {
+        for (const auto& item : *removed_dummies_it) {
+            out.removed_fire_storm_dummy_ids.push_back(item.get<int>());
+        }
+    }
+    const auto removed_casts_it = json.find("removed_fire_storm_cast_ids");
+    if (removed_casts_it != json.end() && removed_casts_it->is_array()) {
+        for (const auto& item : *removed_casts_it) {
+            out.removed_fire_storm_cast_ids.push_back(item.get<int>());
+        }
+    }
+    const auto removed_hooks_it = json.find("removed_grappling_hook_ids");
+    if (removed_hooks_it != json.end() && removed_hooks_it->is_array()) {
+        for (const auto& item : *removed_hooks_it) {
+            out.removed_grappling_hook_ids.push_back(item.get<int>());
+        }
+    }
 
     return out;
 }
@@ -358,7 +555,11 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
 nlohmann::json ToJson(const LobbyStateMessage& message) {
     nlohmann::json out;
     out["host_can_start"] = message.host_can_start;
+    out["mode_type"] = message.mode_type;
+    out["round_time_seconds"] = message.round_time_seconds;
+    out["best_of_target_kills"] = message.best_of_target_kills;
     out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
+    out["shrink_start_seconds"] = message.shrink_start_seconds;
     out["min_arena_radius_tiles"] = message.min_arena_radius_tiles;
     out["players"] = nlohmann::json::array();
     for (const auto& player : message.players) {
@@ -370,7 +571,11 @@ nlohmann::json ToJson(const LobbyStateMessage& message) {
 std::optional<LobbyStateMessage> LobbyStateFromJson(const nlohmann::json& json) {
     LobbyStateMessage out;
     out.host_can_start = json.value("host_can_start", false);
+    out.mode_type = json.value("mode_type", 0);
+    out.round_time_seconds = json.value("round_time_seconds", 0);
+    out.best_of_target_kills = json.value("best_of_target_kills", 0);
     out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
+    out.shrink_start_seconds = json.value("shrink_start_seconds", 0.0f);
     out.min_arena_radius_tiles = json.value("min_arena_radius_tiles", 0.0f);
 
     const auto players_it = json.find("players");

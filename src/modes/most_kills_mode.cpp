@@ -9,6 +9,18 @@ void MostKillsMode::Update(GameState& state, EventQueue& event_queue, float dt) 
         return;
     }
 
+    state.match.elapsed_seconds += dt;
+
+    if (state.match.mode_type == MatchModeType::BestOfKills) {
+        if (state.match.red_team_kills >= state.match.best_of_target_kills ||
+            state.match.blue_team_kills >= state.match.best_of_target_kills) {
+            state.match.match_running = false;
+            state.match.match_finished = true;
+            event_queue.Push(MatchEndedEvent{GetWinningTeam(state)});
+        }
+        return;
+    }
+
     state.match.time_remaining = std::max(0.0f, state.match.time_remaining - dt);
     if (state.match.time_remaining <= 0.0f) {
         state.match.match_running = false;

@@ -35,8 +35,16 @@ bool ControlsManager::Load(ControlsBindings& bindings) const {
     bindings.move_up = json.value("move_up", bindings.move_up);
     bindings.move_down = json.value("move_down", bindings.move_down);
     bindings.primary_action = json.value("primary_action", bindings.primary_action);
-    bindings.select_fire_rune = json.value("select_fire_rune", bindings.select_fire_rune);
-    bindings.select_water_rune = json.value("select_water_rune", bindings.select_water_rune);
+    bindings.grappling_hook_action = json.value("grappling_hook_action", bindings.grappling_hook_action);
+    bindings.select_rune_slot_1 = json.value("select_rune_slot_1", bindings.select_rune_slot_1);
+    bindings.select_rune_slot_2 = json.value("select_rune_slot_2", bindings.select_rune_slot_2);
+    bindings.select_rune_slot_3 = json.value("select_rune_slot_3", bindings.select_rune_slot_3);
+    bindings.select_rune_slot_4 = json.value("select_rune_slot_4", bindings.select_rune_slot_4);
+    bindings.activate_item_slot_1 = json.value("activate_item_slot_1", bindings.activate_item_slot_1);
+    bindings.activate_item_slot_2 = json.value("activate_item_slot_2", bindings.activate_item_slot_2);
+    bindings.activate_item_slot_3 = json.value("activate_item_slot_3", bindings.activate_item_slot_3);
+    bindings.activate_item_slot_4 = json.value("activate_item_slot_4", bindings.activate_item_slot_4);
+    bindings.toggle_inventory_mode = json.value("toggle_inventory_mode", bindings.toggle_inventory_mode);
     return true;
 }
 
@@ -47,8 +55,16 @@ bool ControlsManager::Save(const ControlsBindings& bindings) const {
     json["move_up"] = bindings.move_up;
     json["move_down"] = bindings.move_down;
     json["primary_action"] = bindings.primary_action;
-    json["select_fire_rune"] = bindings.select_fire_rune;
-    json["select_water_rune"] = bindings.select_water_rune;
+    json["grappling_hook_action"] = bindings.grappling_hook_action;
+    json["select_rune_slot_1"] = bindings.select_rune_slot_1;
+    json["select_rune_slot_2"] = bindings.select_rune_slot_2;
+    json["select_rune_slot_3"] = bindings.select_rune_slot_3;
+    json["select_rune_slot_4"] = bindings.select_rune_slot_4;
+    json["activate_item_slot_1"] = bindings.activate_item_slot_1;
+    json["activate_item_slot_2"] = bindings.activate_item_slot_2;
+    json["activate_item_slot_3"] = bindings.activate_item_slot_3;
+    json["activate_item_slot_4"] = bindings.activate_item_slot_4;
+    json["toggle_inventory_mode"] = bindings.toggle_inventory_mode;
 
     std::ofstream output(controls_path_);
     if (!output.is_open()) {

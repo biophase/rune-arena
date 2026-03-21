@@ -14,3 +14,13 @@ cmake --build build --config Release
 
 Set to private network on windows 11
 Settings -> Network & Internet -> Wi-Fi -> <current_net> -> Private network
+
+
+Linux / Ubuntu
+```
+sudo apt update
+sudo apt install -y build-essential cmake pkg-config libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev
+cmake -S . -B build
+cmake --build build -j4
+./build/rune_arena
+```

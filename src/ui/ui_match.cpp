@@ -6,16 +6,14 @@
 
 void DrawMatchHud(const GameState& state, int local_player_id) {
     DrawRectangle(10, 10, 360, 88, Color{0, 0, 0, 130});
-    DrawText(TextFormat("Time: %03d", static_cast<int>(state.match.time_remaining)), 22, 20, 24, RAYWHITE);
+    if (state.match.mode_type == MatchModeType::BestOfKills) {
+        DrawText(TextFormat("Best Of: %d", state.match.best_of_target_kills), 22, 20, 24, RAYWHITE);
+    } else {
+        const int total_seconds = std::max(0, static_cast<int>(state.match.time_remaining));
+        DrawText(TextFormat("Time: %d:%02d", total_seconds / 60, total_seconds % 60), 22, 20, 24, RAYWHITE);
+    }
     DrawText(TextFormat("Red: %d   Blue: %d", state.match.red_team_kills, state.match.blue_team_kills), 22, 48, 20,
              RAYWHITE);
-
-    for (const auto& player : state.players) {
-        if (player.id == local_player_id) {
-            DrawText(TextFormat("HP: %d", player.hp), 22, 72, 18, Color{255, 200, 200, 255});
-            break;
-        }
-    }
 }
 
 void DrawPostMatch(const GameState& state, int winning_team) {

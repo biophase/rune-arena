@@ -121,7 +121,7 @@
       "stops_projectiles": false,
       "consumable": {
         "effects": [
-          { "type": "increase_current_health", "amount": 50 }
+          { "type": "increase_current_health", "amount": 14 }
         ]
       }
     }

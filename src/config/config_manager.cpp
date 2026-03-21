@@ -40,6 +40,13 @@ bool ConfigManager::Load(UserSettings& settings) const {
         json.value("lobby_shrink_tiles_per_second", settings.lobby_shrink_tiles_per_second);
     settings.lobby_min_arena_radius_tiles =
         json.value("lobby_min_arena_radius_tiles", settings.lobby_min_arena_radius_tiles);
+    settings.lobby_mode_type = json.value("lobby_mode_type", settings.lobby_mode_type);
+    settings.lobby_match_length_seconds =
+        json.value("lobby_match_length_seconds", settings.lobby_match_length_seconds);
+    settings.lobby_best_of_target_kills =
+        json.value("lobby_best_of_target_kills", settings.lobby_best_of_target_kills);
+    settings.lobby_shrink_start_seconds =
+        json.value("lobby_shrink_start_seconds", settings.lobby_shrink_start_seconds);
     return true;
 }
 
@@ -52,6 +59,10 @@ bool ConfigManager::Save(const UserSettings& settings) const {
     json["show_network_debug_panel"] = settings.show_network_debug_panel;
     json["lobby_shrink_tiles_per_second"] = settings.lobby_shrink_tiles_per_second;
     json["lobby_min_arena_radius_tiles"] = settings.lobby_min_arena_radius_tiles;
+    json["lobby_mode_type"] = settings.lobby_mode_type;
+    json["lobby_match_length_seconds"] = settings.lobby_match_length_seconds;
+    json["lobby_best_of_target_kills"] = settings.lobby_best_of_target_kills;
+    json["lobby_shrink_start_seconds"] = settings.lobby_shrink_start_seconds;
 
     std::ofstream output(config_path_);
     if (!output.is_open()) {

@@ -37,7 +37,7 @@ void FireBoltSpell::Cast(GameState& state, EventQueue& event_queue) {
     projectile.owner_team = caster_team;
     projectile.pos = cast_position_;
     projectile.vel = DirectionToVelocity(direction_);
-    projectile.radius = Constants::kProjectileRadius;
+    projectile.radius = Constants::kProjectileRadius * Constants::kFireBoltScale;
     projectile.damage = Constants::kProjectileDamage;
     projectile.animation_key = "projectile_fire_bolt";
     projectile.emitter_enabled = true;

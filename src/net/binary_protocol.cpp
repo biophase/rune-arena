@@ -169,8 +169,10 @@ std::vector<uint8_t> EncodeClientActionPacket(const ClientActionMessage& message
     payload.WriteI32(message.seq);
     payload.WriteI32(message.last_received_snapshot_id);
     payload.WriteBool(message.primary_pressed);
-    payload.WriteBool(message.select_fire);
-    payload.WriteBool(message.select_water);
+    payload.WriteBool(message.grappling_pressed);
+    payload.WriteI32(message.request_rune_type);
+    payload.WriteString(message.request_item_id);
+    payload.WriteBool(message.toggle_inventory_mode);
     return MakePacket(PacketType::ClientAction, payload.Bytes());
 }
 
@@ -178,8 +180,9 @@ std::optional<ClientActionMessage> DecodeClientActionPayload(const uint8_t* payl
     BufferReader reader(payload, payload_size);
     ClientActionMessage out;
     if (!reader.ReadI32(out.player_id) || !reader.ReadI32(out.seq) || !reader.ReadI32(out.last_received_snapshot_id) ||
-        !reader.ReadBool(out.primary_pressed) || !reader.ReadBool(out.select_fire) ||
-        !reader.ReadBool(out.select_water) || !reader.End()) {
+        !reader.ReadBool(out.primary_pressed) || !reader.ReadBool(out.grappling_pressed) ||
+        !reader.ReadI32(out.request_rune_type) ||
+        !reader.ReadString(out.request_item_id) || !reader.ReadBool(out.toggle_inventory_mode) || !reader.End()) {
         return std::nullopt;
     }
     return out;
@@ -223,6 +226,42 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteBool(player.rune_placing_mode);
         payload.WriteI32(player.selected_rune_type);
         payload.WriteF32(player.rune_place_cooldown_remaining);
+        payload.WriteF32(player.mana);
+        payload.WriteF32(player.max_mana);
+        payload.WriteF32(player.grappling_cooldown_remaining);
+        payload.WriteF32(player.grappling_cooldown_total);
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.rune_cooldown_remaining.size(), 65535)));
+        for (size_t j = 0; j < player.rune_cooldown_remaining.size() && j < 65535; ++j) {
+            payload.WriteF32(player.rune_cooldown_remaining[j]);
+        }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.rune_cooldown_total.size(), 65535)));
+        for (size_t j = 0; j < player.rune_cooldown_total.size() && j < 65535; ++j) {
+            payload.WriteF32(player.rune_cooldown_total[j]);
+        }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.status_effects.size(), 65535)));
+        for (size_t j = 0; j < player.status_effects.size() && j < 65535; ++j) {
+            payload.WriteI32(player.status_effects[j].type);
+            payload.WriteF32(player.status_effects[j].remaining_seconds);
+            payload.WriteF32(player.status_effects[j].total_seconds);
+            payload.WriteF32(player.status_effects[j].magnitude_per_second);
+            payload.WriteString(player.status_effects[j].composite_effect_id);
+        }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.item_slots.size(), 65535)));
+        for (size_t j = 0; j < player.item_slots.size() && j < 65535; ++j) {
+            payload.WriteString(player.item_slots[j]);
+        }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.item_slot_counts.size(), 65535)));
+        for (size_t j = 0; j < player.item_slot_counts.size() && j < 65535; ++j) {
+            payload.WriteI32(player.item_slot_counts[j]);
+        }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.item_slot_cooldown_remaining.size(), 65535)));
+        for (size_t j = 0; j < player.item_slot_cooldown_remaining.size() && j < 65535; ++j) {
+            payload.WriteF32(player.item_slot_cooldown_remaining[j]);
+        }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.item_slot_cooldown_total.size(), 65535)));
+        for (size_t j = 0; j < player.item_slot_cooldown_total.size() && j < 65535; ++j) {
+            payload.WriteF32(player.item_slot_cooldown_total[j]);
+        }
         payload.WriteBool(player.awaiting_respawn);
         payload.WriteF32(player.respawn_remaining);
         payload.WriteI32(player.last_processed_move_seq);
@@ -239,6 +278,10 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteI32(rune.rune_type);
         payload.WriteI32(rune.placement_order);
         payload.WriteBool(rune.active);
+        payload.WriteBool(rune.volatile_cast);
+        payload.WriteF32(rune.activation_total_seconds);
+        payload.WriteF32(rune.activation_remaining_seconds);
+        payload.WriteBool(rune.creates_influence_zone);
     }
 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.projectiles.size(), 65535)));
@@ -290,6 +333,60 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteBool(object.alive);
     }
 
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.fire_storm_dummies.size(), 65535)));
+    for (size_t i = 0; i < message.fire_storm_dummies.size() && i < 65535; ++i) {
+        const auto& dummy = message.fire_storm_dummies[i];
+        payload.WriteI32(dummy.id);
+        payload.WriteI32(dummy.owner_player_id);
+        payload.WriteI32(dummy.owner_team);
+        payload.WriteI32(dummy.cell_x);
+        payload.WriteI32(dummy.cell_y);
+        payload.WriteI32(dummy.state);
+        payload.WriteF32(dummy.state_time);
+        payload.WriteF32(dummy.state_duration);
+        payload.WriteF32(dummy.idle_lifetime_remaining_seconds);
+        payload.WriteBool(dummy.alive);
+    }
+
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.fire_storm_casts.size(), 65535)));
+    for (size_t i = 0; i < message.fire_storm_casts.size() && i < 65535; ++i) {
+        const auto& cast = message.fire_storm_casts[i];
+        payload.WriteI32(cast.id);
+        payload.WriteI32(cast.owner_player_id);
+        payload.WriteI32(cast.owner_team);
+        payload.WriteI32(cast.center_cell_x);
+        payload.WriteI32(cast.center_cell_y);
+        payload.WriteF32(cast.elapsed_seconds);
+        payload.WriteF32(cast.duration_seconds);
+        payload.WriteBool(cast.alive);
+    }
+
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.grappling_hooks.size(), 65535)));
+    for (size_t i = 0; i < message.grappling_hooks.size() && i < 65535; ++i) {
+        const auto& hook = message.grappling_hooks[i];
+        payload.WriteI32(hook.id);
+        payload.WriteI32(hook.owner_player_id);
+        payload.WriteI32(hook.owner_team);
+        payload.WriteF32(hook.head_pos_x);
+        payload.WriteF32(hook.head_pos_y);
+        payload.WriteF32(hook.target_pos_x);
+        payload.WriteF32(hook.target_pos_y);
+        payload.WriteF32(hook.latch_point_x);
+        payload.WriteF32(hook.latch_point_y);
+        payload.WriteF32(hook.pull_destination_x);
+        payload.WriteF32(hook.pull_destination_y);
+        payload.WriteI32(hook.phase);
+        payload.WriteI32(hook.latch_target_type);
+        payload.WriteI32(hook.latch_target_id);
+        payload.WriteI32(hook.latch_cell_x);
+        payload.WriteI32(hook.latch_cell_y);
+        payload.WriteBool(hook.latched);
+        payload.WriteF32(hook.animation_time);
+        payload.WriteF32(hook.pull_elapsed_seconds);
+        payload.WriteF32(hook.max_pull_duration_seconds);
+        payload.WriteBool(hook.alive);
+    }
+
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_player_ids.size(), 65535)));
     for (size_t i = 0; i < message.removed_player_ids.size() && i < 65535; ++i) {
         payload.WriteI32(message.removed_player_ids[i]);
@@ -309,6 +406,18 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_map_object_ids.size(), 65535)));
     for (size_t i = 0; i < message.removed_map_object_ids.size() && i < 65535; ++i) {
         payload.WriteI32(message.removed_map_object_ids[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_fire_storm_dummy_ids.size(), 65535)));
+    for (size_t i = 0; i < message.removed_fire_storm_dummy_ids.size() && i < 65535; ++i) {
+        payload.WriteI32(message.removed_fire_storm_dummy_ids[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_fire_storm_cast_ids.size(), 65535)));
+    for (size_t i = 0; i < message.removed_fire_storm_cast_ids.size() && i < 65535; ++i) {
+        payload.WriteI32(message.removed_fire_storm_cast_ids[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_grappling_hook_ids.size(), 65535)));
+    for (size_t i = 0; i < message.removed_grappling_hook_ids.size() && i < 65535; ++i) {
+        payload.WriteI32(message.removed_grappling_hook_ids[i]);
     }
 
     return MakePacket(PacketType::Snapshot, payload.Bytes());
@@ -339,8 +448,68 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             !reader.ReadI32(player.kills) || !reader.ReadBool(player.alive) || !reader.ReadI32(player.facing) ||
             !reader.ReadI32(player.action_state) || !reader.ReadF32(player.melee_active_remaining) ||
             !reader.ReadBool(player.rune_placing_mode) || !reader.ReadI32(player.selected_rune_type) ||
-            !reader.ReadF32(player.rune_place_cooldown_remaining) || !reader.ReadBool(player.awaiting_respawn) ||
-            !reader.ReadF32(player.respawn_remaining) || !reader.ReadI32(player.last_processed_move_seq)) {
+            !reader.ReadF32(player.rune_place_cooldown_remaining) ||
+            !reader.ReadF32(player.mana) || !reader.ReadF32(player.max_mana) ||
+            !reader.ReadF32(player.grappling_cooldown_remaining) || !reader.ReadF32(player.grappling_cooldown_total)) {
+            return std::nullopt;
+        }
+
+        uint16_t count = 0;
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.rune_cooldown_remaining.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            float value = 0.0f;
+            if (!reader.ReadF32(value)) return std::nullopt;
+            player.rune_cooldown_remaining.push_back(value);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.rune_cooldown_total.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            float value = 0.0f;
+            if (!reader.ReadF32(value)) return std::nullopt;
+            player.rune_cooldown_total.push_back(value);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.status_effects.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            PlayerSnapshot::StatusEffectSnapshot status;
+            if (!reader.ReadI32(status.type) || !reader.ReadF32(status.remaining_seconds) ||
+                !reader.ReadF32(status.total_seconds) || !reader.ReadF32(status.magnitude_per_second) ||
+                !reader.ReadString(status.composite_effect_id)) {
+                return std::nullopt;
+            }
+            player.status_effects.push_back(status);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.item_slots.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            std::string value;
+            if (!reader.ReadString(value)) return std::nullopt;
+            player.item_slots.push_back(value);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.item_slot_counts.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            int32_t value = 0;
+            if (!reader.ReadI32(value)) return std::nullopt;
+            player.item_slot_counts.push_back(value);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.item_slot_cooldown_remaining.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            float value = 0.0f;
+            if (!reader.ReadF32(value)) return std::nullopt;
+            player.item_slot_cooldown_remaining.push_back(value);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.item_slot_cooldown_total.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            float value = 0.0f;
+            if (!reader.ReadF32(value)) return std::nullopt;
+            player.item_slot_cooldown_total.push_back(value);
+        }
+        if (!reader.ReadBool(player.awaiting_respawn) || !reader.ReadF32(player.respawn_remaining) ||
+            !reader.ReadI32(player.last_processed_move_seq)) {
             return std::nullopt;
         }
         out.players.push_back(player);
@@ -353,7 +522,9 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         RuneSnapshot rune;
         if (!reader.ReadI32(rune.id) || !reader.ReadI32(rune.owner_player_id) || !reader.ReadI32(rune.owner_team) ||
             !reader.ReadI32(rune.x) || !reader.ReadI32(rune.y) || !reader.ReadI32(rune.rune_type) ||
-            !reader.ReadI32(rune.placement_order) || !reader.ReadBool(rune.active)) {
+            !reader.ReadI32(rune.placement_order) || !reader.ReadBool(rune.active) ||
+            !reader.ReadBool(rune.volatile_cast) || !reader.ReadF32(rune.activation_total_seconds) ||
+            !reader.ReadF32(rune.activation_remaining_seconds) || !reader.ReadBool(rune.creates_influence_zone)) {
             return std::nullopt;
         }
         out.runes.push_back(rune);
@@ -404,6 +575,55 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         out.map_objects.push_back(object);
     }
 
+    uint16_t dummy_count = 0;
+    if (!reader.ReadU16(dummy_count)) return std::nullopt;
+    out.fire_storm_dummies.reserve(dummy_count);
+    for (uint16_t i = 0; i < dummy_count; ++i) {
+        FireStormDummySnapshot dummy;
+        if (!reader.ReadI32(dummy.id) || !reader.ReadI32(dummy.owner_player_id) || !reader.ReadI32(dummy.owner_team) ||
+            !reader.ReadI32(dummy.cell_x) || !reader.ReadI32(dummy.cell_y) || !reader.ReadI32(dummy.state) ||
+            !reader.ReadF32(dummy.state_time) || !reader.ReadF32(dummy.state_duration) ||
+            !reader.ReadF32(dummy.idle_lifetime_remaining_seconds) ||
+            !reader.ReadBool(dummy.alive)) {
+            return std::nullopt;
+        }
+        out.fire_storm_dummies.push_back(dummy);
+    }
+
+    uint16_t cast_count = 0;
+    if (!reader.ReadU16(cast_count)) return std::nullopt;
+    out.fire_storm_casts.reserve(cast_count);
+    for (uint16_t i = 0; i < cast_count; ++i) {
+        FireStormCastSnapshot cast;
+        if (!reader.ReadI32(cast.id) || !reader.ReadI32(cast.owner_player_id) || !reader.ReadI32(cast.owner_team) ||
+            !reader.ReadI32(cast.center_cell_x) || !reader.ReadI32(cast.center_cell_y) ||
+            !reader.ReadF32(cast.elapsed_seconds) || !reader.ReadF32(cast.duration_seconds) ||
+            !reader.ReadBool(cast.alive)) {
+            return std::nullopt;
+        }
+        out.fire_storm_casts.push_back(cast);
+    }
+
+    uint16_t hook_count = 0;
+    if (!reader.ReadU16(hook_count)) return std::nullopt;
+    out.grappling_hooks.reserve(hook_count);
+    for (uint16_t i = 0; i < hook_count; ++i) {
+        GrapplingHookSnapshot hook;
+        if (!reader.ReadI32(hook.id) || !reader.ReadI32(hook.owner_player_id) || !reader.ReadI32(hook.owner_team) ||
+            !reader.ReadF32(hook.head_pos_x) || !reader.ReadF32(hook.head_pos_y) ||
+            !reader.ReadF32(hook.target_pos_x) || !reader.ReadF32(hook.target_pos_y) ||
+            !reader.ReadF32(hook.latch_point_x) || !reader.ReadF32(hook.latch_point_y) ||
+            !reader.ReadF32(hook.pull_destination_x) || !reader.ReadF32(hook.pull_destination_y) ||
+            !reader.ReadI32(hook.phase) || !reader.ReadI32(hook.latch_target_type) ||
+            !reader.ReadI32(hook.latch_target_id) || !reader.ReadI32(hook.latch_cell_x) ||
+            !reader.ReadI32(hook.latch_cell_y) || !reader.ReadBool(hook.latched) ||
+            !reader.ReadF32(hook.animation_time) || !reader.ReadF32(hook.pull_elapsed_seconds) ||
+            !reader.ReadF32(hook.max_pull_duration_seconds) || !reader.ReadBool(hook.alive)) {
+            return std::nullopt;
+        }
+        out.grappling_hooks.push_back(hook);
+    }
+
     uint16_t removed_player_count = 0;
     if (!reader.ReadU16(removed_player_count)) return std::nullopt;
     out.removed_player_ids.reserve(removed_player_count);
@@ -449,6 +669,33 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         out.removed_map_object_ids.push_back(id);
     }
 
+    uint16_t removed_dummy_count = 0;
+    if (!reader.ReadU16(removed_dummy_count)) return std::nullopt;
+    out.removed_fire_storm_dummy_ids.reserve(removed_dummy_count);
+    for (uint16_t i = 0; i < removed_dummy_count; ++i) {
+        int32_t id = 0;
+        if (!reader.ReadI32(id)) return std::nullopt;
+        out.removed_fire_storm_dummy_ids.push_back(id);
+    }
+
+    uint16_t removed_cast_count = 0;
+    if (!reader.ReadU16(removed_cast_count)) return std::nullopt;
+    out.removed_fire_storm_cast_ids.reserve(removed_cast_count);
+    for (uint16_t i = 0; i < removed_cast_count; ++i) {
+        int32_t id = 0;
+        if (!reader.ReadI32(id)) return std::nullopt;
+        out.removed_fire_storm_cast_ids.push_back(id);
+    }
+
+    uint16_t removed_hook_count = 0;
+    if (!reader.ReadU16(removed_hook_count)) return std::nullopt;
+    out.removed_grappling_hook_ids.reserve(removed_hook_count);
+    for (uint16_t i = 0; i < removed_hook_count; ++i) {
+        int32_t id = 0;
+        if (!reader.ReadI32(id)) return std::nullopt;
+        out.removed_grappling_hook_ids.push_back(id);
+    }
+
     if (!reader.End()) return std::nullopt;
     return out;
 }
@@ -456,7 +703,11 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
 std::vector<uint8_t> EncodeLobbyStatePacket(const LobbyStateMessage& message) {
     BufferWriter payload;
     payload.WriteBool(message.host_can_start);
+    payload.WriteI32(message.mode_type);
+    payload.WriteI32(message.round_time_seconds);
+    payload.WriteI32(message.best_of_target_kills);
     payload.WriteF32(message.shrink_tiles_per_second);
+    payload.WriteF32(message.shrink_start_seconds);
     payload.WriteF32(message.min_arena_radius_tiles);
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.players.size(), 65535)));
     for (size_t i = 0; i < message.players.size() && i < 65535; ++i) {
@@ -469,7 +720,9 @@ std::vector<uint8_t> EncodeLobbyStatePacket(const LobbyStateMessage& message) {
 std::optional<LobbyStateMessage> DecodeLobbyStatePayload(const uint8_t* payload_data, size_t payload_size) {
     BufferReader reader(payload_data, payload_size);
     LobbyStateMessage out;
-    if (!reader.ReadBool(out.host_can_start) || !reader.ReadF32(out.shrink_tiles_per_second) ||
+    if (!reader.ReadBool(out.host_can_start) || !reader.ReadI32(out.mode_type) ||
+        !reader.ReadI32(out.round_time_seconds) || !reader.ReadI32(out.best_of_target_kills) ||
+        !reader.ReadF32(out.shrink_tiles_per_second) || !reader.ReadF32(out.shrink_start_seconds) ||
         !reader.ReadF32(out.min_arena_radius_tiles)) {
         return std::nullopt;
     }

@@ -18,6 +18,7 @@ struct LightningEffect {
 
     int segment_count = 1;
     std::vector<float> segment_phase_offsets_seconds;
+    bool volatile_variant = false;
 
     bool alive = true;
 };

@@ -34,16 +34,42 @@ bool AreEqual(const PlayerSnapshot& a, const PlayerSnapshot& b) {
            a.vel_y == b.vel_y && a.aim_dir_x == b.aim_dir_x && a.aim_dir_y == b.aim_dir_y && a.hp == b.hp &&
            a.kills == b.kills && a.alive == b.alive && a.facing == b.facing && a.action_state == b.action_state &&
            a.melee_active_remaining == b.melee_active_remaining && a.rune_placing_mode == b.rune_placing_mode &&
-           a.selected_rune_type == b.selected_rune_type &&
-           a.rune_place_cooldown_remaining == b.rune_place_cooldown_remaining &&
+           a.selected_rune_type == b.selected_rune_type && a.rune_place_cooldown_remaining == b.rune_place_cooldown_remaining &&
+           a.mana == b.mana && a.max_mana == b.max_mana &&
+           a.grappling_cooldown_remaining == b.grappling_cooldown_remaining &&
+           a.grappling_cooldown_total == b.grappling_cooldown_total &&
+           a.rune_cooldown_remaining == b.rune_cooldown_remaining &&
+           a.rune_cooldown_total == b.rune_cooldown_total && a.status_effects == b.status_effects &&
+           a.item_slots == b.item_slots &&
+           a.item_slot_counts == b.item_slot_counts &&
+           a.item_slot_cooldown_remaining == b.item_slot_cooldown_remaining &&
+           a.item_slot_cooldown_total == b.item_slot_cooldown_total &&
            a.awaiting_respawn == b.awaiting_respawn && a.respawn_remaining == b.respawn_remaining &&
            a.last_processed_move_seq == b.last_processed_move_seq;
+}
+
+bool AreEqual(const GrapplingHookSnapshot& a, const GrapplingHookSnapshot& b) {
+    return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.head_pos_x == b.head_pos_x && a.head_pos_y == b.head_pos_y &&
+           a.target_pos_x == b.target_pos_x && a.target_pos_y == b.target_pos_y &&
+           a.latch_point_x == b.latch_point_x && a.latch_point_y == b.latch_point_y &&
+           a.pull_destination_x == b.pull_destination_x && a.pull_destination_y == b.pull_destination_y &&
+           a.phase == b.phase && a.latch_target_type == b.latch_target_type &&
+           a.latch_target_id == b.latch_target_id && a.latch_cell_x == b.latch_cell_x &&
+           a.latch_cell_y == b.latch_cell_y && a.latched == b.latched &&
+           a.animation_time == b.animation_time &&
+           a.pull_elapsed_seconds == b.pull_elapsed_seconds &&
+           a.max_pull_duration_seconds == b.max_pull_duration_seconds &&
+           a.alive == b.alive;
 }
 
 bool AreEqual(const RuneSnapshot& a, const RuneSnapshot& b) {
     return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team && a.x == b.x &&
            a.y == b.y && a.rune_type == b.rune_type && a.placement_order == b.placement_order &&
-           a.active == b.active;
+           a.active == b.active && a.volatile_cast == b.volatile_cast &&
+           a.activation_total_seconds == b.activation_total_seconds &&
+           a.activation_remaining_seconds == b.activation_remaining_seconds &&
+           a.creates_influence_zone == b.creates_influence_zone;
 }
 
 bool AreEqual(const ProjectileSnapshot& a, const ProjectileSnapshot& b) {
@@ -65,6 +91,19 @@ bool AreEqual(const MapObjectSnapshot& a, const MapObjectSnapshot& b) {
            a.object_type == b.object_type && a.hp == b.hp && a.state == b.state &&
            a.state_time == b.state_time && a.death_duration == b.death_duration &&
            a.collision_enabled == b.collision_enabled && a.alive == b.alive;
+}
+
+bool AreEqual(const FireStormDummySnapshot& a, const FireStormDummySnapshot& b) {
+    return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.cell_x == b.cell_x && a.cell_y == b.cell_y && a.state == b.state &&
+           a.state_time == b.state_time && a.state_duration == b.state_duration &&
+           a.idle_lifetime_remaining_seconds == b.idle_lifetime_remaining_seconds && a.alive == b.alive;
+}
+
+bool AreEqual(const FireStormCastSnapshot& a, const FireStormCastSnapshot& b) {
+    return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.center_cell_x == b.center_cell_x && a.center_cell_y == b.center_cell_y &&
+           a.elapsed_seconds == b.elapsed_seconds && a.duration_seconds == b.duration_seconds && a.alive == b.alive;
 }
 
 template <typename T>
@@ -116,6 +155,12 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
     delta.removed_ice_wall_ids.clear();
     delta.map_objects.clear();
     delta.removed_map_object_ids.clear();
+    delta.fire_storm_dummies.clear();
+    delta.removed_fire_storm_dummy_ids.clear();
+    delta.fire_storm_casts.clear();
+    delta.removed_fire_storm_cast_ids.clear();
+    delta.grappling_hooks.clear();
+    delta.removed_grappling_hook_ids.clear();
 
     const auto base_players = BuildIdMap(base.players);
     const auto current_players = BuildIdMap(current.players);
@@ -187,6 +232,48 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
         }
     }
 
+    const auto base_dummies = BuildIdMap(base.fire_storm_dummies);
+    const auto current_dummies = BuildIdMap(current.fire_storm_dummies);
+    for (const auto& dummy : current.fire_storm_dummies) {
+        auto it = base_dummies.find(dummy.id);
+        if (it == base_dummies.end() || !AreEqual(dummy, *it->second)) {
+            delta.fire_storm_dummies.push_back(dummy);
+        }
+    }
+    for (const auto& dummy : base.fire_storm_dummies) {
+        if (current_dummies.find(dummy.id) == current_dummies.end()) {
+            delta.removed_fire_storm_dummy_ids.push_back(dummy.id);
+        }
+    }
+
+    const auto base_casts = BuildIdMap(base.fire_storm_casts);
+    const auto current_casts = BuildIdMap(current.fire_storm_casts);
+    for (const auto& cast : current.fire_storm_casts) {
+        auto it = base_casts.find(cast.id);
+        if (it == base_casts.end() || !AreEqual(cast, *it->second)) {
+            delta.fire_storm_casts.push_back(cast);
+        }
+    }
+    for (const auto& cast : base.fire_storm_casts) {
+        if (current_casts.find(cast.id) == current_casts.end()) {
+            delta.removed_fire_storm_cast_ids.push_back(cast.id);
+        }
+    }
+
+    const auto base_hooks = BuildIdMap(base.grappling_hooks);
+    const auto current_hooks = BuildIdMap(current.grappling_hooks);
+    for (const auto& hook : current.grappling_hooks) {
+        auto it = base_hooks.find(hook.id);
+        if (it == base_hooks.end() || !AreEqual(hook, *it->second)) {
+            delta.grappling_hooks.push_back(hook);
+        }
+    }
+    for (const auto& hook : base.grappling_hooks) {
+        if (current_hooks.find(hook.id) == current_hooks.end()) {
+            delta.removed_grappling_hook_ids.push_back(hook.id);
+        }
+    }
+
     return delta;
 }
 
@@ -237,12 +324,27 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
     for (const auto& object : delta.map_objects) {
         UpsertById(out.map_objects, object);
     }
+    RemoveByIds(out.fire_storm_dummies, delta.removed_fire_storm_dummy_ids);
+    for (const auto& dummy : delta.fire_storm_dummies) {
+        UpsertById(out.fire_storm_dummies, dummy);
+    }
+    RemoveByIds(out.fire_storm_casts, delta.removed_fire_storm_cast_ids);
+    for (const auto& cast : delta.fire_storm_casts) {
+        UpsertById(out.fire_storm_casts, cast);
+    }
+    RemoveByIds(out.grappling_hooks, delta.removed_grappling_hook_ids);
+    for (const auto& hook : delta.grappling_hooks) {
+        UpsertById(out.grappling_hooks, hook);
+    }
 
     out.removed_player_ids.clear();
     out.removed_rune_ids.clear();
     out.removed_projectile_ids.clear();
     out.removed_ice_wall_ids.clear();
     out.removed_map_object_ids.clear();
+    out.removed_fire_storm_dummy_ids.clear();
+    out.removed_fire_storm_cast_ids.clear();
+    out.removed_grappling_hook_ids.clear();
     return out;
 }
 
