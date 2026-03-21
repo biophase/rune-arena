@@ -949,6 +949,7 @@ void GameApp::UpdateMatch(float dt) {
                 app_screen_ = AppScreen::PostMatch;
             }
         }
+        UpdateGrapplingHooks(dt);
         UpdateClientVisualSmoothing(dt);
         UpdateDamagePopups(dt);
     }
@@ -1579,8 +1580,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     std::unordered_map<int, GrapplingHookPhase> previous_grappling_hook_phases;
     previous_grappling_hook_phases.reserve(state_.grappling_hooks.size());
+    std::optional<GrapplingHook> previous_local_owned_hook;
     for (const auto& hook : state_.grappling_hooks) {
         previous_grappling_hook_phases[hook.id] = hook.phase;
+        if (!network_manager_.IsHost() && state_.local_player_id >= 0 && hook.owner_player_id == state_.local_player_id &&
+            hook.alive) {
+            previous_local_owned_hook = hook;
+        }
     }
 
     Vector2 previous_local_pos = {0.0f, 0.0f};
@@ -1937,6 +1943,14 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         hook.pull_elapsed_seconds = hook_snapshot.pull_elapsed_seconds;
         hook.max_pull_duration_seconds = hook_snapshot.max_pull_duration_seconds;
         hook.alive = hook_snapshot.alive;
+        if (!network_manager_.IsHost() && previous_local_owned_hook.has_value() &&
+            state_.local_player_id >= 0 && hook.owner_player_id == state_.local_player_id &&
+            previous_local_owned_hook->alive &&
+            previous_local_owned_hook->phase == hook.phase &&
+            (hook.phase == GrapplingHookPhase::Firing || hook.phase == GrapplingHookPhase::Retracting)) {
+            hook.head_pos = previous_local_owned_hook->head_pos;
+            hook.animation_time = previous_local_owned_hook->animation_time;
+        }
         state_.grappling_hooks.push_back(hook);
         if (!network_manager_.IsHost()) {
             auto& samples = grappling_head_position_samples_[hook.id];
@@ -3754,6 +3768,9 @@ void GameApp::UpdateGrapplingHooks(float dt) {
         if (!hook.alive) {
             continue;
         }
+        if (!network_manager_.IsHost() && hook.owner_player_id != state_.local_player_id) {
+            continue;
+        }
         hook.animation_time += dt;
 
         Player* owner = FindPlayerById(hook.owner_player_id);
@@ -4666,9 +4683,12 @@ void GameApp::RenderNonTerrainDepthSorted() {
         }
         const Vector2 start = Vector2Add(GetRenderPlayerPosition(owner->id),
                                          {0.0f, 0.5f * static_cast<float>(state_.map.cell_size)});
-        const Vector2 end = (hook.phase == GrapplingHookPhase::Pulling)
-                                ? hook.latch_point
-                                : GetRenderGrapplingHookHeadPosition(hook.id, hook.head_pos);
+        const Vector2 end =
+            (hook.phase == GrapplingHookPhase::Pulling)
+                ? hook.latch_point
+                : ((!network_manager_.IsHost() && hook.owner_player_id == state_.local_player_id)
+                       ? hook.head_pos
+                       : GetRenderGrapplingHookHeadPosition(hook.id, hook.head_pos));
         const float distance = Vector2Distance(start, end);
         grappling_segment_total += static_cast<size_t>(std::max(2, static_cast<int>(std::floor(
             distance / std::max(1.0f, static_cast<float>(state_.map.cell_size))))));
@@ -4828,7 +4848,12 @@ void GameApp::RenderNonTerrainDepthSorted() {
             continue;
         }
         const Vector2 start = GetRenderPlayerPosition(owner->id);
-        const Vector2 end = (hook.phase == GrapplingHookPhase::Pulling) ? hook.latch_point : hook.head_pos;
+        const Vector2 end =
+            (hook.phase == GrapplingHookPhase::Pulling)
+                ? hook.latch_point
+                : ((!network_manager_.IsHost() && hook.owner_player_id == state_.local_player_id)
+                       ? hook.head_pos
+                       : GetRenderGrapplingHookHeadPosition(hook.id, hook.head_pos));
         const float distance = Vector2Distance(start, end);
         const int segments = std::max(
             2, static_cast<int>(std::floor(distance / std::max(1.0f, static_cast<float>(state_.map.cell_size)))));
@@ -5040,7 +5065,12 @@ void GameApp::RenderNonTerrainDepthSorted() {
 
                 const Vector2 start = Vector2Add(GetRenderPlayerPosition(owner->id),
                                                  {0.0f, 0.5f * static_cast<float>(state_.map.cell_size)});
-                const Vector2 end = (hook.phase == GrapplingHookPhase::Pulling) ? hook.latch_point : hook.head_pos;
+                const Vector2 end =
+                    (hook.phase == GrapplingHookPhase::Pulling)
+                        ? hook.latch_point
+                        : ((!network_manager_.IsHost() && hook.owner_player_id == state_.local_player_id)
+                               ? hook.head_pos
+                               : GetRenderGrapplingHookHeadPosition(hook.id, hook.head_pos));
                 const Vector2 delta = Vector2Subtract(end, start);
                 const float total_len = Vector2Length(delta);
                 if (total_len <= 0.001f) {
