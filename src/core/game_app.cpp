@@ -1526,9 +1526,15 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     previous_hp.reserve(state_.players.size());
     std::unordered_map<int, PreviousPlayerState> previous_player_state;
     previous_player_state.reserve(state_.players.size());
+    std::unordered_map<int, std::array<std::string, 4>> previous_player_item_slots;
+    previous_player_item_slots.reserve(state_.players.size());
+    std::unordered_map<int, std::array<int, 4>> previous_player_item_counts;
+    previous_player_item_counts.reserve(state_.players.size());
     for (const auto& player : state_.players) {
         previous_hp[player.id] = player.hp;
         previous_player_state[player.id] = {player.hp, player.alive, player.action_state};
+        previous_player_item_slots[player.id] = player.item_slots;
+        previous_player_item_counts[player.id] = player.item_slot_counts;
     }
     std::unordered_set<int> previous_dummy_ids;
     previous_dummy_ids.reserve(state_.fire_storm_dummies.size());
@@ -1573,8 +1579,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     std::unordered_map<int, GrapplingHookPhase> previous_grappling_hook_phases;
     previous_grappling_hook_phases.reserve(state_.grappling_hooks.size());
+    std::optional<GrapplingHook> previous_local_owned_hook;
     for (const auto& hook : state_.grappling_hooks) {
         previous_grappling_hook_phases[hook.id] = hook.phase;
+        if (!network_manager_.IsHost() && state_.local_player_id >= 0 && hook.owner_player_id == state_.local_player_id &&
+            hook.alive) {
+            previous_local_owned_hook = hook;
+        }
     }
 
     Vector2 previous_local_pos = {0.0f, 0.0f};
@@ -1931,8 +1942,17 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         hook.pull_elapsed_seconds = hook_snapshot.pull_elapsed_seconds;
         hook.max_pull_duration_seconds = hook_snapshot.max_pull_duration_seconds;
         hook.alive = hook_snapshot.alive;
+        if (!network_manager_.IsHost() && previous_local_owned_hook.has_value() &&
+            state_.local_player_id >= 0 && hook.owner_player_id == state_.local_player_id &&
+            previous_local_owned_hook->alive) {
+            const bool same_phase = previous_local_owned_hook->phase == hook.phase;
+            if (same_phase) {
+                hook.head_pos = previous_local_owned_hook->head_pos;
+                hook.animation_time = previous_local_owned_hook->animation_time;
+            }
+        }
         state_.grappling_hooks.push_back(hook);
-        if (!network_manager_.IsHost()) {
+        if (!network_manager_.IsHost() && hook.owner_player_id != state_.local_player_id) {
             auto& samples = grappling_head_position_samples_[hook.id];
             samples.push_back(RemotePositionSample{now_seconds, hook.head_pos});
             while (samples.size() > 32) {
@@ -1944,7 +1964,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         std::unordered_set<int> current_hook_ids;
         current_hook_ids.reserve(state_.grappling_hooks.size());
         for (const auto& hook : state_.grappling_hooks) {
-            current_hook_ids.insert(hook.id);
+            if (hook.owner_player_id != state_.local_player_id) {
+                current_hook_ids.insert(hook.id);
+            }
         }
         for (auto it = grappling_head_position_samples_.begin(); it != grappling_head_position_samples_.end();) {
             if (current_hook_ids.find(it->first) == current_hook_ids.end()) {
@@ -1999,6 +2021,27 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 if (previous_state_it->second.action_state != PlayerActionState::Slashing &&
                     player.action_state == PlayerActionState::Slashing) {
                     PlaySfxIfVisible(sfx_melee_attack_.sound, sfx_melee_attack_.loaded, player.pos);
+                }
+            }
+
+            const auto previous_slots_it = previous_player_item_slots.find(player.id);
+            const auto previous_counts_it = previous_player_item_counts.find(player.id);
+            if (previous_slots_it != previous_player_item_slots.end() &&
+                previous_counts_it != previous_player_item_counts.end()) {
+                bool drank_small_potion = false;
+                for (size_t i = 0; i < previous_counts_it->second.size() && i < player.item_slot_counts.size(); ++i) {
+                    const int previous_count = previous_counts_it->second[i];
+                    const int current_count = player.item_slot_counts[i];
+                    const std::string& previous_item = previous_slots_it->second[i];
+                    const std::string& current_item = player.item_slots[i];
+                    const std::string& consumed_item = !previous_item.empty() ? previous_item : current_item;
+                    if (previous_count > current_count && consumed_item == "health_small") {
+                        drank_small_potion = true;
+                        break;
+                    }
+                }
+                if (drank_small_potion) {
+                    PlaySfxIfVisible(sfx_drink_potion_.sound, sfx_drink_potion_.loaded, player.pos);
                 }
             }
         }
