@@ -1579,13 +1579,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     std::unordered_map<int, GrapplingHookPhase> previous_grappling_hook_phases;
     previous_grappling_hook_phases.reserve(state_.grappling_hooks.size());
-    std::optional<GrapplingHook> previous_local_owned_hook;
     for (const auto& hook : state_.grappling_hooks) {
         previous_grappling_hook_phases[hook.id] = hook.phase;
-        if (!network_manager_.IsHost() && state_.local_player_id >= 0 && hook.owner_player_id == state_.local_player_id &&
-            hook.alive) {
-            previous_local_owned_hook = hook;
-        }
     }
 
     Vector2 previous_local_pos = {0.0f, 0.0f};
@@ -1942,17 +1937,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         hook.pull_elapsed_seconds = hook_snapshot.pull_elapsed_seconds;
         hook.max_pull_duration_seconds = hook_snapshot.max_pull_duration_seconds;
         hook.alive = hook_snapshot.alive;
-        if (!network_manager_.IsHost() && previous_local_owned_hook.has_value() &&
-            state_.local_player_id >= 0 && hook.owner_player_id == state_.local_player_id &&
-            previous_local_owned_hook->alive) {
-            const bool same_phase = previous_local_owned_hook->phase == hook.phase;
-            if (same_phase) {
-                hook.head_pos = previous_local_owned_hook->head_pos;
-                hook.animation_time = previous_local_owned_hook->animation_time;
-            }
-        }
         state_.grappling_hooks.push_back(hook);
-        if (!network_manager_.IsHost() && hook.owner_player_id != state_.local_player_id) {
+        if (!network_manager_.IsHost()) {
             auto& samples = grappling_head_position_samples_[hook.id];
             samples.push_back(RemotePositionSample{now_seconds, hook.head_pos});
             while (samples.size() > 32) {
@@ -1964,9 +1950,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         std::unordered_set<int> current_hook_ids;
         current_hook_ids.reserve(state_.grappling_hooks.size());
         for (const auto& hook : state_.grappling_hooks) {
-            if (hook.owner_player_id != state_.local_player_id) {
-                current_hook_ids.insert(hook.id);
-            }
+            current_hook_ids.insert(hook.id);
         }
         for (auto it = grappling_head_position_samples_.begin(); it != grappling_head_position_samples_.end();) {
             if (current_hook_ids.find(it->first) == current_hook_ids.end()) {
@@ -2087,20 +2071,29 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             const Vector2 base_pos = has_previous_local ? previous_local_pos : local_player->pos;
             const Vector2 base_vel = has_previous_local ? previous_local_vel : local_player->vel;
             const float error = Vector2Distance(base_pos, replay.pos);
-            if (error > Constants::kPredictionHardSnapThresholdPx) {
+            const bool grappling_active = std::any_of(
+                state_.grappling_hooks.begin(), state_.grappling_hooks.end(),
+                [&](const GrapplingHook& hook) { return hook.alive && hook.owner_player_id == local_player->id; });
+            const float hard_snap_threshold = grappling_active ? Constants::kPredictionHardSnapThresholdGrapplingPx
+                                                               : Constants::kPredictionHardSnapThresholdPx;
+            const float reconcile_gain = grappling_active ? Constants::kPredictionReconcileGainGrappling
+                                                          : Constants::kPredictionReconcileGain;
+            const float telemetry_threshold =
+                grappling_active ? Constants::kPredictionCorrectionTelemetryThresholdGrapplingPx
+                                 : Constants::kPredictionCorrectionTelemetryThresholdPx;
+            if (error > hard_snap_threshold) {
                 local_player->pos = replay.pos;
                 local_player->vel = replay.vel;
             } else {
-                const float alpha = std::clamp(Constants::kPredictionReconcileGain *
-                                                   Constants::kNetworkSnapshotIntervalSeconds,
-                                               0.0f, 1.0f);
+                const float alpha =
+                    std::clamp(reconcile_gain * Constants::kNetworkSnapshotIntervalSeconds, 0.0f, 1.0f);
                 local_player->pos = Vector2Lerp(base_pos, replay.pos, alpha);
                 local_player->vel = Vector2Lerp(base_vel, replay.vel, alpha);
             }
             local_player->aim_dir = replay.aim_dir;
             local_player->facing = replay.facing;
 
-            if (error > Constants::kPredictionCorrectionTelemetryThresholdPx) {
+            if (error > telemetry_threshold) {
                 network_manager_.AddReconciliationCorrection();
             }
             render_player_positions_[local_player->id] = local_player->pos;
