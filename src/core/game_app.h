@@ -144,8 +144,6 @@ class GameApp {
     void RenderWorld();
     void RenderMap();
     void RenderMapForeground();
-    void RenderInfluenceZones();
-    void RenderGroundCompositeEffects();
     void RenderGroundMapObjects();
     void EnsureShadowLayerRenderTarget();
     void RenderObjectShadows();

@@ -5739,16 +5739,20 @@ void GameApp::RenderWorld() {
 
     BeginMode2D(camera_);
     RenderMap();
+    EndMode2D();
+
+    BeginMode2D(camera_);
     RenderMapForeground();
-    RenderInfluenceZones();
-    RenderGroundCompositeEffects();
+    EndMode2D();
+
+    BeginMode2D(camera_);
     RenderGroundMapObjects();
-    RenderNonTerrainDepthSorted();
     EndMode2D();
 
     RenderObjectShadows();
 
     BeginMode2D(camera_);
+    RenderNonTerrainDepthSorted();
     RenderPlayerOverlays();
     RenderMeleeAttacks();
     RenderDamagePopups();
@@ -5925,30 +5929,6 @@ void GameApp::RenderObjectShadows() {
     DrawTexturePro(shadow_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, Color{255, 255, 255, 85});
 }
 
-void GameApp::RenderInfluenceZones() {
-    const bool has_texture = sprite_metadata_.IsLoaded();
-    const Texture2D texture = sprite_metadata_.GetTexture();
-    for (const auto& zone : state_.influence_zones) {
-        if (!state_.map.IsInside(zone.cell)) {
-            continue;
-        }
-        const Rectangle dst = SnapRect(
-            {static_cast<float>(zone.cell.x * state_.map.cell_size), static_cast<float>(zone.cell.y * state_.map.cell_size),
-             static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
-        const char* animation = zone.team == Constants::kTeamRed ? "influence_zone_red" : "influence_zone_blue";
-        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
-            const Rectangle src =
-                InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
-                                Constants::kAtlasSampleInsetPixels);
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 170});
-        } else {
-            const Color tint =
-                zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};
-            DrawRectangleRec(dst, tint);
-        }
-    }
-}
-
 void GameApp::RenderNonTerrainDepthSorted() {
     enum class RenderKind {
         LegacyDecoration,
@@ -6051,10 +6031,6 @@ void GameApp::RenderNonTerrainDepthSorted() {
     for (size_t i = 0; i < state_.map_objects.size(); ++i) {
         const MapObjectInstance& object = state_.map_objects[i];
         if (!object.alive || IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
-            continue;
-        }
-        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
-        if (proto == nullptr) {
             continue;
         }
         const float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
@@ -6287,6 +6263,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
         }
         return nullptr;
     };
+
     for (const RenderItem& item : items) {
         switch (item.kind) {
             case RenderKind::LegacyDecoration: {
@@ -6356,11 +6333,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
                     const Rectangle src =
                         InsetSourceRect(metadata->GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
-                    if (proto->masked_occluder) {
-                        if (!DrawMaskedOccluder(dst, *draw_texture, src, item.sort_y)) {
-                            DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
-                        }
-                    } else {
+                    if (!proto->masked_occluder || !DrawMaskedOccluder(dst, *draw_texture, src, item.sort_y)) {
                         DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
                     }
                 } else {
@@ -6802,6 +6775,7 @@ void GameApp::RenderNonTerrainDepthSorted() {
             }
         }
     }
+
 }
 
 void GameApp::RenderMap() {
@@ -6976,6 +6950,32 @@ void GameApp::RenderMapForeground() {
 
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
+    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
+    const bool has_large_texture = sprite_metadata_96x96_.IsLoaded();
+    const Texture2D large_texture = sprite_metadata_96x96_.GetTexture();
+    const auto get_metadata = [&](CompositeEffectSheet sheet) -> const SpriteMetadataLoader* {
+        switch (sheet) {
+            case CompositeEffectSheet::Base32:
+                return &sprite_metadata_;
+            case CompositeEffectSheet::Tall32x64:
+                return &sprite_metadata_tall_;
+            case CompositeEffectSheet::Large96x96:
+                return &sprite_metadata_96x96_;
+        }
+        return &sprite_metadata_;
+    };
+    const auto get_texture = [&](CompositeEffectSheet sheet) -> const Texture2D* {
+        switch (sheet) {
+            case CompositeEffectSheet::Base32:
+                return has_texture ? &texture : nullptr;
+            case CompositeEffectSheet::Tall32x64:
+                return has_tall_texture ? &tall_texture : nullptr;
+            case CompositeEffectSheet::Large96x96:
+                return has_large_texture ? &large_texture : nullptr;
+        }
+        return nullptr;
+    };
     const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
     const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
     const bool has_zone_overlay = has_texture && sprite_metadata_.HasAnimation("zone");
@@ -6992,10 +6992,18 @@ void GameApp::RenderMapForeground() {
     };
     const auto compute_grass_dual_grid_mask = [&](int x, int y) {
         int mask = 0;
-        if (sample_grass_for_dual_grid(x, y)) mask |= 1;
-        if (sample_grass_for_dual_grid(x + 1, y)) mask |= 2;
-        if (sample_grass_for_dual_grid(x + 1, y + 1)) mask |= 4;
-        if (sample_grass_for_dual_grid(x, y + 1)) mask |= 8;
+        if (sample_grass_for_dual_grid(x, y)) {
+            mask |= 1;
+        }
+        if (sample_grass_for_dual_grid(x + 1, y)) {
+            mask |= 2;
+        }
+        if (sample_grass_for_dual_grid(x + 1, y + 1)) {
+            mask |= 4;
+        }
+        if (sample_grass_for_dual_grid(x, y + 1)) {
+            mask |= 8;
+        }
         return mask;
     };
     const auto compute_grass_bitmask = [&](int x, int y) {
@@ -7055,7 +7063,8 @@ void GameApp::RenderMapForeground() {
 
             if (has_texture && has_grass_dual_grid) {
                 const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
-                const Rectangle terrain_dst = SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
+                const Rectangle terrain_dst =
+                    SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
                 const int mask = compute_grass_dual_grid_mask(x, y);
                 const bool has_land = sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Land);
 
@@ -7072,6 +7081,7 @@ void GameApp::RenderMapForeground() {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
                                    0.0f, WHITE);
                 }
+
                 draw_zone_overlay();
                 if (tile == TileType::SpawnPoint) {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
@@ -7105,9 +7115,9 @@ void GameApp::RenderMapForeground() {
                                        0.0f, tint);
                     }
                 } else {
-                    const Rectangle src =
-                        InsetSourceRect(sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
-                                        Constants::kAtlasSampleInsetPixels);
+                    const Rectangle src = InsetSourceRect(
+                        sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
+                        Constants::kAtlasSampleInsetPixels);
                     DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
                 }
                 if (tile == TileType::SpawnPoint) {
@@ -7115,54 +7125,45 @@ void GameApp::RenderMapForeground() {
                                 Color{240, 240, 240, 180});
                 }
                 draw_zone_overlay();
-            } else if (!has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
-                Color fallback = Color{34, 120, 34, 255};
-                if (dimmed) {
-                    fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
-                                     static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
-                                     static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness),
-                                     255};
-                }
-                DrawRectangleRec(dst, fallback);
-                if (tile == TileType::SpawnPoint) {
-                    DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
-                                Color{240, 240, 240, 180});
+            } else {
+                if (!has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
+                    Color fallback = Color{34, 120, 34, 255};
+                    if (dimmed) {
+                        fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
+                                         static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
+                                         static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness),
+                                         255};
+                    }
+                    DrawRectangleRec(dst, fallback);
+                    if (tile == TileType::SpawnPoint) {
+                        DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
+                                    Color{240, 240, 240, 180});
+                    }
                 }
                 draw_zone_overlay();
             }
         }
     }
-}
 
-void GameApp::RenderGroundCompositeEffects() {
-    const bool has_texture = sprite_metadata_.IsLoaded();
-    const Texture2D texture = sprite_metadata_.GetTexture();
-    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
-    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
-    const bool has_large_texture = sprite_metadata_96x96_.IsLoaded();
-    const Texture2D large_texture = sprite_metadata_96x96_.GetTexture();
-    const auto get_metadata = [&](CompositeEffectSheet sheet) -> const SpriteMetadataLoader* {
-        switch (sheet) {
-            case CompositeEffectSheet::Base32:
-                return &sprite_metadata_;
-            case CompositeEffectSheet::Tall32x64:
-                return &sprite_metadata_tall_;
-            case CompositeEffectSheet::Large96x96:
-                return &sprite_metadata_96x96_;
+    for (const auto& zone : state_.influence_zones) {
+        if (!state_.map.IsInside(zone.cell)) {
+            continue;
         }
-        return &sprite_metadata_;
-    };
-    const auto get_texture = [&](CompositeEffectSheet sheet) -> const Texture2D* {
-        switch (sheet) {
-            case CompositeEffectSheet::Base32:
-                return has_texture ? &texture : nullptr;
-            case CompositeEffectSheet::Tall32x64:
-                return has_tall_texture ? &tall_texture : nullptr;
-            case CompositeEffectSheet::Large96x96:
-                return has_large_texture ? &large_texture : nullptr;
+        const Rectangle dst = SnapRect(
+            {static_cast<float>(zone.cell.x * state_.map.cell_size), static_cast<float>(zone.cell.y * state_.map.cell_size),
+             static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
+        const char* animation = zone.team == Constants::kTeamRed ? "influence_zone_red" : "influence_zone_blue";
+        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
+            const Rectangle src =
+                InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
+                                Constants::kAtlasSampleInsetPixels);
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 170});
+        } else {
+            const Color tint =
+                zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};
+            DrawRectangleRec(dst, tint);
         }
-        return nullptr;
-    };
+    }
 
     for (const auto& effect : state_.composite_effects) {
         if (!effect.alive) {
@@ -7218,9 +7219,9 @@ void GameApp::RenderGroundCompositeEffects() {
                     origin.y + 0.5f * static_cast<float>(state_.map.cell_size) +
                         part.offset_y_tiles * static_cast<float>(state_.map.cell_size),
                 };
-                const Rectangle src =
-                    InsetSourceRect(metadata->GetFrame(part.animation, "default", cast.elapsed_seconds),
-                                    Constants::kAtlasSampleInsetPixels);
+                const Rectangle src = InsetSourceRect(
+                    metadata->GetFrame(part.animation, "default", cast.elapsed_seconds),
+                    Constants::kAtlasSampleInsetPixels);
                 const float dst_w = static_cast<float>(metadata->GetCellWidth());
                 const float dst_h = static_cast<float>(metadata->GetCellHeight());
                 Rectangle dst = {part_center.x - dst_w * 0.5f, part_center.y - dst_h * 0.5f, dst_w, dst_h};
@@ -7255,9 +7256,9 @@ void GameApp::RenderGroundCompositeEffects() {
                 origin.y + 0.5f * static_cast<float>(state_.map.cell_size) +
                     part.offset_y_tiles * static_cast<float>(state_.map.cell_size),
             };
-            const Rectangle src =
-                InsetSourceRect(metadata->GetFrame(part.animation, "default", dummy.state_time),
-                                Constants::kAtlasSampleInsetPixels);
+            const Rectangle src = InsetSourceRect(
+                metadata->GetFrame(part.animation, "default", dummy.state_time),
+                Constants::kAtlasSampleInsetPixels);
             const float dst_w = static_cast<float>(metadata->GetCellWidth());
             const float dst_h = static_cast<float>(metadata->GetCellHeight());
             Rectangle dst = {part_center.x - dst_w * 0.5f, part_center.y - dst_h * 0.5f, dst_w, dst_h};
@@ -7293,9 +7294,9 @@ void GameApp::RenderGroundCompositeEffects() {
                         part.offset_y_tiles * static_cast<float>(state_.map.cell_size),
                 };
                 const float animation_time = status.total_seconds - status.remaining_seconds;
-                const Rectangle src =
-                    InsetSourceRect(metadata->GetFrame(part.animation, "default", animation_time),
-                                    Constants::kAtlasSampleInsetPixels);
+                const Rectangle src = InsetSourceRect(
+                    metadata->GetFrame(part.animation, "default", animation_time),
+                    Constants::kAtlasSampleInsetPixels);
                 const float dst_w = static_cast<float>(metadata->GetCellWidth());
                 const float dst_h = static_cast<float>(metadata->GetCellHeight());
                 Rectangle dst = {part_center.x - dst_w * 0.5f, part_center.y - dst_h * 0.5f, dst_w, dst_h};
