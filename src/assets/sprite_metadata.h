@@ -10,16 +10,21 @@ enum class SpriteFrameLayer {
     Single,
     Background,
     Foreground,
+    Water,
+    Land,
 };
 
 struct SpriteFacingData {
     std::vector<Rectangle> frames;
     std::vector<Rectangle> frames_background;
     std::vector<Rectangle> frames_foreground;
+    std::vector<Rectangle> frames_water;
+    std::vector<Rectangle> frames_land;
     float fps = 1.0f;
 
     bool HasAnyFrames() const {
-        return !frames.empty() || !frames_background.empty() || !frames_foreground.empty();
+        return !frames.empty() || !frames_background.empty() || !frames_foreground.empty() || !frames_water.empty() ||
+               !frames_land.empty();
     }
 };
 

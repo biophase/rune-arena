@@ -4,9 +4,10 @@
 
 enum class StatusEffectType {
     Regeneration = 0,
-    Stunned = 1,
-    Rooted = 2,
-    RootedRecovery = 3,
+    ManaRegeneration = 1,
+    Stunned = 2,
+    Rooted = 3,
+    RootedRecovery = 4,
 };
 
 struct StatusEffectInstance {

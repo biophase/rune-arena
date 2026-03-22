@@ -28,42 +28,70 @@
     "column_1": {
       "type": "Decoration",
       "map_key": [170, 17, 173],
-      "sprite": { "sheet": "tall32x64", "idle": "column_1" },
+      "sprite": { "sheet": "tall32x64", "idle": "column_1", "shadow": "column_shadow_generic", "shadow_sheet": "large128x128" },
+      "masked_occluder": true,
       "walkable": false,
       "stops_projectiles": true
     },
     "column_2": {
       "type": "Decoration",
       "map_key": [181, 81, 196],
-      "sprite": { "sheet": "tall32x64", "idle": "column_2" },
+      "sprite": { "sheet": "tall32x64", "idle": "column_2", "shadow": "column_shadow_generic", "shadow_sheet": "large128x128" },
+      "masked_occluder": true,
       "walkable": false,
       "stops_projectiles": true
     },
     "column_3": {
       "type": "Decoration",
       "map_key": [123, 81, 196],
-      "sprite": { "sheet": "tall32x64", "idle": "column_3" },
+      "sprite": { "sheet": "tall32x64", "idle": "column_3", "shadow": "column_shadow_generic", "shadow_sheet": "large128x128" },
+      "masked_occluder": true,
       "walkable": false,
       "stops_projectiles": true
     },
     "column_4": {
       "type": "Decoration",
       "map_key": [85, 48, 166],
-      "sprite": { "sheet": "tall32x64", "idle": "column_4" },
+      "sprite": { "sheet": "tall32x64", "idle": "column_4", "shadow": "column_shadow_generic", "shadow_sheet": "large128x128" },
+      "masked_occluder": true,
       "walkable": false,
       "stops_projectiles": true
+    },
+    "tree_1": {
+      "type": "Decoration",
+      "map_key": [12, 165, 74],
+      "sprite": { "sheet": "large128x128", "idle": "tree", "shadow": "tree_shadow" },
+      "masked_occluder": true,
+      "walkable": false,
+      "stops_projectiles": true,
+      "collision_box": { "x": 48, "y": 96, "w": 32, "h": 32 }
+    },
+    "altar_rune_slot_generic": {
+      "type": "Decoration",
+      "map_key": [215, 195, 85],
+      "sprite": { "sheet": "base32", "idle": "altar_rune_slot_generic" },
+      "walkable": true,
+      "stops_projectiles": false
+    },
+    "altar_output_simple": {
+      "type": "Decoration",
+      "map_key": [216, 139, 86],
+      "sprite": { "sheet": "base32", "idle": "altar_output_simple" },
+      "walkable": true,
+      "stops_projectiles": false
     },
     "vase_1": {
       "type": "Destructible",
       "map_key": [179, 34, 227],
-      "sprite": { "sheet": "tall32x64", "idle": "vase_1", "death": "vase_destroyed" },
+      "sprite": { "sheet": "tall32x64", "idle": "vase_1", "death": "vase_destroyed", "shadow": "shadow_vase" },
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
         "hp": 5,
         "on_destroy": {
           "drops": [
-            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+            { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
+            { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
         }
       }
@@ -71,14 +99,15 @@
     "vase_2": {
       "type": "Destructible",
       "map_key": [107, 88, 40],
-      "sprite": { "sheet": "tall32x64", "idle": "vase_2", "death": "vase_destroyed" },
+      "sprite": { "sheet": "tall32x64", "idle": "vase_2", "death": "vase_destroyed", "shadow": "shadow_vase" },
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
         "hp": 5,
         "on_destroy": {
           "drops": [
-            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+            { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
+            { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
         }
       }
@@ -86,14 +115,15 @@
     "vase_3": {
       "type": "Destructible",
       "map_key": [41, 50, 179],
-      "sprite": { "sheet": "tall32x64", "idle": "vase_3", "death": "vase_destroyed" },
+      "sprite": { "sheet": "tall32x64", "idle": "vase_3", "death": "vase_destroyed", "shadow": "shadow_vase" },
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
         "hp": 5,
         "on_destroy": {
           "drops": [
-            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+            { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
+            { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
         }
       }
@@ -101,14 +131,15 @@
     "vase_4": {
       "type": "Destructible",
       "map_key": [42, 50, 179],
-      "sprite": { "sheet": "tall32x64", "idle": "vase_4", "death": "vase_destroyed" },
+      "sprite": { "sheet": "tall32x64", "idle": "vase_4", "death": "vase_destroyed", "shadow": "shadow_vase" },
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
         "hp": 5,
         "on_destroy": {
           "drops": [
-            { "object_id": "health_small", "chance": 0.50, "min": 1, "max": 1 }
+            { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
+            { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
         }
       }
@@ -116,7 +147,7 @@
     "health_small": {
       "type": "Consumable",
       "map_key": null,
-      "sprite": { "sheet": "base32", "idle": "health_potion_small" },
+      "sprite": { "sheet": "base32", "idle": "health_potion_small", "shadow": "potion_shadow" },
       "walkable": true,
       "stops_projectiles": false,
       "consumable": {
@@ -124,6 +155,25 @@
           { "type": "increase_current_health", "amount": 14 }
         ]
       }
+    },
+    "mana_small": {
+      "type": "Consumable",
+      "map_key": null,
+      "sprite": { "sheet": "base32", "idle": "mana_potion", "shadow": "potion_shadow" },
+      "walkable": true,
+      "stops_projectiles": false,
+      "consumable": {
+        "effects": [
+          { "type": "increase_current_mana", "amount": 5 }
+        ]
+      }
+    },
+    "catalyst_charge_pickup": {
+      "type": "Consumable",
+      "map_key": null,
+      "sprite": { "sheet": "base32", "idle": "catalist_rune_pickup" },
+      "walkable": true,
+      "stops_projectiles": false
     }
   }
 }

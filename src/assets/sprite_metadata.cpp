@@ -55,36 +55,99 @@ void ParseFrameData(const nlohmann::json& json_node, int cell_width, int cell_he
                    variant_name, out_data.frames_background);
     ParseFrameList(json_node, "frames_foreground", cell_width, cell_height, num_columns, num_rows, animation_name,
                    variant_name, out_data.frames_foreground);
+    ParseFrameList(json_node, "frames_water", cell_width, cell_height, num_columns, num_rows, animation_name,
+                   variant_name, out_data.frames_water);
+    ParseFrameList(json_node, "frames_land", cell_width, cell_height, num_columns, num_rows, animation_name,
+                   variant_name, out_data.frames_land);
+
+    if (out_data.frames_water.empty()) {
+        out_data.frames_water = out_data.frames_background;
+    }
+    if (out_data.frames_land.empty()) {
+        out_data.frames_land = out_data.frames_foreground;
+    }
 }
 
 const std::vector<Rectangle>* SelectFramesForLayer(const SpriteFacingData& frame_data, SpriteFrameLayer layer) {
     switch (layer) {
-        case SpriteFrameLayer::Background:
+        case SpriteFrameLayer::Water:
+            if (!frame_data.frames_water.empty()) {
+                return &frame_data.frames_water;
+            }
             if (!frame_data.frames_background.empty()) {
                 return &frame_data.frames_background;
             }
             if (!frame_data.frames.empty()) {
                 return &frame_data.frames;
             }
+            if (!frame_data.frames_land.empty()) {
+                return &frame_data.frames_land;
+            }
             if (!frame_data.frames_foreground.empty()) {
                 return &frame_data.frames_foreground;
+            }
+            break;
+        case SpriteFrameLayer::Land:
+            if (!frame_data.frames_land.empty()) {
+                return &frame_data.frames_land;
+            }
+            if (!frame_data.frames_foreground.empty()) {
+                return &frame_data.frames_foreground;
+            }
+            if (!frame_data.frames.empty()) {
+                return &frame_data.frames;
+            }
+            if (!frame_data.frames_water.empty()) {
+                return &frame_data.frames_water;
+            }
+            if (!frame_data.frames_background.empty()) {
+                return &frame_data.frames_background;
+            }
+            break;
+        case SpriteFrameLayer::Background:
+            if (!frame_data.frames_background.empty()) {
+                return &frame_data.frames_background;
+            }
+            if (!frame_data.frames_water.empty()) {
+                return &frame_data.frames_water;
+            }
+            if (!frame_data.frames.empty()) {
+                return &frame_data.frames;
+            }
+            if (!frame_data.frames_foreground.empty()) {
+                return &frame_data.frames_foreground;
+            }
+            if (!frame_data.frames_land.empty()) {
+                return &frame_data.frames_land;
             }
             break;
         case SpriteFrameLayer::Foreground:
             if (!frame_data.frames_foreground.empty()) {
                 return &frame_data.frames_foreground;
             }
+            if (!frame_data.frames_land.empty()) {
+                return &frame_data.frames_land;
+            }
             if (!frame_data.frames.empty()) {
                 return &frame_data.frames;
             }
             if (!frame_data.frames_background.empty()) {
                 return &frame_data.frames_background;
             }
+            if (!frame_data.frames_water.empty()) {
+                return &frame_data.frames_water;
+            }
             break;
         case SpriteFrameLayer::Single:
         default:
             if (!frame_data.frames.empty()) {
                 return &frame_data.frames;
+            }
+            if (!frame_data.frames_water.empty()) {
+                return &frame_data.frames_water;
+            }
+            if (!frame_data.frames_land.empty()) {
+                return &frame_data.frames_land;
             }
             if (!frame_data.frames_background.empty()) {
                 return &frame_data.frames_background;
@@ -99,6 +162,10 @@ const std::vector<Rectangle>* SelectFramesForLayer(const SpriteFacingData& frame
 
 bool HasFramesForLayer(const SpriteFacingData& frame_data, SpriteFrameLayer layer) {
     switch (layer) {
+        case SpriteFrameLayer::Water:
+            return !frame_data.frames_water.empty();
+        case SpriteFrameLayer::Land:
+            return !frame_data.frames_land.empty();
         case SpriteFrameLayer::Background:
             return !frame_data.frames_background.empty();
         case SpriteFrameLayer::Foreground:

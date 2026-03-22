@@ -60,28 +60,47 @@ I reverted the changes and want to start this last list again. You can recheck b
 map editor
 
 
-mana effect
 heal effect
-altar mechanic for storm rune spawning
 
 
 ---
 
 - fire storm spell
-
-
-- water totem
-- fire totem
-
 - healing potion rework
+- lightning storm spell
+
+---
+
+- altar mechanic for catalyst rune spawning
+
+- water totem (or perhaps arcane rune)
+- fire totem (or perhaps arcane rune)
+
 - mana potion item and drop rates
 
-- volatile spell effect
+- volatile spell effect (visuals)
+- terrain variations and coast refinement
+
+- mana effect + potion pickup
+
+- UI enhacements for the hud edit mode
+    - add hints when hovering outside edit mode (e.g. by hover over a rune show a "Press tab to edit" hint)
+    - blur background while in edit mode and display a hint at top of hud / or somewhere in center of screen to press tab again to exit edit mode / inventory mode
+    - when drag and drop - add dragged rune to the mouse cursor (small preview) and gray out/removed from slot
 
 
 
+----------------
+-- Long term ---
+----------------
 
-- lightning storm spell
+- chest mechanic
+- multiple weapons
+- weapon <-> rune interactions
+- world editor
+
+
+
 
 
 

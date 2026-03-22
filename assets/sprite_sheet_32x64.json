@@ -82,6 +82,15 @@
           "fps":8
         }
       }
+    },
+
+    "shadow_vase":{
+      "facings":{
+        "default":{
+          "frames": [[4,0]],
+          "fps":1
+        }
+      }
     }
 
   }

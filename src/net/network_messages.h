@@ -61,13 +61,13 @@ struct PlayerSnapshot {
     float melee_active_remaining = 0.0f;
     bool rune_placing_mode = false;
     int selected_rune_type = 0;
-    float rune_place_cooldown_remaining = 0.0f;
     float mana = 0.0f;
     float max_mana = 0.0f;
     float grappling_cooldown_remaining = 0.0f;
     float grappling_cooldown_total = 0.0f;
     std::vector<float> rune_cooldown_remaining;
     std::vector<float> rune_cooldown_total;
+    std::vector<int> rune_charge_counts;
     struct StatusEffectSnapshot {
         int type = 0;
         float remaining_seconds = 0.0f;

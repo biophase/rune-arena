@@ -1,0 +1,32 @@
+{
+  "texture": "sprite_sheet_128x128.png",
+  "cell_width": 128,
+  "cell_height": 128,
+  "num_columns": 4,
+  "animations": {
+    "tree": {
+      "facings": {
+        "default": {
+          "frames": [[0,1]],
+          "fps": 1
+        }
+      }
+    },
+    "tree_shadow": {
+      "facings": {
+        "default": {
+          "frames": [[0,2]],
+          "fps": 1
+        }
+      }
+    },
+    "column_shadow_generic": {
+      "facings": {
+        "default": {
+          "frames": [[0,3]],
+          "fps": 1
+        }
+      }
+    }
+  }
+}

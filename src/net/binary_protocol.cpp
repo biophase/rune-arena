@@ -225,7 +225,6 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteF32(player.melee_active_remaining);
         payload.WriteBool(player.rune_placing_mode);
         payload.WriteI32(player.selected_rune_type);
-        payload.WriteF32(player.rune_place_cooldown_remaining);
         payload.WriteF32(player.mana);
         payload.WriteF32(player.max_mana);
         payload.WriteF32(player.grappling_cooldown_remaining);
@@ -237,6 +236,10 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.rune_cooldown_total.size(), 65535)));
         for (size_t j = 0; j < player.rune_cooldown_total.size() && j < 65535; ++j) {
             payload.WriteF32(player.rune_cooldown_total[j]);
+        }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.rune_charge_counts.size(), 65535)));
+        for (size_t j = 0; j < player.rune_charge_counts.size() && j < 65535; ++j) {
+            payload.WriteI32(player.rune_charge_counts[j]);
         }
         payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.status_effects.size(), 65535)));
         for (size_t j = 0; j < player.status_effects.size() && j < 65535; ++j) {
@@ -481,7 +484,6 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             !reader.ReadI32(player.kills) || !reader.ReadBool(player.alive) || !reader.ReadI32(player.facing) ||
             !reader.ReadI32(player.action_state) || !reader.ReadF32(player.melee_active_remaining) ||
             !reader.ReadBool(player.rune_placing_mode) || !reader.ReadI32(player.selected_rune_type) ||
-            !reader.ReadF32(player.rune_place_cooldown_remaining) ||
             !reader.ReadF32(player.mana) || !reader.ReadF32(player.max_mana) ||
             !reader.ReadF32(player.grappling_cooldown_remaining) || !reader.ReadF32(player.grappling_cooldown_total)) {
             return std::nullopt;
@@ -501,6 +503,13 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             float value = 0.0f;
             if (!reader.ReadF32(value)) return std::nullopt;
             player.rune_cooldown_total.push_back(value);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.rune_charge_counts.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            int32_t value = 0;
+            if (!reader.ReadI32(value)) return std::nullopt;
+            player.rune_charge_counts.push_back(value);
         }
         if (!reader.ReadU16(count)) return std::nullopt;
         player.status_effects.reserve(count);

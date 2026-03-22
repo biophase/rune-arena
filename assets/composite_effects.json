@@ -124,6 +124,35 @@
           "sort_anchor_y_tiles": 0.8
         }
       ]
+    },
+    "mana_regen_effect": {
+      "parts": [
+        {
+          "animation": "mana_regen_effect_top",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.4
+        },
+        {
+          "animation": "mana_regen_effect_bot",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": 0.0,
+          "sort_anchor_y_tiles": 0.8
+        }
+      ]
+    },
+    "stunned_effect": {
+      "parts": [
+        {
+          "animation": "stunned_effect",
+          "layer": "ysorted",
+          "offset_x_tiles": 0.0,
+          "offset_y_tiles": -0.55,
+          "sort_anchor_y_tiles": 0.25
+        }
+      ]
     }
   }
 }

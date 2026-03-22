@@ -34,12 +34,13 @@ bool AreEqual(const PlayerSnapshot& a, const PlayerSnapshot& b) {
            a.vel_y == b.vel_y && a.aim_dir_x == b.aim_dir_x && a.aim_dir_y == b.aim_dir_y && a.hp == b.hp &&
            a.kills == b.kills && a.alive == b.alive && a.facing == b.facing && a.action_state == b.action_state &&
            a.melee_active_remaining == b.melee_active_remaining && a.rune_placing_mode == b.rune_placing_mode &&
-           a.selected_rune_type == b.selected_rune_type && a.rune_place_cooldown_remaining == b.rune_place_cooldown_remaining &&
+           a.selected_rune_type == b.selected_rune_type &&
            a.mana == b.mana && a.max_mana == b.max_mana &&
            a.grappling_cooldown_remaining == b.grappling_cooldown_remaining &&
            a.grappling_cooldown_total == b.grappling_cooldown_total &&
            a.rune_cooldown_remaining == b.rune_cooldown_remaining &&
-           a.rune_cooldown_total == b.rune_cooldown_total && a.status_effects == b.status_effects &&
+           a.rune_cooldown_total == b.rune_cooldown_total &&
+           a.rune_charge_counts == b.rune_charge_counts && a.status_effects == b.status_effects &&
            a.item_slots == b.item_slots &&
            a.item_slot_counts == b.item_slot_counts &&
            a.item_slot_cooldown_remaining == b.item_slot_cooldown_remaining &&

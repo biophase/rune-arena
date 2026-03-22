@@ -118,6 +118,17 @@ bool HasStatusEffect(const Player& player, StatusEffectType type) {
                        });
 }
 
+struct OccluderRevealCircle {
+    Vector2 screen_center = {0.0f, 0.0f};
+    float inner_radius_px = 0.0f;
+    float outer_radius_px = 0.0f;
+};
+
+bool ContainsWorldPointExpanded(const Rectangle& rect, Vector2 point, float radius) {
+    return point.x >= rect.x - radius && point.x <= rect.x + rect.width + radius &&
+           point.y >= rect.y - radius && point.y <= rect.y + rect.height + radius;
+}
+
 float SmoothRootSigmoid(float t) {
     const float clamped = std::clamp(t, 0.0f, 1.0f);
     const float x = (clamped - 0.5f) * 10.0f;
@@ -140,6 +151,8 @@ StatusEffectUiSpec GetStatusEffectUiSpec(StatusEffectType type) {
     switch (type) {
         case StatusEffectType::Regeneration:
             return {"health_potion_small", true};
+        case StatusEffectType::ManaRegeneration:
+            return {"mana_potion", true};
         case StatusEffectType::Stunned:
             return {"static_upgrade", false};
         case StatusEffectType::Rooted:
@@ -222,6 +235,17 @@ float GetRuneActivationSeconds(RuneType rune_type) {
     return 0.0f;
 }
 
+const std::array<RuneType, 5>& GetAllCastableRuneTypes() {
+    static const std::array<RuneType, 5> kRunes = {
+        RuneType::Fire,
+        RuneType::Water,
+        RuneType::Catalyst,
+        RuneType::Earth,
+        RuneType::FireStormDummy,
+    };
+    return kRunes;
+}
+
 size_t GetRuneCooldownIndex(RuneType rune_type) {
     switch (rune_type) {
         case RuneType::Fire:
@@ -238,6 +262,59 @@ size_t GetRuneCooldownIndex(RuneType rune_type) {
             break;
     }
     return 0;
+}
+
+bool RuneUsesCharges(RuneType rune_type) {
+    return rune_type == RuneType::Catalyst;
+}
+
+int GetInitialRuneCharges(RuneType rune_type) {
+    switch (rune_type) {
+        case RuneType::Catalyst:
+            return 0;
+        case RuneType::Fire:
+        case RuneType::Water:
+        case RuneType::Earth:
+        case RuneType::FireStormDummy:
+        case RuneType::None:
+            return 0;
+    }
+    return 0;
+}
+
+const char* GetRuneChargePickupObjectId(RuneType rune_type) {
+    switch (rune_type) {
+        case RuneType::Catalyst:
+            return "catalyst_charge_pickup";
+        case RuneType::Fire:
+        case RuneType::Water:
+        case RuneType::Earth:
+        case RuneType::FireStormDummy:
+        case RuneType::None:
+            return nullptr;
+    }
+    return nullptr;
+}
+
+std::optional<RuneType> GetRuneTypeForChargePickupPrototype(const std::string& prototype_id) {
+    if (prototype_id == "catalyst_charge_pickup") {
+        return RuneType::Catalyst;
+    }
+    return std::nullopt;
+}
+
+int GetPlayerRuneChargeCount(const Player& player, RuneType rune_type) {
+    if (rune_type == RuneType::None || !RuneUsesCharges(rune_type)) {
+        return 0;
+    }
+    return player.rune_charge_counts[GetRuneCooldownIndex(rune_type)];
+}
+
+void SetPlayerRuneChargeCount(Player& player, RuneType rune_type, int count) {
+    if (rune_type == RuneType::None || !RuneUsesCharges(rune_type)) {
+        return;
+    }
+    player.rune_charge_counts[GetRuneCooldownIndex(rune_type)] = std::max(0, count);
 }
 
 float GetPlayerRuneCooldownRemaining(const Player& player, RuneType rune_type) {
@@ -261,6 +338,22 @@ void SetPlayerRuneCooldown(Player& player, RuneType rune_type, float remaining, 
     const size_t index = GetRuneCooldownIndex(rune_type);
     player.rune_cooldown_remaining[index] = remaining;
     player.rune_cooldown_total[index] = total;
+}
+
+void ApplyRuneCooldownsAfterCast(Player& player, RuneType selected_rune_type) {
+    const float selected_cooldown = GetRuneCooldownSeconds(selected_rune_type);
+    for (RuneType rune_type : GetAllCastableRuneTypes()) {
+        if (rune_type == selected_rune_type) {
+            SetPlayerRuneCooldown(player, rune_type, selected_cooldown, selected_cooldown);
+            continue;
+        }
+
+        const float clamped_remaining =
+            std::max(GetPlayerRuneCooldownRemaining(player, rune_type), Constants::kRuneMinCrossCooldownSeconds);
+        const float clamped_total =
+            std::max(GetPlayerRuneCooldownTotal(player, rune_type), Constants::kRuneMinCrossCooldownSeconds);
+        SetPlayerRuneCooldown(player, rune_type, clamped_remaining, clamped_total);
+    }
 }
 
 const char* GetRuneSpriteAnimationKey(RuneType rune_type) {
@@ -366,12 +459,35 @@ bool IsColumnPrototypeId(const std::string& prototype_id) {
     return prototype_id.rfind("column_", 0) == 0;
 }
 
-Rectangle GetMapObjectCollisionAabb(const MapObjectInstance& object, int cell_size) {
-    Rectangle aabb = {static_cast<float>(object.cell.x * cell_size),
-                      static_cast<float>(object.cell.y * cell_size),
-                      static_cast<float>(cell_size),
-                      static_cast<float>(cell_size)};
-    if (!IsColumnPrototypeId(object.prototype_id)) {
+bool IsGroundSortedMapObjectPrototypeId(const std::string& prototype_id) {
+    return prototype_id == "altar_rune_slot_generic" || prototype_id == "altar_output_simple";
+}
+
+int GetSpriteSheetHeight(SpriteSheetType sheet_type) {
+    switch (sheet_type) {
+        case SpriteSheetType::Base32:
+            return 32;
+        case SpriteSheetType::Tall32x64:
+            return 64;
+        case SpriteSheetType::Large128x128:
+            return 128;
+    }
+    return 32;
+}
+
+Rectangle GetMapObjectCollisionAabb(const MapObjectInstance& object, const ObjectPrototype* proto, int cell_size) {
+    Rectangle aabb = {static_cast<float>(object.cell.x * cell_size), static_cast<float>(object.cell.y * cell_size),
+                      static_cast<float>(cell_size), static_cast<float>(cell_size)};
+    if (proto != nullptr && proto->has_collision_box_override) {
+        const float sprite_x = static_cast<float>(object.cell.x * cell_size);
+        const float sprite_y =
+            static_cast<float>(object.cell.y * cell_size) - (static_cast<float>(GetSpriteSheetHeight(proto->sprite_sheet)) -
+                                                             static_cast<float>(cell_size));
+        return {sprite_x + static_cast<float>(proto->collision_box_x), sprite_y + static_cast<float>(proto->collision_box_y),
+                static_cast<float>(proto->collision_box_w), static_cast<float>(proto->collision_box_h)};
+    }
+
+    if (proto == nullptr || !IsColumnPrototypeId(object.prototype_id)) {
         return aabb;
     }
 
@@ -452,8 +568,11 @@ bool GameApp::Initialize() {
     resolved_sprite_metadata_path_ = ResolveRuntimePath(Constants::kSpriteMetadataPath);
     resolved_sprite_metadata_tall_path_ = ResolveRuntimePath(Constants::kSpriteMetadataTallPath);
     resolved_sprite_metadata_96x96_path_ = ResolveRuntimePath(Constants::kSpriteMetadata96x96Path);
+    resolved_sprite_metadata_128x128_path_ = ResolveRuntimePath(Constants::kSpriteMetadata128x128Path);
     resolved_spell_pattern_path_ = ResolveRuntimePath(Constants::kSpellPatternPath);
     resolved_menu_background_path_ = ResolveRuntimePath(Constants::kMenuBackgroundPath);
+    resolved_occluder_reveal_shader_path_ = ResolveRuntimePath(Constants::kOccluderRevealShaderPath);
+    resolved_water_gradient_shader_path_ = ResolveRuntimePath(Constants::kWaterGradientShaderPath);
 
     objects_database_.LoadFromFile(resolved_objects_config_path_);
     composite_effects_loader_.LoadFromFile(resolved_composite_effects_path_);
@@ -472,11 +591,13 @@ bool GameApp::Initialize() {
     sprite_metadata_.LoadFromFile(resolved_sprite_metadata_path_);
     sprite_metadata_tall_.LoadFromFile(resolved_sprite_metadata_tall_path_);
     sprite_metadata_96x96_.LoadFromFile(resolved_sprite_metadata_96x96_path_);
+    sprite_metadata_128x128_.LoadFromFile(resolved_sprite_metadata_128x128_path_);
     spell_patterns_.LoadFromFile(resolved_spell_pattern_path_);
     if (FileExists(resolved_menu_background_path_.c_str())) {
         menu_background_texture_ = LoadTexture(resolved_menu_background_path_.c_str());
         has_menu_background_texture_ = (menu_background_texture_.id != 0);
     }
+    LoadRenderShaders();
     LoadAudioAssets();
     camera_.target = {0.0f, 0.0f};
     camera_.offset = {static_cast<float>(settings_.window_width) * 0.5f,
@@ -558,18 +679,144 @@ void GameApp::Shutdown() {
     lan_discovery_.Stop();
     network_manager_.Stop();
     UnloadAudioAssets();
+    UnloadRenderShaders();
     sprite_metadata_.Unload();
     sprite_metadata_tall_.Unload();
     sprite_metadata_96x96_.Unload();
+    sprite_metadata_128x128_.Unload();
     if (has_menu_background_texture_) {
         UnloadTexture(menu_background_texture_);
         has_menu_background_texture_ = false;
+    }
+    if (has_shadow_layer_target_) {
+        UnloadRenderTexture(shadow_layer_target_);
+        shadow_layer_target_ = {};
+        has_shadow_layer_target_ = false;
     }
     if (audio_device_ready_) {
         CloseAudioDevice();
         audio_device_ready_ = false;
     }
     CloseWindow();
+}
+
+void GameApp::LoadRenderShaders() {
+    UnloadRenderShaders();
+    if (!FileExists(resolved_occluder_reveal_shader_path_.c_str())) {
+        return;
+    }
+
+    occluder_reveal_shader_ = LoadShader(nullptr, resolved_occluder_reveal_shader_path_.c_str());
+    has_occluder_reveal_shader_ = (occluder_reveal_shader_.id != 0);
+    if (has_occluder_reveal_shader_) {
+        occluder_reveal_count_loc_ = GetShaderLocation(occluder_reveal_shader_, "uRevealCount");
+        occluder_reveal_data_loc_ = GetShaderLocation(occluder_reveal_shader_, "uRevealData");
+        occluder_reveal_screen_height_loc_ = GetShaderLocation(occluder_reveal_shader_, "uScreenHeight");
+        occluder_reveal_inside_alpha_loc_ = GetShaderLocation(occluder_reveal_shader_, "uInsideAlpha");
+        occluder_reveal_source_rect_loc_ = GetShaderLocation(occluder_reveal_shader_, "uSourceRectPx");
+    }
+
+    if (FileExists(resolved_water_gradient_shader_path_.c_str())) {
+        water_gradient_shader_ = LoadShader(nullptr, resolved_water_gradient_shader_path_.c_str());
+        has_water_gradient_shader_ = (water_gradient_shader_.id != 0);
+        if (has_water_gradient_shader_) {
+            water_gradient_screen_height_loc_ = GetShaderLocation(water_gradient_shader_, "uScreenHeight");
+            water_gradient_start_loc_ = GetShaderLocation(water_gradient_shader_, "uGradientStart");
+            water_gradient_end_loc_ = GetShaderLocation(water_gradient_shader_, "uGradientEnd");
+        }
+    }
+}
+
+void GameApp::UnloadRenderShaders() {
+    if (has_occluder_reveal_shader_) {
+        UnloadShader(occluder_reveal_shader_);
+    }
+    occluder_reveal_shader_ = {};
+    has_occluder_reveal_shader_ = false;
+    if (has_water_gradient_shader_) {
+        UnloadShader(water_gradient_shader_);
+    }
+    water_gradient_shader_ = {};
+    has_water_gradient_shader_ = false;
+    occluder_reveal_count_loc_ = -1;
+    occluder_reveal_data_loc_ = -1;
+    occluder_reveal_screen_height_loc_ = -1;
+    occluder_reveal_inside_alpha_loc_ = -1;
+    occluder_reveal_source_rect_loc_ = -1;
+    water_gradient_screen_height_loc_ = -1;
+    water_gradient_start_loc_ = -1;
+    water_gradient_end_loc_ = -1;
+}
+
+bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y) {
+    if (!has_occluder_reveal_shader_) {
+        return false;
+    }
+
+    std::array<OccluderRevealCircle, Constants::kOccluderRevealMaxCircles> circles = {};
+    int circle_count = 0;
+    const auto try_add_circle = [&](Vector2 world_center, float radius_world, float target_sort_y) {
+        if (circle_count >= Constants::kOccluderRevealMaxCircles || target_sort_y >= sort_y - 0.01f ||
+            !ContainsWorldPointExpanded(world_dst, world_center, radius_world)) {
+            return;
+        }
+
+        const Vector2 screen_center = GetWorldToScreen2D(world_center, camera_);
+        const float radius_px = radius_world * camera_.zoom;
+        const float falloff_px = Constants::kOccluderRevealFalloffWorld * camera_.zoom;
+        circles[static_cast<size_t>(circle_count++)] = {screen_center, radius_px, radius_px + falloff_px};
+    };
+
+    for (const Player& player : state_.players) {
+        if (!player.alive) {
+            continue;
+        }
+        const Vector2 world_center = GetRenderPlayerPosition(player.id);
+        try_add_circle(world_center, Constants::kOccluderRevealPlayerRadiusWorld, world_center.y + 16.0f);
+    }
+
+    for (const MapObjectInstance& object : state_.map_objects) {
+        if (!object.alive || object.type != ObjectType::Consumable) {
+            continue;
+        }
+        const Vector2 world_center = CellToWorldCenter(object.cell);
+        try_add_circle(world_center, Constants::kOccluderRevealItemRadiusWorld, world_center.y);
+    }
+
+    for (const Rune& rune : state_.runes) {
+        if (!rune.active && rune.activation_remaining_seconds <= 0.0f) {
+            continue;
+        }
+        const Vector2 world_center = CellToWorldCenter(rune.cell);
+        try_add_circle(world_center, Constants::kOccluderRevealItemRadiusWorld, world_center.y);
+    }
+
+    if (circle_count <= 0) {
+        return false;
+    }
+
+    std::array<float, Constants::kOccluderRevealMaxCircles * 4> reveal_data = {};
+    for (int i = 0; i < circle_count; ++i) {
+        const size_t base = static_cast<size_t>(i) * 4;
+        reveal_data[base + 0] = circles[static_cast<size_t>(i)].screen_center.x;
+        reveal_data[base + 1] = circles[static_cast<size_t>(i)].screen_center.y;
+        reveal_data[base + 2] = circles[static_cast<size_t>(i)].inner_radius_px;
+        reveal_data[base + 3] = circles[static_cast<size_t>(i)].outer_radius_px;
+    }
+
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float inside_alpha = Constants::kOccluderRevealInsideAlpha;
+    const float source_rect_px[4] = {src.x, src.y, src.width, src.height};
+    SetShaderValue(occluder_reveal_shader_, occluder_reveal_count_loc_, &circle_count, SHADER_UNIFORM_INT);
+    SetShaderValueV(occluder_reveal_shader_, occluder_reveal_data_loc_, reveal_data.data(), SHADER_UNIFORM_VEC4, circle_count);
+    SetShaderValue(occluder_reveal_shader_, occluder_reveal_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(occluder_reveal_shader_, occluder_reveal_inside_alpha_loc_, &inside_alpha, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(occluder_reveal_shader_, occluder_reveal_source_rect_loc_, source_rect_px, SHADER_UNIFORM_VEC4, 1);
+
+    BeginShaderMode(occluder_reveal_shader_);
+    DrawTexturePro(texture, src, world_dst, {0, 0}, 0.0f, WHITE);
+    EndShaderMode();
+    return true;
 }
 
 void GameApp::Update(float dt) {
@@ -1110,7 +1357,6 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
     const bool is_stunned = HasStatusEffect(*local_player, StatusEffectType::Stunned);
     const bool is_pulled = IsPlayerBeingPulled(local_player->id);
 
-    local_player->rune_place_cooldown_remaining = std::max(0.0f, local_player->rune_place_cooldown_remaining - dt);
     local_player->grappling_cooldown_remaining = std::max(0.0f, local_player->grappling_cooldown_remaining - dt);
     local_player->mana =
         std::clamp(local_player->mana + local_player->mana_regen_per_second * dt, 0.0f, local_player->max_mana);
@@ -1142,10 +1388,8 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
         local_player->facing = AimToFacing(local_player->aim_dir);
     }
 
-    if (!is_stunned && !is_pulled && input.primary_pressed && local_player->rune_placing_mode &&
-        local_player->rune_place_cooldown_remaining <= 0.0f) {
+    if (!is_stunned && !is_pulled && input.primary_pressed && local_player->rune_placing_mode) {
         local_player->rune_placing_mode = false;
-        local_player->rune_place_cooldown_remaining = local_player->rune_place_cooldown_duration;
     }
     if (!is_stunned && !is_pulled && input.grappling_pressed && !local_player->rune_placing_mode &&
         local_player->grappling_cooldown_remaining <= 0.0f) {
@@ -1356,6 +1600,7 @@ void GameApp::Render() {
             }
             DrawMatchHud(state_, state_.local_player_id);
             RenderBottomHud();
+            RenderFpsCounter();
             RenderNetworkDebugPanel();
             break;
 
@@ -1464,6 +1709,7 @@ void GameApp::ReturnToMainMenu() {
     pending_activate_item_slot_ = -1;
     pending_toggle_inventory_mode_ = false;
     pending_object_spawns_.clear();
+    altars_.clear();
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
@@ -1552,6 +1798,9 @@ void GameApp::StartMatchAsHost() {
         state_.players[i].awaiting_respawn = false;
         state_.players[i].respawn_remaining = 0.0f;
         state_.players[i].outside_zone_damage_accumulator = 0.0f;
+        for (RuneType rune_type : GetAllCastableRuneTypes()) {
+            SetPlayerRuneChargeCount(state_.players[i], rune_type, GetInitialRuneCharges(rune_type));
+        }
         render_player_positions_[state_.players[i].id] = state_.players[i].pos;
     }
 
@@ -1571,6 +1820,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         bool alive = false;
         PlayerActionState action_state = PlayerActionState::Idle;
     };
+    altars_.clear();
 
     std::unordered_map<int, int> previous_hp;
     previous_hp.reserve(state_.players.size());
@@ -1627,10 +1877,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     previous_object_states.reserve(state_.map_objects.size());
     std::unordered_map<int, Vector2> previous_consumable_positions;
     previous_consumable_positions.reserve(state_.map_objects.size());
+    std::unordered_map<int, std::string> previous_consumable_prototype_ids;
+    previous_consumable_prototype_ids.reserve(state_.map_objects.size());
     for (const auto& object : state_.map_objects) {
         previous_object_states[object.id] = object.state;
         if (object.type == ObjectType::Consumable && object.alive) {
             previous_consumable_positions[object.id] = CellToWorldCenter(object.cell);
+            previous_consumable_prototype_ids[object.id] = object.prototype_id;
         }
     }
     std::unordered_map<int, GrapplingHookPhase> previous_grappling_hook_phases;
@@ -1691,7 +1944,6 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         player.melee_active_remaining = player_snapshot.melee_active_remaining;
         player.rune_placing_mode = player_snapshot.rune_placing_mode;
         player.selected_rune_type = static_cast<RuneType>(player_snapshot.selected_rune_type);
-        player.rune_place_cooldown_remaining = player_snapshot.rune_place_cooldown_remaining;
         player.mana = player_snapshot.mana;
         player.max_mana = player_snapshot.max_mana;
         player.grappling_cooldown_remaining = player_snapshot.grappling_cooldown_remaining;
@@ -1740,6 +1992,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
         for (size_t i = 0; i < player.rune_cooldown_total.size() && i < player_snapshot.rune_cooldown_total.size(); ++i) {
             player.rune_cooldown_total[i] = player_snapshot.rune_cooldown_total[i];
+        }
+        for (size_t i = 0; i < player.rune_charge_counts.size() && i < player_snapshot.rune_charge_counts.size(); ++i) {
+            player.rune_charge_counts[i] = player_snapshot.rune_charge_counts[i];
         }
         if (has_previous_local_ui_state && player.id == state_.local_player_id) {
             player.rune_slots = previous_local_ui_state.rune_slots;
@@ -1973,6 +2228,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
         state_.map_objects.push_back(object);
     }
+    RebuildAltarsFromMapObjects();
     if (!network_manager_.IsHost()) {
         std::unordered_set<int> current_object_ids;
         current_object_ids.reserve(state_.map_objects.size());
@@ -1980,6 +2236,33 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             current_object_ids.insert(object.id);
             const auto previous_state_it = previous_object_states.find(object.id);
             if (previous_state_it == previous_object_states.end()) {
+                if (object.prototype_id == "catalyst_charge_pickup") {
+                    const auto spawn_altar_charge_vfx = [&](const GridCoord& cell) {
+                        Particle rune_cast_vfx;
+                        rune_cast_vfx.pos = CellToWorldCenter(cell);
+                        rune_cast_vfx.vel = {0.0f, 0.0f};
+                        rune_cast_vfx.acc = {0.0f, 0.0f};
+                        rune_cast_vfx.drag = 0.0f;
+                        rune_cast_vfx.animation_key = "rune_cast_effect";
+                        rune_cast_vfx.facing = "default";
+                        rune_cast_vfx.age_seconds = 0.0f;
+                        rune_cast_vfx.max_cycles = 2;
+                        rune_cast_vfx.alive = true;
+                        state_.particles.push_back(rune_cast_vfx);
+                    };
+                    spawn_altar_charge_vfx(object.cell);
+                    PlaySfxIfVisible(sfx_static_upgrade_.sound, sfx_static_upgrade_.loaded, CellToWorldCenter(object.cell));
+                    auto altar_it = std::find_if(altars_.begin(), altars_.end(), [&](const AltarInstance& altar) {
+                        return altar.output_cell == object.cell;
+                    });
+                    if (altar_it != altars_.end()) {
+                        for (const int slot_object_id : altar_it->slot_object_ids) {
+                            if (const MapObjectInstance* slot_object = FindMapObjectById(slot_object_id)) {
+                                spawn_altar_charge_vfx(slot_object->cell);
+                            }
+                        }
+                    }
+                }
                 continue;
             }
             if (previous_state_it->second != MapObjectState::Dying && object.state == MapObjectState::Dying) {
@@ -1988,7 +2271,15 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
         for (const auto& [object_id, world_pos] : previous_consumable_positions) {
             if (current_object_ids.find(object_id) == current_object_ids.end()) {
-                PlaySfxIfVisible(sfx_item_pickup_.sound, sfx_item_pickup_.loaded, world_pos);
+                const auto proto_it = previous_consumable_prototype_ids.find(object_id);
+                const bool is_charge_pickup =
+                    proto_it != previous_consumable_prototype_ids.end() &&
+                    GetRuneTypeForChargePickupPrototype(proto_it->second).has_value();
+                if (is_charge_pickup) {
+                    PlaySfxIfVisible(sfx_static_bolt_impact_.sound, sfx_static_bolt_impact_.loaded, world_pos);
+                } else {
+                    PlaySfxIfVisible(sfx_item_pickup_.sound, sfx_item_pickup_.loaded, world_pos);
+                }
             }
         }
     }
@@ -2151,7 +2442,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                     const std::string& previous_item = previous_slots_it->second[i];
                     const std::string& current_item = player.item_slots[i];
                     const std::string& consumed_item = !previous_item.empty() ? previous_item : current_item;
-                    if (previous_count > current_count && consumed_item == "health_small") {
+                    if (previous_count > current_count &&
+                        (consumed_item == "health_small" || consumed_item == "mana_small")) {
                         drank_small_potion = true;
                         break;
                     }
@@ -2312,7 +2604,6 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
         player_snapshot.melee_active_remaining = player.melee_active_remaining;
         player_snapshot.rune_placing_mode = player.rune_placing_mode;
         player_snapshot.selected_rune_type = static_cast<int>(player.selected_rune_type);
-        player_snapshot.rune_place_cooldown_remaining = player.rune_place_cooldown_remaining;
         player_snapshot.mana = player.mana;
         player_snapshot.max_mana = player.max_mana;
         player_snapshot.grappling_cooldown_remaining = player.grappling_cooldown_remaining;
@@ -2320,6 +2611,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
         player_snapshot.rune_cooldown_remaining.assign(player.rune_cooldown_remaining.begin(),
                                                        player.rune_cooldown_remaining.end());
         player_snapshot.rune_cooldown_total.assign(player.rune_cooldown_total.begin(), player.rune_cooldown_total.end());
+        player_snapshot.rune_charge_counts.assign(player.rune_charge_counts.begin(), player.rune_charge_counts.end());
         for (const auto& status : player.status_effects) {
             PlayerSnapshot::StatusEffectSnapshot status_snapshot;
             status_snapshot.type = static_cast<int>(status.type);
@@ -2577,6 +2869,7 @@ void GameApp::SimulateHostGameplay(float dt) {
     ResolvePlayerCollisions();
     UpdateIceWalls(dt);
     UpdateRunes(dt);
+    UpdateAltars(dt);
     UpdateEarthRootsGroups(dt);
     UpdateArena(dt);
 
@@ -2640,7 +2933,6 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
 
     player.melee_cooldown_remaining = std::max(0.0f, player.melee_cooldown_remaining - dt);
     player.melee_active_remaining = std::max(0.0f, player.melee_active_remaining - dt);
-    player.rune_place_cooldown_remaining = std::max(0.0f, player.rune_place_cooldown_remaining - dt);
     player.grappling_cooldown_remaining = std::max(0.0f, player.grappling_cooldown_remaining - dt);
     player.mana = std::clamp(player.mana + player.mana_regen_per_second * dt, 0.0f, player.max_mana);
     UpdatePlayerStatusEffects(player, dt);
@@ -2779,6 +3071,7 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
         return;
     }
 
+    int pending_root_damage = 0;
     for (auto& status : player.status_effects) {
         if (status.remaining_seconds <= 0.0f) {
             continue;
@@ -2796,6 +3089,15 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
                 }
                 break;
             }
+            case StatusEffectType::ManaRegeneration: {
+                status.accumulated_magnitude += status.magnitude_per_second * applied_dt;
+                const int whole_mana = static_cast<int>(std::floor(status.accumulated_magnitude + 0.0001f));
+                if (whole_mana > 0) {
+                    status.accumulated_magnitude -= static_cast<float>(whole_mana);
+                    ApplyImmediateManaRestore(player, whole_mana);
+                }
+                break;
+            }
             case StatusEffectType::Stunned:
                 break;
             case StatusEffectType::Rooted: {
@@ -2808,7 +3110,7 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
                 const int whole_damage = static_cast<int>(std::floor(status.accumulated_magnitude + 0.0001f));
                 if (whole_damage > 0) {
                     status.accumulated_magnitude -= static_cast<float>(whole_damage);
-                    ApplyDamageToPlayer(player, -1, whole_damage, "earth_roots", false);
+                    pending_root_damage += whole_damage;
                 }
                 if (status.source_active) {
                     status.remaining_seconds =
@@ -2827,6 +3129,10 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
                 break;
             }
         }
+    }
+
+    if (pending_root_damage > 0 && player.alive) {
+        ApplyDamageToPlayer(player, -1, pending_root_damage, "earth_roots", false);
     }
 
     if (HasStatusEffect(player, StatusEffectType::Stunned)) {
@@ -2920,6 +3226,153 @@ void GameApp::RebuildMapObjectsFromSeeds() {
     for (const auto& seed : state_.map.object_seeds) {
         SpawnObjectInstanceAtCell(seed.prototype_id, seed.cell);
     }
+    RebuildAltarsFromMapObjects();
+}
+
+void GameApp::RebuildAltarsFromMapObjects() {
+    altars_.clear();
+
+    struct SlotAssignmentCandidate {
+        int output_object_id = -1;
+        int distance_sq = std::numeric_limits<int>::max();
+    };
+    std::unordered_map<int, SlotAssignmentCandidate> slot_assignments;
+
+    for (const auto& object : state_.map_objects) {
+        if (!object.alive || object.prototype_id != "altar_output_simple") {
+            continue;
+        }
+        AltarInstance altar;
+        altar.output_object_id = object.id;
+        altar.output_cell = object.cell;
+        altars_.push_back(altar);
+    }
+
+    for (const auto& slot : state_.map_objects) {
+        if (!slot.alive || slot.prototype_id != "altar_rune_slot_generic") {
+            continue;
+        }
+
+        for (const auto& altar : altars_) {
+            const int dx = slot.cell.x - altar.output_cell.x;
+            const int dy = slot.cell.y - altar.output_cell.y;
+            if (std::abs(dx) > Constants::kAltarScanHalfExtentTiles ||
+                std::abs(dy) > Constants::kAltarScanHalfExtentTiles) {
+                continue;
+            }
+
+            const int distance_sq = dx * dx + dy * dy;
+            auto& best = slot_assignments[slot.id];
+            if (best.output_object_id < 0 || distance_sq < best.distance_sq ||
+                (distance_sq == best.distance_sq && altar.output_object_id < best.output_object_id)) {
+                best.output_object_id = altar.output_object_id;
+                best.distance_sq = distance_sq;
+            }
+        }
+    }
+
+    for (auto& altar : altars_) {
+        altar.slot_object_ids.clear();
+        for (const auto& [slot_id, assignment] : slot_assignments) {
+            if (assignment.output_object_id == altar.output_object_id) {
+                altar.slot_object_ids.push_back(slot_id);
+            }
+        }
+        std::sort(altar.slot_object_ids.begin(), altar.slot_object_ids.end());
+        altar.required_slot_count = static_cast<int>(altar.slot_object_ids.size());
+        altar.fulfilled_slot_rune_ids.clear();
+    }
+}
+
+void GameApp::UpdateAltars(float /*dt*/) {
+    if (!network_manager_.IsHost() || altars_.empty()) {
+        return;
+    }
+
+    bool removed_runes = false;
+    std::vector<int> consumed_rune_ids;
+
+    for (auto& altar : altars_) {
+        altar.fulfilled_slot_rune_ids.clear();
+        if (altar.required_slot_count <= 0) {
+            continue;
+        }
+
+        bool has_charge_present = false;
+        for (const auto& object : state_.map_objects) {
+            if (!object.alive || !(object.cell == altar.output_cell)) {
+                continue;
+            }
+            if (object.prototype_id == "catalyst_charge_pickup") {
+                has_charge_present = true;
+                break;
+            }
+        }
+        if (has_charge_present) {
+            continue;
+        }
+
+        for (const int slot_object_id : altar.slot_object_ids) {
+            const MapObjectInstance* slot_object = FindMapObjectById(slot_object_id);
+            if (slot_object == nullptr || !slot_object->alive) {
+                continue;
+            }
+            auto rune_it = std::find_if(state_.runes.begin(), state_.runes.end(), [&](const Rune& rune) {
+                return rune.active && rune.cell == slot_object->cell;
+            });
+            if (rune_it == state_.runes.end()) {
+                altar.fulfilled_slot_rune_ids.clear();
+                break;
+            }
+            altar.fulfilled_slot_rune_ids.push_back(rune_it->id);
+        }
+
+        if (static_cast<int>(altar.fulfilled_slot_rune_ids.size()) != altar.required_slot_count) {
+            altar.fulfilled_slot_rune_ids.clear();
+            continue;
+        }
+
+        SpawnObjectInstanceAtCell("catalyst_charge_pickup", altar.output_cell);
+        const auto spawn_altar_charge_vfx = [&](const GridCoord& cell) {
+            Particle rune_cast_vfx;
+            rune_cast_vfx.pos = CellToWorldCenter(cell);
+            rune_cast_vfx.vel = {0.0f, 0.0f};
+            rune_cast_vfx.acc = {0.0f, 0.0f};
+            rune_cast_vfx.drag = 0.0f;
+            rune_cast_vfx.animation_key = "rune_cast_effect";
+            rune_cast_vfx.facing = "default";
+            rune_cast_vfx.age_seconds = 0.0f;
+            rune_cast_vfx.max_cycles = 2;
+            rune_cast_vfx.alive = true;
+            state_.particles.push_back(rune_cast_vfx);
+        };
+        spawn_altar_charge_vfx(altar.output_cell);
+        PlaySfxIfVisible(sfx_static_upgrade_.sound, sfx_static_upgrade_.loaded, CellToWorldCenter(altar.output_cell));
+        for (const int slot_object_id : altar.slot_object_ids) {
+            if (const MapObjectInstance* slot_object = FindMapObjectById(slot_object_id)) {
+                spawn_altar_charge_vfx(slot_object->cell);
+            }
+        }
+        consumed_rune_ids.insert(consumed_rune_ids.end(), altar.fulfilled_slot_rune_ids.begin(),
+                                 altar.fulfilled_slot_rune_ids.end());
+        altar.fulfilled_slot_rune_ids.clear();
+    }
+
+    if (!consumed_rune_ids.empty()) {
+        std::sort(consumed_rune_ids.begin(), consumed_rune_ids.end());
+        consumed_rune_ids.erase(std::unique(consumed_rune_ids.begin(), consumed_rune_ids.end()), consumed_rune_ids.end());
+        state_.runes.erase(std::remove_if(state_.runes.begin(), state_.runes.end(),
+                                          [&](const Rune& rune) {
+                                              return std::binary_search(consumed_rune_ids.begin(), consumed_rune_ids.end(),
+                                                                        rune.id);
+                                          }),
+                           state_.runes.end());
+        removed_runes = true;
+    }
+
+    if (removed_runes) {
+        RebuildInfluenceZones();
+    }
 }
 
 void GameApp::ResolvePlayerVsMapObjects(Player& player) {
@@ -2932,7 +3385,7 @@ void GameApp::ResolvePlayerVsMapObjects(Player& player) {
             continue;
         }
 
-        const Rectangle aabb = GetMapObjectCollisionAabb(object, state_.map.cell_size);
+        const Rectangle aabb = GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id), state_.map.cell_size);
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
         if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
@@ -2990,8 +3443,18 @@ bool GameApp::ApplyObjectDamage(int object_instance_id, int amount, int /*source
 
         int frame_count = 0;
         float fps = 1.0f;
-        const SpriteMetadataLoader* metadata =
-            (proto->sprite_sheet == SpriteSheetType::Tall32x64) ? &sprite_metadata_tall_ : &sprite_metadata_;
+        const SpriteMetadataLoader* metadata = &sprite_metadata_;
+        switch (proto->sprite_sheet) {
+            case SpriteSheetType::Base32:
+                metadata = &sprite_metadata_;
+                break;
+            case SpriteSheetType::Tall32x64:
+                metadata = &sprite_metadata_tall_;
+                break;
+            case SpriteSheetType::Large128x128:
+                metadata = &sprite_metadata_128x128_;
+                break;
+        }
         if (metadata->GetAnimationStats(proto->death_animation, "default", frame_count, fps) && frame_count > 0) {
             object->death_duration = static_cast<float>(frame_count) / std::max(0.001f, fps);
         }
@@ -3012,6 +3475,15 @@ bool GameApp::TryConsumeObject(int object_instance_id, int player_id) {
     const ObjectPrototype* proto = FindObjectPrototype(object->prototype_id);
     if (proto == nullptr || proto->type != ObjectType::Consumable) {
         return false;
+    }
+
+    if (const std::optional<RuneType> charge_rune_type = GetRuneTypeForChargePickupPrototype(object->prototype_id);
+        charge_rune_type.has_value()) {
+        SetPlayerRuneChargeCount(*player, *charge_rune_type, GetPlayerRuneChargeCount(*player, *charge_rune_type) + 1);
+        object->collision_enabled = false;
+        object->alive = false;
+        PlaySfxIfVisible(sfx_static_bolt_impact_.sound, sfx_static_bolt_impact_.loaded, CellToWorldCenter(object->cell));
+        return true;
     }
 
     int target_slot = -1;
@@ -3062,6 +3534,8 @@ bool GameApp::TryActivateItemSlot(Player& player, int slot_index) {
     for (const EffectSpec& effect : proto->consumable_effects) {
         if (effect.type == EffectType::IncreaseCurrentHealth) {
             ApplyImmediateHeal(player, std::max(0, effect.amount));
+        } else if (effect.type == EffectType::IncreaseCurrentMana) {
+            ApplyImmediateManaRestore(player, std::max(0, effect.amount));
         } else if (effect.type == EffectType::SpawnObject) {
             const int min_count = std::max(1, effect.min_count);
             const int max_count = std::max(min_count, effect.max_count);
@@ -3075,6 +3549,9 @@ bool GameApp::TryActivateItemSlot(Player& player, int slot_index) {
 
     if (prototype_id == "health_small") {
         AddRegenerationStatus(player, Constants::kPotionSmallRegenDurationSeconds, Constants::kPotionSmallRegenPerSecond);
+    } else if (prototype_id == "mana_small") {
+        AddManaRegenerationStatus(player, Constants::kPotionSmallManaRegenDurationSeconds,
+                                  Constants::kPotionSmallManaRegenPerSecond);
     }
 
     PlaySfxIfVisible(sfx_drink_potion_.sound, sfx_drink_potion_.loaded, player.pos);
@@ -3111,6 +3588,21 @@ void GameApp::ApplyImmediateHeal(Player& player, int amount) {
     }
 }
 
+void GameApp::ApplyImmediateManaRestore(Player& player, int amount) {
+    if (amount <= 0 || !player.alive) {
+        return;
+    }
+    player.mana = std::min(player.max_mana, player.mana + static_cast<float>(amount));
+}
+
+void GameApp::CancelRegenerationStatuses(Player& player) {
+    for (auto& status : player.status_effects) {
+        if (status.type == StatusEffectType::Regeneration || status.type == StatusEffectType::ManaRegeneration) {
+            status.remaining_seconds = 0.0f;
+        }
+    }
+}
+
 void GameApp::AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second) {
     StatusEffectInstance status;
     status.type = StatusEffectType::Regeneration;
@@ -3121,6 +3613,19 @@ void GameApp::AddRegenerationStatus(Player& player, float duration_seconds, floa
     status.visible = true;
     status.is_buff = true;
     status.composite_effect_id = "heal_effect";
+    player.status_effects.push_back(status);
+}
+
+void GameApp::AddManaRegenerationStatus(Player& player, float duration_seconds, float amount_per_second) {
+    StatusEffectInstance status;
+    status.type = StatusEffectType::ManaRegeneration;
+    status.remaining_seconds = std::max(0.0f, duration_seconds);
+    status.total_seconds = status.remaining_seconds;
+    status.magnitude_per_second = std::max(0.0f, amount_per_second);
+    status.accumulated_magnitude = 0.0f;
+    status.visible = true;
+    status.is_buff = true;
+    status.composite_effect_id = "mana_regen_effect";
     player.status_effects.push_back(status);
 }
 
@@ -3142,7 +3647,7 @@ void GameApp::AddStunnedStatus(Player& player, float duration_seconds) {
     status.accumulated_magnitude = 0.0f;
     status.visible = true;
     status.is_buff = false;
-    status.composite_effect_id.clear();
+    status.composite_effect_id = "stunned_effect";
     player.status_effects.push_back(status);
 }
 
@@ -3195,7 +3700,7 @@ void GameApp::UpdateMapObjects(float dt) {
         }
 
         if (object.type == ObjectType::Consumable) {
-            const Rectangle aabb = GetMapObjectCollisionAabb(object, state_.map.cell_size);
+            const Rectangle aabb = GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id), state_.map.cell_size);
             for (const auto& player : state_.players) {
                 if (!player.alive) {
                     continue;
@@ -3243,6 +3748,7 @@ bool GameApp::ApplyDamageToPlayer(Player& target, int attacker_player_id, int da
         return false;
     }
 
+    CancelRegenerationStatuses(target);
     target.hp = std::max(0, target.hp - damage);
     event_queue_.Push(PlayerHitEvent{attacker_player_id, target.id, damage, source != nullptr ? source : "unknown"});
     SpawnDamagePopup(target.pos, damage, false);
@@ -3815,7 +4321,8 @@ void GameApp::UpdateProjectiles(float dt) {
                     continue;
                 }
 
-                const Rectangle aabb = GetMapObjectCollisionAabb(object, state_.map.cell_size);
+                const Rectangle aabb =
+                    GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id), state_.map.cell_size);
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;
                 if (!CollisionWorld::CircleVsAabb(projectile.pos, projectile.radius, aabb, normal, penetration)) {
@@ -4169,7 +4676,7 @@ bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world, bool p
             if (!object.alive || !object.stops_projectiles || !object.collision_enabled) {
                 continue;
             }
-            const Rectangle aabb = GetMapObjectCollisionAabb(object, state_.map.cell_size);
+            const Rectangle aabb = GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id), state_.map.cell_size);
             if (CheckCollisionPointRec(collision_sample, aabb)) {
                 hook.target_pos = sample;
                 hook.latch_point = sample;
@@ -4597,7 +5104,7 @@ void GameApp::HandleMeleeHit(Player& attacker) {
             continue;
         }
 
-        const Rectangle aabb = GetMapObjectCollisionAabb(object, state_.map.cell_size);
+        const Rectangle aabb = GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id), state_.map.cell_size);
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
         if (!CollisionWorld::CircleVsAabb(hit_center, Constants::kMeleeHitRadius, aabb, normal, penetration)) {
@@ -4653,9 +5160,6 @@ void GameApp::HandleEventsHost() {
 }
 
 bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
-    if (player.rune_place_cooldown_remaining > 0.0f) {
-        return false;
-    }
     if (player.selected_rune_type == RuneType::None) {
         return false;
     }
@@ -4692,6 +5196,9 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
     if (GetPlayerRuneCooldownRemaining(player, player.selected_rune_type) > 0.0f) {
         return false;
     }
+    if (RuneUsesCharges(player.selected_rune_type) && GetPlayerRuneChargeCount(player, player.selected_rune_type) <= 0) {
+        return false;
+    }
 
     Rune rune;
     rune.id = state_.next_entity_id++;
@@ -4723,22 +5230,11 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
     PlaySfxIfVisible(sfx_create_rune_.sound, sfx_create_rune_.loaded, cell_center);
 
     player.mana = std::max(0.0f, player.mana - mana_cost);
-    const float selected_cooldown = GetRuneCooldownSeconds(player.selected_rune_type);
-    for (RuneType rune_type : {RuneType::Fire, RuneType::Water, RuneType::Catalyst, RuneType::Earth,
-                               RuneType::FireStormDummy}) {
-        if (rune_type == player.selected_rune_type) {
-            SetPlayerRuneCooldown(player, rune_type, selected_cooldown, selected_cooldown);
-            continue;
-        }
-
-        const float clamped_remaining =
-            std::max(GetPlayerRuneCooldownRemaining(player, rune_type), Constants::kRuneMinCrossCooldownSeconds);
-        const float clamped_total =
-            std::max(GetPlayerRuneCooldownTotal(player, rune_type), Constants::kRuneMinCrossCooldownSeconds);
-        SetPlayerRuneCooldown(player, rune_type, clamped_remaining, clamped_total);
+    if (RuneUsesCharges(player.selected_rune_type)) {
+        SetPlayerRuneChargeCount(player, player.selected_rune_type,
+                                 GetPlayerRuneChargeCount(player, player.selected_rune_type) - 1);
     }
-    player.rune_place_cooldown_duration = selected_cooldown;
-    player.rune_place_cooldown_remaining = selected_cooldown;
+    ApplyRuneCooldownsAfterCast(player, player.selected_rune_type);
     player.rune_placing_mode = false;
     return true;
 }
@@ -4746,22 +5242,7 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
 bool GameApp::TryPlaceFireStormDummy(Player& player, const GridCoord& cell) {
     SpawnFireStormDummyAtCell(player.id, player.team, cell, -1.0f);
 
-    const float selected_cooldown = GetRuneCooldownSeconds(player.selected_rune_type);
-    for (RuneType rune_type : {RuneType::Fire, RuneType::Water, RuneType::Catalyst, RuneType::Earth,
-                               RuneType::FireStormDummy}) {
-        if (rune_type == player.selected_rune_type) {
-            SetPlayerRuneCooldown(player, rune_type, selected_cooldown, selected_cooldown);
-            continue;
-        }
-
-        const float clamped_remaining =
-            std::max(GetPlayerRuneCooldownRemaining(player, rune_type), Constants::kRuneMinCrossCooldownSeconds);
-        const float clamped_total =
-            std::max(GetPlayerRuneCooldownTotal(player, rune_type), Constants::kRuneMinCrossCooldownSeconds);
-        SetPlayerRuneCooldown(player, rune_type, clamped_remaining, clamped_total);
-    }
-    player.rune_place_cooldown_duration = selected_cooldown;
-    player.rune_place_cooldown_remaining = selected_cooldown;
+    ApplyRuneCooldownsAfterCast(player, player.selected_rune_type);
     player.rune_placing_mode = false;
     return true;
 }
@@ -5042,11 +5523,194 @@ void GameApp::RenderWorld() {
 
     BeginMode2D(camera_);
     RenderMap();
+    EndMode2D();
+
+    BeginMode2D(camera_);
+    RenderMapForeground();
+    EndMode2D();
+
+    BeginMode2D(camera_);
+    RenderGroundMapObjects();
+    EndMode2D();
+
+    RenderObjectShadows();
+
+    BeginMode2D(camera_);
     RenderNonTerrainDepthSorted();
+    RenderPlayerOverlays();
     RenderMeleeAttacks();
     RenderDamagePopups();
     RenderRunePlacementOverlay();
     EndMode2D();
+}
+
+void GameApp::EnsureShadowLayerRenderTarget() {
+    const int width = GetScreenWidth();
+    const int height = GetScreenHeight();
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    if (has_shadow_layer_target_ && shadow_layer_target_.texture.width == width &&
+        shadow_layer_target_.texture.height == height) {
+        return;
+    }
+    if (has_shadow_layer_target_) {
+        UnloadRenderTexture(shadow_layer_target_);
+        shadow_layer_target_ = {};
+        has_shadow_layer_target_ = false;
+    }
+
+    shadow_layer_target_ = LoadRenderTexture(width, height);
+    has_shadow_layer_target_ = (shadow_layer_target_.id != 0);
+    if (has_shadow_layer_target_) {
+        SetTextureFilter(shadow_layer_target_.texture, TEXTURE_FILTER_POINT);
+    }
+}
+
+void GameApp::RenderGroundMapObjects() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
+    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
+    const bool has_huge_texture = sprite_metadata_128x128_.IsLoaded();
+    const Texture2D huge_texture = sprite_metadata_128x128_.GetTexture();
+
+    for (const auto& object : state_.map_objects) {
+        if (!object.alive || !IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
+            continue;
+        }
+
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        if (proto == nullptr) {
+            continue;
+        }
+
+        const SpriteMetadataLoader* metadata = &sprite_metadata_;
+        const Texture2D* draw_texture = has_texture ? &texture : nullptr;
+        switch (proto->shadow_sheet) {
+            case SpriteSheetType::Base32:
+                metadata = &sprite_metadata_;
+                draw_texture = has_texture ? &texture : nullptr;
+                break;
+            case SpriteSheetType::Tall32x64:
+                metadata = &sprite_metadata_tall_;
+                draw_texture = has_tall_texture ? &tall_texture : nullptr;
+                break;
+            case SpriteSheetType::Large128x128:
+                metadata = &sprite_metadata_128x128_;
+                draw_texture = has_huge_texture ? &huge_texture : nullptr;
+                break;
+        }
+
+        const float dst_w = static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
+        const float dst_h = static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+        Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
+                         static_cast<float>(object.cell.y * state_.map.cell_size) -
+                             (dst_h - static_cast<float>(state_.map.cell_size)),
+                         dst_w, dst_h};
+        dst = SnapRect(dst);
+
+        std::string animation = proto->idle_animation;
+        float anim_time = render_time_seconds_;
+        if (object.state == MapObjectState::Dying && !proto->death_animation.empty() && metadata->HasAnimation(proto->death_animation)) {
+            animation = proto->death_animation;
+            anim_time = object.state_time;
+        }
+
+        if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
+            const Rectangle src =
+                InsetSourceRect(metadata->GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
+            DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+        } else {
+            DrawRectangleRec(dst, Color{180, 120, 80, 220});
+            DrawRectangleLinesEx(dst, 1.0f, Color{30, 20, 12, 255});
+        }
+    }
+}
+
+void GameApp::RenderObjectShadows() {
+    EnsureShadowLayerRenderTarget();
+    if (!has_shadow_layer_target_) {
+        return;
+    }
+
+    BeginTextureMode(shadow_layer_target_);
+    ClearBackground(Color{0, 0, 0, 0});
+    BeginMode2D(camera_);
+
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
+    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
+    const bool has_huge_texture = sprite_metadata_128x128_.IsLoaded();
+    const Texture2D huge_texture = sprite_metadata_128x128_.GetTexture();
+
+    for (const auto& object : state_.map_objects) {
+        if (!object.alive) {
+            continue;
+        }
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        if (proto == nullptr || proto->shadow_animation.empty()) {
+            continue;
+        }
+
+        const SpriteMetadataLoader* metadata = &sprite_metadata_;
+        const Texture2D* draw_texture = has_texture ? &texture : nullptr;
+        switch (proto->shadow_sheet) {
+            case SpriteSheetType::Base32:
+                metadata = &sprite_metadata_;
+                draw_texture = has_texture ? &texture : nullptr;
+                break;
+            case SpriteSheetType::Tall32x64:
+                metadata = &sprite_metadata_tall_;
+                draw_texture = has_tall_texture ? &tall_texture : nullptr;
+                break;
+            case SpriteSheetType::Large128x128:
+                metadata = &sprite_metadata_128x128_;
+                draw_texture = has_huge_texture ? &huge_texture : nullptr;
+                break;
+        }
+        if (draw_texture == nullptr || !metadata->IsLoaded() || !metadata->HasAnimation(proto->shadow_animation)) {
+            continue;
+        }
+
+        int object_cell_width = state_.map.cell_size;
+        switch (proto->sprite_sheet) {
+            case SpriteSheetType::Base32:
+                object_cell_width = sprite_metadata_.GetCellWidth() > 0 ? sprite_metadata_.GetCellWidth() : state_.map.cell_size;
+                break;
+            case SpriteSheetType::Tall32x64:
+                object_cell_width =
+                    sprite_metadata_tall_.GetCellWidth() > 0 ? sprite_metadata_tall_.GetCellWidth() : state_.map.cell_size;
+                break;
+            case SpriteSheetType::Large128x128:
+                object_cell_width = sprite_metadata_128x128_.GetCellWidth() > 0 ? sprite_metadata_128x128_.GetCellWidth()
+                                                                                : state_.map.cell_size;
+                break;
+        }
+
+        const float dst_w = static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
+        const float dst_h = static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+        Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size) +
+                             (static_cast<float>(object_cell_width) - dst_w) * 0.5f,
+                         static_cast<float>(object.cell.y * state_.map.cell_size) -
+                             (dst_h - static_cast<float>(state_.map.cell_size)),
+                         dst_w, dst_h};
+        dst = SnapRect(dst);
+
+        const Rectangle src = InsetSourceRect(
+            metadata->GetFrame(proto->shadow_animation, "default", render_time_seconds_),
+            Constants::kAtlasSampleInsetPixels);
+        DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+    }
+
+    EndMode2D();
+    EndTextureMode();
+
+    const Rectangle src = {0.0f, 0.0f, static_cast<float>(shadow_layer_target_.texture.width),
+                           -static_cast<float>(shadow_layer_target_.texture.height)};
+    const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+    DrawTexturePro(shadow_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, Color{255, 255, 255, 85});
 }
 
 void GameApp::RenderNonTerrainDepthSorted() {
@@ -5150,11 +5814,11 @@ void GameApp::RenderNonTerrainDepthSorted() {
 
     for (size_t i = 0; i < state_.map_objects.size(); ++i) {
         const MapObjectInstance& object = state_.map_objects[i];
-        if (!object.alive) {
+        if (!object.alive || IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
             continue;
         }
-        items.push_back({RenderKind::MapObject, (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size),
-                         i});
+        const float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
+        items.push_back({RenderKind::MapObject, sort_y, i});
     }
 
     for (size_t i = 0; i < state_.composite_effects.size(); ++i) {
@@ -5358,6 +6022,8 @@ void GameApp::RenderNonTerrainDepthSorted() {
     const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
     const bool has_large_texture = sprite_metadata_96x96_.IsLoaded();
     const Texture2D large_texture = sprite_metadata_96x96_.GetTexture();
+    const bool has_huge_texture = sprite_metadata_128x128_.IsLoaded();
+    const Texture2D huge_texture = sprite_metadata_128x128_.GetTexture();
 
     const auto get_metadata = [&](CompositeEffectSheet sheet) -> const SpriteMetadataLoader* {
         switch (sheet) {
@@ -5416,10 +6082,24 @@ void GameApp::RenderNonTerrainDepthSorted() {
                     break;
                 }
 
-                const bool use_tall = proto->sprite_sheet == SpriteSheetType::Tall32x64;
-                const SpriteMetadataLoader& metadata = use_tall ? sprite_metadata_tall_ : sprite_metadata_;
-                const float dst_w = static_cast<float>(metadata.GetCellWidth() > 0 ? metadata.GetCellWidth() : state_.map.cell_size);
-                const float dst_h = static_cast<float>(metadata.GetCellHeight() > 0 ? metadata.GetCellHeight() : state_.map.cell_size);
+                const SpriteMetadataLoader* metadata = &sprite_metadata_;
+                const Texture2D* draw_texture = has_texture ? &texture : nullptr;
+                switch (proto->sprite_sheet) {
+                    case SpriteSheetType::Base32:
+                        metadata = &sprite_metadata_;
+                        draw_texture = has_texture ? &texture : nullptr;
+                        break;
+                    case SpriteSheetType::Tall32x64:
+                        metadata = &sprite_metadata_tall_;
+                        draw_texture = has_tall_texture ? &tall_texture : nullptr;
+                        break;
+                    case SpriteSheetType::Large128x128:
+                        metadata = &sprite_metadata_128x128_;
+                        draw_texture = has_huge_texture ? &huge_texture : nullptr;
+                        break;
+                }
+                const float dst_w = static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
+                const float dst_h = static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
                 Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
                                  static_cast<float>(object.cell.y * state_.map.cell_size) -
                                      (dst_h - static_cast<float>(state_.map.cell_size)),
@@ -5429,16 +6109,17 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 std::string animation = proto->idle_animation;
                 float anim_time = render_time_seconds_;
                 if (object.state == MapObjectState::Dying && !proto->death_animation.empty() &&
-                    metadata.HasAnimation(proto->death_animation)) {
+                    metadata->HasAnimation(proto->death_animation)) {
                     animation = proto->death_animation;
                     anim_time = object.state_time;
                 }
 
-                if (metadata.IsLoaded() && metadata.HasAnimation(animation)) {
-                    const Texture2D draw_texture = use_tall ? tall_texture : texture;
+                if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
                     const Rectangle src =
-                        InsetSourceRect(metadata.GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
-                    DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                        InsetSourceRect(metadata->GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
+                    if (!proto->masked_occluder || !DrawMaskedOccluder(dst, *draw_texture, src, item.sort_y)) {
+                        DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                    }
                 } else {
                     DrawRectangleRec(dst, Color{180, 120, 80, 220});
                     DrawRectangleLinesEx(dst, 1.0f, Color{30, 20, 12, 255});
@@ -5888,37 +6569,27 @@ void GameApp::RenderMap() {
 
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
-    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
-    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
-    const bool has_large_texture = sprite_metadata_96x96_.IsLoaded();
-    const Texture2D large_texture = sprite_metadata_96x96_.GetTexture();
-
-    const auto get_metadata = [&](CompositeEffectSheet sheet) -> const SpriteMetadataLoader* {
-        switch (sheet) {
-            case CompositeEffectSheet::Base32:
-                return &sprite_metadata_;
-            case CompositeEffectSheet::Tall32x64:
-                return &sprite_metadata_tall_;
-            case CompositeEffectSheet::Large96x96:
-                return &sprite_metadata_96x96_;
-        }
-        return &sprite_metadata_;
-    };
-    const auto get_texture = [&](CompositeEffectSheet sheet) -> const Texture2D* {
-        switch (sheet) {
-            case CompositeEffectSheet::Base32:
-                return has_texture ? &texture : nullptr;
-            case CompositeEffectSheet::Tall32x64:
-                return has_tall_texture ? &tall_texture : nullptr;
-            case CompositeEffectSheet::Large96x96:
-                return has_large_texture ? &large_texture : nullptr;
-        }
-        return nullptr;
-    };
     const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
-    const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
     const bool has_water_animation = has_texture && sprite_metadata_.HasAnimation("tile_water");
-    const bool has_zone_overlay = has_texture && sprite_metadata_.HasAnimation("zone");
+    if (has_water_gradient_shader_) {
+        const float screen_height = static_cast<float>(GetScreenHeight());
+        const float gradient_start[4] = {
+            static_cast<float>(Constants::kWaterOverlayStartR) / 255.0f,
+            static_cast<float>(Constants::kWaterOverlayStartG) / 255.0f,
+            static_cast<float>(Constants::kWaterOverlayStartB) / 255.0f,
+            static_cast<float>(Constants::kWaterOverlayStartA) / 255.0f,
+        };
+        const float gradient_end[4] = {
+            static_cast<float>(Constants::kWaterOverlayEndR) / 255.0f,
+            static_cast<float>(Constants::kWaterOverlayEndG) / 255.0f,
+            static_cast<float>(Constants::kWaterOverlayEndB) / 255.0f,
+            static_cast<float>(Constants::kWaterOverlayEndA) / 255.0f,
+        };
+        SetShaderValue(water_gradient_shader_, water_gradient_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+        SetShaderValueV(water_gradient_shader_, water_gradient_start_loc_, gradient_start, SHADER_UNIFORM_VEC4, 1);
+        SetShaderValueV(water_gradient_shader_, water_gradient_end_loc_, gradient_end, SHADER_UNIFORM_VEC4, 1);
+        BeginShaderMode(water_gradient_shader_);
+    }
     const auto is_grass_family = [](TileType tile) {
         return tile == TileType::Grass || tile == TileType::SpawnPoint;
     };
@@ -6003,6 +6674,155 @@ void GameApp::RenderMap() {
             const Rectangle dst = SnapRect(
                 {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
                  static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
+
+            if (has_texture && has_grass_dual_grid) {
+                const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
+                const Rectangle terrain_dst =
+                    SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
+
+                const int mask = compute_grass_dual_grid_mask(x, y);
+                Rectangle src = {};
+                if (sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_, SpriteFrameLayer::Water,
+                                                      src)) {
+                    DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
+                                   0.0f, WHITE);
+                } else if (has_water_animation) {
+                    const Rectangle water_src = InsetSourceRect(
+                        sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
+                        Constants::kAtlasSampleInsetPixels);
+                    DrawTexturePro(texture, water_src, terrain_dst, {0, 0}, 0.0f, WHITE);
+                } else {
+                    DrawRectangleRec(terrain_dst, Color{26, 96, 152, 255});
+                }
+            } else if (has_texture && tile == TileType::Water) {
+                const Vector2 tile_center = {dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f};
+                const bool dimmed = IsOutsideArena(tile_center);
+                const Color tint = dimmed ? Color{static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
+                                                  static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
+                                                  static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
+                                                  255}
+                                          : WHITE;
+                const Rectangle src = InsetSourceRect(
+                    sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
+                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+            } else {
+                if (tile == TileType::Water) {
+                    Color fallback = Color{26, 96, 152, 255};
+                    const Vector2 tile_center = {dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f};
+                    if (IsOutsideArena(tile_center)) {
+                        fallback = Color{
+                            static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
+                            static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
+                            static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness), 255};
+                    }
+                    DrawRectangleRec(dst, fallback);
+                }
+            }
+        }
+    }
+
+    if (has_water_gradient_shader_) {
+        EndShaderMode();
+    }
+}
+
+void GameApp::RenderMapForeground() {
+    if (state_.map.width <= 0 || state_.map.height <= 0) {
+        return;
+    }
+
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
+    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
+    const bool has_large_texture = sprite_metadata_96x96_.IsLoaded();
+    const Texture2D large_texture = sprite_metadata_96x96_.GetTexture();
+    const auto get_metadata = [&](CompositeEffectSheet sheet) -> const SpriteMetadataLoader* {
+        switch (sheet) {
+            case CompositeEffectSheet::Base32:
+                return &sprite_metadata_;
+            case CompositeEffectSheet::Tall32x64:
+                return &sprite_metadata_tall_;
+            case CompositeEffectSheet::Large96x96:
+                return &sprite_metadata_96x96_;
+        }
+        return &sprite_metadata_;
+    };
+    const auto get_texture = [&](CompositeEffectSheet sheet) -> const Texture2D* {
+        switch (sheet) {
+            case CompositeEffectSheet::Base32:
+                return has_texture ? &texture : nullptr;
+            case CompositeEffectSheet::Tall32x64:
+                return has_tall_texture ? &tall_texture : nullptr;
+            case CompositeEffectSheet::Large96x96:
+                return has_large_texture ? &large_texture : nullptr;
+        }
+        return nullptr;
+    };
+    const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
+    const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
+    const bool has_zone_overlay = has_texture && sprite_metadata_.HasAnimation("zone");
+    const auto is_grass_family = [](TileType tile) {
+        return tile == TileType::Grass || tile == TileType::SpawnPoint;
+    };
+    const auto sample_grass_for_dual_grid = [&](int x, int y) {
+        if (state_.map.width <= 0 || state_.map.height <= 0) {
+            return false;
+        }
+        x = std::clamp(x, 0, state_.map.width - 1);
+        y = std::clamp(y, 0, state_.map.height - 1);
+        return is_grass_family(state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)]);
+    };
+    const auto compute_grass_dual_grid_mask = [&](int x, int y) {
+        int mask = 0;
+        if (sample_grass_for_dual_grid(x, y)) {
+            mask |= 1;
+        }
+        if (sample_grass_for_dual_grid(x + 1, y)) {
+            mask |= 2;
+        }
+        if (sample_grass_for_dual_grid(x + 1, y + 1)) {
+            mask |= 4;
+        }
+        if (sample_grass_for_dual_grid(x, y + 1)) {
+            mask |= 8;
+        }
+        return mask;
+    };
+    const auto compute_grass_bitmask = [&](int x, int y) {
+        int mask = 0;
+        const GridCoord north = {x, y - 1};
+        const GridCoord west = {x - 1, y};
+        const GridCoord east = {x + 1, y};
+        const GridCoord south = {x, y + 1};
+        const GridCoord north_west = {x - 1, y - 1};
+        const GridCoord north_east = {x + 1, y - 1};
+        const GridCoord south_west = {x - 1, y + 1};
+        const GridCoord south_east = {x + 1, y + 1};
+
+        const bool has_n = state_.map.IsInside(north) && is_grass_family(state_.map.GetTile(north));
+        const bool has_w = state_.map.IsInside(west) && is_grass_family(state_.map.GetTile(west));
+        const bool has_e = state_.map.IsInside(east) && is_grass_family(state_.map.GetTile(east));
+        const bool has_s = state_.map.IsInside(south) && is_grass_family(state_.map.GetTile(south));
+
+        if (has_n) mask |= 2;
+        if (has_w) mask |= 8;
+        if (has_e) mask |= 16;
+        if (has_s) mask |= 64;
+        if (has_n && has_w && state_.map.IsInside(north_west) && is_grass_family(state_.map.GetTile(north_west))) mask |= 1;
+        if (has_n && has_e && state_.map.IsInside(north_east) && is_grass_family(state_.map.GetTile(north_east))) mask |= 4;
+        if (has_s && has_w && state_.map.IsInside(south_west) && is_grass_family(state_.map.GetTile(south_west))) mask |= 32;
+        if (has_s && has_e && state_.map.IsInside(south_east) && is_grass_family(state_.map.GetTile(south_east))) mask |= 128;
+        return mask;
+    };
+
+    for (int y = 0; y < state_.map.height; ++y) {
+        for (int x = 0; x < state_.map.width; ++x) {
+            const TileType tile = state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)];
+            const Rectangle dst = SnapRect(
+                {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
+                 static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
             const Vector2 tile_center = {dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f};
             const bool dimmed = IsOutsideArena(tile_center);
             const Color tint = dimmed ? Color{static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
@@ -6029,36 +6849,17 @@ void GameApp::RenderMap() {
                 const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
                 const Rectangle terrain_dst =
                     SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
-
-                if (has_water_animation) {
-                    const Rectangle water_src = InsetSourceRect(
-                        sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
-                        Constants::kAtlasSampleInsetPixels);
-                    DrawTexturePro(texture, water_src, terrain_dst, {0, 0}, 0.0f, WHITE);
-                } else {
-                    DrawRectangleRec(terrain_dst, Color{26, 96, 152, 255});
-                }
-
                 const int mask = compute_grass_dual_grid_mask(x, y);
-                const bool has_background =
-                    sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Background);
-                const bool has_foreground =
-                    sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Foreground);
+                const bool has_land = sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Land);
 
                 Rectangle src = {};
-                if (has_background &&
-                    sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_,
-                                                      SpriteFrameLayer::Background, src)) {
+                if (has_land &&
+                    sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_, SpriteFrameLayer::Land,
+                                                      src)) {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
                                    0.0f, WHITE);
                 }
-                if (has_foreground &&
-                    sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_,
-                                                      SpriteFrameLayer::Foreground, src)) {
-                    DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
-                                   0.0f, WHITE);
-                }
-                if (!has_background && !has_foreground &&
+                if (!has_land &&
                     sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_, SpriteFrameLayer::Single,
                                                       src)) {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
@@ -6066,7 +6867,6 @@ void GameApp::RenderMap() {
                 }
 
                 draw_zone_overlay();
-
                 if (tile == TileType::SpawnPoint) {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                 Color{240, 240, 240, 180});
@@ -6109,21 +6909,21 @@ void GameApp::RenderMap() {
                                 Color{240, 240, 240, 180});
                 }
                 draw_zone_overlay();
-            } else if (has_texture && tile == TileType::Water) {
-                const Rectangle src = InsetSourceRect(
-                    sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
-                    Constants::kAtlasSampleInsetPixels);
-                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
-                draw_zone_overlay();
             } else {
-                Color fallback = Color{34, 120, 34, 255};
-                if (tile == TileType::Water) fallback = Color{26, 96, 152, 255};
-                if (dimmed) {
-                    fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
-                                     static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
-                                     static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness), 255};
+                if (!has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
+                    Color fallback = Color{34, 120, 34, 255};
+                    if (dimmed) {
+                        fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
+                                         static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
+                                         static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness),
+                                         255};
+                    }
+                    DrawRectangleRec(dst, fallback);
+                    if (tile == TileType::SpawnPoint) {
+                        DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
+                                    Color{240, 240, 240, 180});
+                    }
                 }
-                DrawRectangleRec(dst, fallback);
                 draw_zone_overlay();
             }
         }
@@ -6397,16 +7197,44 @@ void GameApp::RenderPlayers() {
             const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
             DrawCircleV(draw_pos, player.radius, fallback);
         }
+    }
+}
 
-        const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
-                                static_cast<unsigned char>(Constants::kPlayerHealthBarFillG),
-                                static_cast<unsigned char>(Constants::kPlayerHealthBarFillB), 255};
-        const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
-                                   static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
-                                   static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
+void GameApp::RenderPlayerOverlays() {
+    struct OverlayItem {
+        float sort_y = 0.0f;
+        const Player* player = nullptr;
+    };
 
-        Rectangle health_bar = {sprite_rect.x, sprite_rect.y - Constants::kPlayerHealthBarOffsetY, Constants::kPlayerHealthBarWidth,
-                                Constants::kPlayerHealthBarHeight};
+    std::vector<OverlayItem> overlays;
+    overlays.reserve(state_.players.size());
+    for (const auto& player : state_.players) {
+        if (!player.alive) {
+            continue;
+        }
+        const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+        overlays.push_back({draw_pos.y + 16.0f, &player});
+    }
+
+    std::sort(overlays.begin(), overlays.end(), [](const OverlayItem& a, const OverlayItem& b) {
+        return a.sort_y < b.sort_y;
+    });
+
+    const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
+                            static_cast<unsigned char>(Constants::kPlayerHealthBarFillG),
+                            static_cast<unsigned char>(Constants::kPlayerHealthBarFillB), 255};
+    const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
+                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
+                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
+
+    for (const OverlayItem& overlay : overlays) {
+        const Player& player = *overlay.player;
+        const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+        Rectangle sprite_rect = {draw_pos.x - 16.0f, draw_pos.y - 16.0f, 32.0f, 32.0f};
+        sprite_rect = SnapRect(sprite_rect);
+
+        Rectangle health_bar = {sprite_rect.x, sprite_rect.y - Constants::kPlayerHealthBarOffsetY,
+                                Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
         health_bar = SnapRect(health_bar);
         DrawRectangleRec(health_bar, bar_missing);
 
@@ -6418,15 +7246,7 @@ void GameApp::RenderPlayers() {
                 DrawRectangleRec(fill, bar_fill);
             }
         }
-        DrawRectangleLinesEx(health_bar, 10.0f, BLACK);
-
-        const int font_size = Constants::kPlayerHealthTextFontSize;
-        const char* hp_text = TextFormat("%d", std::max(0, player.hp));
-        const int text_width = MeasureText(hp_text, font_size);
-        const int text_x = static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(text_width)) * 0.5f);
-        const int text_y =
-            static_cast<int>(health_bar.y + (health_bar.height - static_cast<float>(font_size)) * 0.5f);
-        DrawText(hp_text, text_x, text_y, font_size, BLACK);
+        DrawRectangleLinesEx(health_bar, 1.0f, BLACK);
 
         if (player.id != state_.local_player_id && !player.name.empty()) {
             const int name_font_size = 8;
@@ -6823,18 +7643,44 @@ void GameApp::RenderBottomHud() {
                     InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
                                     Constants::kAtlasSampleInsetPixels);
                 const bool low_mana = local_player->mana < GetRuneManaCost(rune_type);
+                const bool missing_charge = RuneUsesCharges(rune_type) && GetPlayerRuneChargeCount(*local_player, rune_type) <= 0;
                 const Color tint =
-                    low_mana ? Color{static_cast<unsigned char>(Constants::kHudLowManaTintR),
-                                     static_cast<unsigned char>(Constants::kHudLowManaTintG),
-                                     static_cast<unsigned char>(Constants::kHudLowManaTintB),
-                                     static_cast<unsigned char>(255.0f * Constants::kHudLowManaBrightness)}
-                             : WHITE;
+                    (low_mana || missing_charge)
+                        ? Color{static_cast<unsigned char>(Constants::kHudLowManaTintR),
+                                static_cast<unsigned char>(Constants::kHudLowManaTintG),
+                                static_cast<unsigned char>(Constants::kHudLowManaTintB),
+                                static_cast<unsigned char>(255.0f * Constants::kHudLowManaBrightness)}
+                        : WHITE;
                 const float base_icon_size = std::min(slot.width - 8.0f * scale, slot.height - 18.0f * scale);
                 const float icon_size =
                     std::min({slot.width - 2.0f * scale, slot.height - 10.0f * scale, base_icon_size * 1.2f});
                 Rectangle icon_dst = {slot.x + (slot.width - icon_size) * 0.5f, slot.y + 9.0f * scale, icon_size,
                                       icon_size};
                 DrawTexturePro(sprite_metadata_.GetTexture(), src, SnapRect(icon_dst), {0, 0}, 0.0f, tint);
+            }
+
+            const float charge_y = slot.y + slot.height - 12.0f * scale;
+            if (RuneUsesCharges(rune_type)) {
+                const int charge_count = GetPlayerRuneChargeCount(*local_player, rune_type);
+                const int charge_font_size = static_cast<int>(std::roundf(9.0f * scale));
+                const char* charge_text = TextFormat("%d", charge_count);
+                DrawText(charge_text,
+                         static_cast<int>(slot.x + slot.width - 14.0f * scale),
+                         static_cast<int>(charge_y),
+                         charge_font_size,
+                         WHITE);
+            } else if (rune_type != RuneType::None) {
+                const Color infinity_color = Color{220, 224, 234, 255};
+                const float center_y = charge_y + 4.0f * scale;
+                const float left_x = slot.x + slot.width * 0.38f;
+                const float right_x = slot.x + slot.width * 0.62f;
+                const float radius = 3.0f * scale;
+                DrawCircleLines(static_cast<int>(std::roundf(left_x)), static_cast<int>(std::roundf(center_y)),
+                                radius, infinity_color);
+                DrawCircleLines(static_cast<int>(std::roundf(right_x)), static_cast<int>(std::roundf(center_y)),
+                                radius, infinity_color);
+                DrawLineEx({left_x + radius * 0.7f, center_y}, {right_x - radius * 0.7f, center_y},
+                           std::max(1.0f, scale * 0.6f), infinity_color);
             }
 
             const float remaining = GetPlayerRuneCooldownRemaining(*local_player, rune_type);
@@ -6906,6 +7752,27 @@ void GameApp::RenderBottomHud() {
                        std::max(1.0f, scale * 0.75f), Color{90, 100, 120, 255});
         }
     }
+}
+
+void GameApp::RenderFpsCounter() {
+    if (!show_network_debug_panel_) {
+        return;
+    }
+
+    const int fps = GetFPS();
+    const int font_size = 18;
+    const std::string text = TextFormat("FPS: %d", fps);
+    const int text_width = MeasureText(text.c_str(), font_size);
+    const float padding = 12.0f;
+    const float box_width = static_cast<float>(text_width) + 16.0f;
+    const float box_height = 28.0f;
+    const float x = static_cast<float>(GetScreenWidth()) - box_width - padding;
+    const float y = padding;
+    const Rectangle panel = {x, y, box_width, box_height};
+
+    DrawRectangleRec(panel, Color{20, 24, 30, 220});
+    DrawRectangleLinesEx(panel, 1.0f, Color{70, 82, 104, 255});
+    DrawText(text.c_str(), static_cast<int>(x + 8.0f), static_cast<int>(y + 6.0f), font_size, RAYWHITE);
 }
 
 void GameApp::RenderNetworkDebugPanel() {

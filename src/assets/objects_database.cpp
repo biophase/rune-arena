@@ -22,6 +22,7 @@ SpriteSheetType ParseSpriteSheetType(const std::string& value, bool& ok) {
     ok = true;
     if (value == "base32") return SpriteSheetType::Base32;
     if (value == "tall32x64") return SpriteSheetType::Tall32x64;
+    if (value == "large128x128") return SpriteSheetType::Large128x128;
     ok = false;
     return SpriteSheetType::Base32;
 }
@@ -29,6 +30,7 @@ SpriteSheetType ParseSpriteSheetType(const std::string& value, bool& ok) {
 EffectType ParseEffectType(const std::string& value, bool& ok) {
     ok = true;
     if (value == "increase_current_health") return EffectType::IncreaseCurrentHealth;
+    if (value == "increase_current_mana") return EffectType::IncreaseCurrentMana;
     if (value == "spawn_object") return EffectType::SpawnObject;
     ok = false;
     return EffectType::IncreaseCurrentHealth;
@@ -131,9 +133,21 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
             TraceLog(LOG_ERROR, "ObjectsDatabase: %s (id=%s)", last_error_.c_str(), proto.id.c_str());
             return false;
         }
+        proto.shadow_sheet = proto.sprite_sheet;
+        const std::string shadow_sheet_str = sprite_it->value("shadow_sheet", "");
+        if (!shadow_sheet_str.empty()) {
+            bool shadow_sheet_ok = false;
+            proto.shadow_sheet = ParseSpriteSheetType(shadow_sheet_str, shadow_sheet_ok);
+            if (!shadow_sheet_ok) {
+                last_error_ = "unknown shadow sprite sheet type '" + shadow_sheet_str + "'";
+                TraceLog(LOG_ERROR, "ObjectsDatabase: %s (id=%s)", last_error_.c_str(), proto.id.c_str());
+                return false;
+            }
+        }
 
         proto.idle_animation = sprite_it->value("idle", "");
         proto.death_animation = sprite_it->value("death", "");
+        proto.shadow_animation = sprite_it->value("shadow", "");
         if (proto.idle_animation.empty()) {
             last_error_ = "missing sprite.idle animation key";
             TraceLog(LOG_ERROR, "ObjectsDatabase: %s (id=%s)", last_error_.c_str(), proto.id.c_str());
@@ -142,6 +156,15 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
 
         proto.walkable = it.value().value("walkable", true);
         proto.stops_projectiles = it.value().value("stops_projectiles", false);
+        proto.masked_occluder = it.value().value("masked_occluder", false);
+        if (const auto collision_box_it = it.value().find("collision_box");
+            collision_box_it != it.value().end() && collision_box_it->is_object()) {
+            proto.collision_box_x = collision_box_it->value("x", 0);
+            proto.collision_box_y = collision_box_it->value("y", 0);
+            proto.collision_box_w = collision_box_it->value("w", 0);
+            proto.collision_box_h = collision_box_it->value("h", 0);
+            proto.has_collision_box_override = proto.collision_box_w > 0 && proto.collision_box_h > 0;
+        }
 
         const auto map_key_it = it.value().find("map_key");
         if (map_key_it != it.value().end() && !map_key_it->is_null()) {
@@ -246,7 +269,8 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
                             return false;
                         }
 
-                        if (spec.type == EffectType::IncreaseCurrentHealth) {
+                        if (spec.type == EffectType::IncreaseCurrentHealth ||
+                            spec.type == EffectType::IncreaseCurrentMana) {
                             spec.amount = effect_json.value("amount", 0);
                         } else if (spec.type == EffectType::SpawnObject) {
                             spec.object_id = effect_json.value("object_id", "");

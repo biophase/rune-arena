@@ -127,13 +127,13 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"melee_active_remaining", player.melee_active_remaining},
             {"rune_placing_mode", player.rune_placing_mode},
             {"selected_rune_type", player.selected_rune_type},
-            {"rune_place_cooldown_remaining", player.rune_place_cooldown_remaining},
             {"mana", Quantize2(player.mana)},
             {"max_mana", Quantize2(player.max_mana)},
             {"grappling_cooldown_remaining", Quantize2(player.grappling_cooldown_remaining)},
             {"grappling_cooldown_total", Quantize2(player.grappling_cooldown_total)},
             {"rune_cooldown_remaining", player.rune_cooldown_remaining},
             {"rune_cooldown_total", player.rune_cooldown_total},
+            {"rune_charge_counts", player.rune_charge_counts},
             {"status_effects", nlohmann::json::array()},
             {"item_slots", player.item_slots},
             {"item_slot_counts", player.item_slot_counts},
@@ -360,13 +360,13 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.melee_active_remaining = item.value("melee_active_remaining", 0.0f);
             player.rune_placing_mode = item.value("rune_placing_mode", false);
             player.selected_rune_type = item.value("selected_rune_type", 0);
-            player.rune_place_cooldown_remaining = item.value("rune_place_cooldown_remaining", 0.0f);
             player.mana = item.value("mana", 0.0f);
             player.max_mana = item.value("max_mana", 0.0f);
             player.grappling_cooldown_remaining = item.value("grappling_cooldown_remaining", 0.0f);
             player.grappling_cooldown_total = item.value("grappling_cooldown_total", 0.0f);
             player.rune_cooldown_remaining = item.value("rune_cooldown_remaining", std::vector<float>{});
             player.rune_cooldown_total = item.value("rune_cooldown_total", std::vector<float>{});
+            player.rune_charge_counts = item.value("rune_charge_counts", std::vector<int>{});
             const auto status_it = item.find("status_effects");
             if (status_it != item.end() && status_it->is_array()) {
                 for (const auto& status_item : *status_it) {

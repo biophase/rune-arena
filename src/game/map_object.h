@@ -15,10 +15,12 @@ enum class ObjectType {
 enum class SpriteSheetType {
     Base32,
     Tall32x64,
+    Large128x128,
 };
 
 enum class EffectType {
     IncreaseCurrentHealth,
+    IncreaseCurrentMana,
     SpawnObject,
 };
 
@@ -47,11 +49,19 @@ struct ObjectPrototype {
     unsigned char map_b = 0;
 
     SpriteSheetType sprite_sheet = SpriteSheetType::Base32;
+    SpriteSheetType shadow_sheet = SpriteSheetType::Base32;
     std::string idle_animation;
     std::string death_animation;
+    std::string shadow_animation;
 
     bool walkable = true;
     bool stops_projectiles = false;
+    bool masked_occluder = false;
+    bool has_collision_box_override = false;
+    int collision_box_x = 0;
+    int collision_box_y = 0;
+    int collision_box_w = 0;
+    int collision_box_h = 0;
 
     TileType terrain_tile = TileType::Grass;
     bool terrain_is_spawn_point = false;

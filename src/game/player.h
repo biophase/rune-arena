@@ -35,11 +35,10 @@ struct Player {
     bool rune_placing_mode = false;
     RuneType selected_rune_type = RuneType::Fire;
     int selected_rune_slot = 0;
-    float rune_place_cooldown_duration = Constants::kRunePlaceCooldownSeconds;
-    float rune_place_cooldown_remaining = 0.0f;
     std::array<RuneType, 4> rune_slots = {RuneType::Fire, RuneType::Water, RuneType::Catalyst, RuneType::Earth};
     std::array<float, 5> rune_cooldown_remaining = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     std::array<float, 5> rune_cooldown_total = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<int, 5> rune_charge_counts = {0, 0, 0, 0, 0};
 
     std::array<std::string, 4> item_slots = {"", "", "", ""};
     std::array<int, 4> item_slot_counts = {0, 0, 0, 0};

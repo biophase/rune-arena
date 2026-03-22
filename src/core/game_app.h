@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -103,6 +104,8 @@ class GameApp {
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
                                    float idle_lifetime_seconds);
     int SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell);
+    void RebuildAltarsFromMapObjects();
+    void UpdateAltars(float dt);
     void CheckSpellPatterns(const RunePlacedEvent& event);
 
     bool IsTileRunePlaceable(const GridCoord& cell) const;
@@ -125,7 +128,10 @@ class GameApp {
     bool TryActivateItemSlot(Player& player, int slot_index);
     bool TryActivateItemById(Player& player, const std::string& prototype_id);
     void ApplyImmediateHeal(Player& player, int amount);
+    void ApplyImmediateManaRestore(Player& player, int amount);
+    void CancelRegenerationStatuses(Player& player);
     void AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
+    void AddManaRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddStunnedStatus(Player& player, float duration_seconds);
     void RefreshOrAddRootedStatus(Player& player, int source_id);
     void RebuildInfluenceZones();
@@ -134,10 +140,15 @@ class GameApp {
 
     void RenderWorld();
     void RenderMap();
+    void RenderMapForeground();
+    void RenderGroundMapObjects();
+    void EnsureShadowLayerRenderTarget();
+    void RenderObjectShadows();
     void RenderNonTerrainDepthSorted();
     void RenderRunes();
     void RenderIceWalls();
     void RenderPlayers();
+    void RenderPlayerOverlays();
     void RenderMeleeAttacks();
     void RenderGrapplingHooks();
     void RenderProjectiles();
@@ -145,6 +156,7 @@ class GameApp {
     void RenderDamagePopups();
     void RenderRunePlacementOverlay();
     void RenderBottomHud();
+    void RenderFpsCounter();
     void RenderNetworkDebugPanel();
     void UpdateCameraTarget();
     Vector2 GetRenderPlayerPosition(int player_id) const;
@@ -157,6 +169,9 @@ class GameApp {
     void UpdateAudioFrame();
     void UpdateLocalFootstepAudio();
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
+    void LoadRenderShaders();
+    void UnloadRenderShaders();
+    bool DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y);
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
@@ -172,6 +187,7 @@ class GameApp {
     SpriteMetadataLoader sprite_metadata_;
     SpriteMetadataLoader sprite_metadata_tall_;
     SpriteMetadataLoader sprite_metadata_96x96_;
+    SpriteMetadataLoader sprite_metadata_128x128_;
     SpellPatternLoader spell_patterns_;
     SmokeEmitter smoke_emitter_;
 
@@ -219,8 +235,11 @@ class GameApp {
     std::string resolved_sprite_metadata_path_;
     std::string resolved_sprite_metadata_tall_path_;
     std::string resolved_sprite_metadata_96x96_path_;
+    std::string resolved_sprite_metadata_128x128_path_;
     std::string resolved_spell_pattern_path_;
     std::string resolved_menu_background_path_;
+    std::string resolved_occluder_reveal_shader_path_;
+    std::string resolved_water_gradient_shader_path_;
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;
     double connect_attempt_start_seconds_ = 0.0;
@@ -248,10 +267,32 @@ class GameApp {
     std::mt19937 visual_rng_;
     Texture2D menu_background_texture_ = {};
     bool has_menu_background_texture_ = false;
+    RenderTexture2D shadow_layer_target_ = {};
+    bool has_shadow_layer_target_ = false;
+    Shader occluder_reveal_shader_ = {};
+    bool has_occluder_reveal_shader_ = false;
+    Shader water_gradient_shader_ = {};
+    bool has_water_gradient_shader_ = false;
+    int occluder_reveal_count_loc_ = -1;
+    int occluder_reveal_data_loc_ = -1;
+    int occluder_reveal_screen_height_loc_ = -1;
+    int occluder_reveal_inside_alpha_loc_ = -1;
+    int occluder_reveal_source_rect_loc_ = -1;
+    int water_gradient_screen_height_loc_ = -1;
+    int water_gradient_start_loc_ = -1;
+    int water_gradient_end_loc_ = -1;
     float camera_shake_time_remaining_ = 0.0f;
     std::unordered_map<int, float> fire_storm_dummy_lightning_seconds_remaining_;
     std::unordered_map<int, float> fire_storm_dummy_lightning_cooldown_seconds_remaining_;
     std::unordered_map<int, bool> fire_storm_cast_impact_played_;
+    struct AltarInstance {
+        int output_object_id = -1;
+        GridCoord output_cell;
+        std::vector<int> slot_object_ids;
+        int required_slot_count = 0;
+        std::vector<int> fulfilled_slot_rune_ids;
+    };
+    std::vector<AltarInstance> altars_;
 
     bool audio_device_ready_ = false;
     LoadedSfx sfx_fireball_created_;
