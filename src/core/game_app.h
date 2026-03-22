@@ -130,6 +130,9 @@ class GameApp {
     void ApplyImmediateHeal(Player& player, int amount);
     void ApplyImmediateManaRestore(Player& player, int amount);
     void CancelRegenerationStatuses(Player& player);
+    void CancelInventoryDrag(Player& player);
+    void BeginInventoryDrag(Player& player, SlotFamily family, int slot_index);
+    void DropInventoryDrag(Player& player, SlotFamily family, int slot_index);
     void AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddManaRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddStunnedStatus(Player& player, float duration_seconds);
@@ -141,6 +144,8 @@ class GameApp {
     void RenderWorld();
     void RenderMap();
     void RenderMapForeground();
+    void RenderInfluenceZones();
+    void RenderGroundCompositeEffects();
     void RenderGroundMapObjects();
     void EnsureShadowLayerRenderTarget();
     void RenderObjectShadows();
@@ -158,6 +163,7 @@ class GameApp {
     void RenderBottomHud();
     void RenderFpsCounter();
     void RenderNetworkDebugPanel();
+    void RenderInGameMenu();
     void UpdateCameraTarget();
     Vector2 GetRenderPlayerPosition(int player_id) const;
     bool IsWorldPointInsideCameraView(Vector2 world_pos) const;
@@ -253,11 +259,20 @@ class GameApp {
     float render_time_seconds_ = 0.0f;
     bool force_windowed_launch_ = false;
     bool initial_fullscreen_setting_ = true;
+    bool request_app_exit_ = false;
     bool show_network_debug_panel_ = true;
     bool network_debug_panel_minimized_ = false;
+    bool in_game_menu_open_ = false;
+    enum class InGameMenuPage {
+        Home,
+        Settings,
+    };
+    InGameMenuPage in_game_menu_page_ = InGameMenuPage::Home;
 
     bool pending_primary_pressed_ = false;
     bool pending_grappling_pressed_ = false;
+    bool pending_escape_pressed_ = false;
+    bool escape_pressed_this_update_ = false;
     int pending_select_rune_slot_ = -1;
     int pending_activate_item_slot_ = -1;
     bool pending_toggle_inventory_mode_ = false;

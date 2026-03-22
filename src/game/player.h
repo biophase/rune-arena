@@ -50,6 +50,11 @@ struct Player {
     bool ui_dragging_slot = false;
     SlotFamily ui_drag_source_family = SlotFamily::Rune;
     int ui_drag_source_index = -1;
+    RuneType ui_drag_rune_type = RuneType::None;
+    std::string ui_drag_item_id;
+    int ui_drag_item_count = 0;
+    float ui_drag_item_cooldown_remaining = 0.0f;
+    float ui_drag_item_cooldown_total = 0.0f;
 
     float mana = Constants::kDefaultPlayerMaxMana;
     float max_mana = Constants::kDefaultPlayerMaxMana;

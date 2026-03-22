@@ -9,6 +9,7 @@
 struct MainMenuUiResult {
     bool request_host = false;
     bool request_join = false;
+    bool request_exit_app = false;
     std::string selected_host_ip;
     int selected_host_port = 0;
     bool settings_changed = false;

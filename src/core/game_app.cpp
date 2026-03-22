@@ -459,6 +459,18 @@ bool IsColumnPrototypeId(const std::string& prototype_id) {
     return prototype_id.rfind("column_", 0) == 0;
 }
 
+bool BlocksRunePlacementAtCell(const MapObjectInstance& object, const GridCoord& cell, const ObjectPrototype* proto) {
+    if (!object.alive || proto == nullptr || proto->walkable) {
+        return false;
+    }
+
+    if (object.prototype_id == "tree_1") {
+        return cell.y == object.cell.y && (cell.x == object.cell.x + 1 || cell.x == object.cell.x + 2);
+    }
+
+    return object.cell == cell;
+}
+
 bool IsGroundSortedMapObjectPrototypeId(const std::string& prototype_id) {
     return prototype_id == "altar_rune_slot_generic" || prototype_id == "altar_output_simple";
 }
@@ -547,6 +559,7 @@ bool GameApp::Initialize() {
     std::snprintf(join_ip_buffer_, sizeof(join_ip_buffer_), "%s", "127.0.0.1");
 
     InitWindow(settings_.window_width, settings_.window_height, "Rune Arena");
+    SetExitKey(KEY_NULL);
     SetTargetFPS(144);
     const bool launch_fullscreen = !force_windowed_launch_;
     if (launch_fullscreen && !IsWindowFullscreen()) {
@@ -617,7 +630,7 @@ void GameApp::Run() {
     double previous_time = GetTime();
     double accumulator = 0.0;
 
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !request_app_exit_) {
         const double now = GetTime();
         double frame_dt = now - previous_time;
         previous_time = now;
@@ -643,6 +656,7 @@ void GameApp::Run() {
 void GameApp::CaptureFrameInputEdges() {
     pending_primary_pressed_ = pending_primary_pressed_ || IsBindingPressed(controls_bindings_.primary_action);
     pending_grappling_pressed_ = pending_grappling_pressed_ || IsBindingPressed(controls_bindings_.grappling_hook_action);
+    pending_escape_pressed_ = pending_escape_pressed_ || IsKeyPressed(KEY_ESCAPE);
     if (IsBindingPressed(controls_bindings_.select_rune_slot_1)) pending_select_rune_slot_ = 0;
     if (IsBindingPressed(controls_bindings_.select_rune_slot_2)) pending_select_rune_slot_ = 1;
     if (IsBindingPressed(controls_bindings_.select_rune_slot_3)) pending_select_rune_slot_ = 2;
@@ -821,6 +835,8 @@ bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& te
 
 void GameApp::Update(float dt) {
     dt = ClampDt(dt);
+    escape_pressed_this_update_ = pending_escape_pressed_;
+    pending_escape_pressed_ = false;
     switch (app_screen_) {
         case AppScreen::MainMenu:
             UpdateMainMenu(dt);
@@ -1105,6 +1121,11 @@ bool GameApp::HasVisibleIdleFireStormDummy() const {
 }
 
 void GameApp::UpdateConnecting(float /*dt*/) {
+    if (escape_pressed_this_update_) {
+        ReturnToMainMenu();
+        return;
+    }
+
     if (network_manager_.IsHost()) {
         app_screen_ = AppScreen::Lobby;
         return;
@@ -1139,6 +1160,11 @@ void GameApp::UpdateConnecting(float /*dt*/) {
 }
 
 void GameApp::UpdateLobby(float dt) {
+    if (escape_pressed_this_update_) {
+        ReturnToMainMenu();
+        return;
+    }
+
     if (network_manager_.IsHost()) {
         lobby_broadcast_accumulator_ += dt;
 
@@ -1191,11 +1217,39 @@ void GameApp::UpdateLobby(float dt) {
             pending_select_rune_slot_ = -1;
             pending_activate_item_slot_ = -1;
             pending_toggle_inventory_mode_ = false;
+            in_game_menu_open_ = false;
+            in_game_menu_page_ = InGameMenuPage::Home;
         }
     }
 }
 
 void GameApp::UpdateMatch(float dt) {
+    if (escape_pressed_this_update_) {
+        if (Player* local_player = FindPlayerById(state_.local_player_id);
+            local_player != nullptr && local_player->inventory_mode) {
+            CancelInventoryDrag(*local_player);
+            local_player->inventory_mode = false;
+        } else if (Player* local_player = FindPlayerById(state_.local_player_id);
+                   local_player != nullptr && local_player->rune_placing_mode) {
+            local_player->rune_placing_mode = false;
+            if (local_player->action_state == PlayerActionState::RunePlacing) {
+                local_player->action_state = PlayerActionState::Idle;
+            }
+        } else if (in_game_menu_open_) {
+            if (in_game_menu_page_ == InGameMenuPage::Settings) {
+                in_game_menu_page_ = InGameMenuPage::Home;
+            } else {
+                in_game_menu_open_ = false;
+            }
+        } else {
+            if (Player* local_player = FindPlayerById(state_.local_player_id); local_player != nullptr) {
+                local_player->inventory_mode = false;
+            }
+            in_game_menu_open_ = true;
+            in_game_menu_page_ = InGameMenuPage::Home;
+        }
+    }
+
     if (network_manager_.IsHost()) {
         SimulateHostGameplay(dt);
         snapshot_accumulator_ += dt;
@@ -1258,7 +1312,7 @@ void GameApp::UpdateMatch(float dt) {
 }
 
 void GameApp::UpdatePostMatch(float /*dt*/) {
-    if (IsKeyPressed(KEY_ENTER)) {
+    if (IsKeyPressed(KEY_ENTER) || escape_pressed_this_update_) {
         ReturnToMainMenu();
     }
 }
@@ -1356,6 +1410,7 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
     }
     const bool is_stunned = HasStatusEffect(*local_player, StatusEffectType::Stunned);
     const bool is_pulled = IsPlayerBeingPulled(local_player->id);
+    bool inventory_editing = local_player->inventory_mode;
 
     local_player->grappling_cooldown_remaining = std::max(0.0f, local_player->grappling_cooldown_remaining - dt);
     local_player->mana =
@@ -1366,8 +1421,12 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
 
     if (!is_stunned && !is_pulled && input.toggle_inventory_mode) {
         local_player->inventory_mode = !local_player->inventory_mode;
+        if (!local_player->inventory_mode) {
+            CancelInventoryDrag(*local_player);
+        }
+        inventory_editing = local_player->inventory_mode;
     }
-    if (!is_stunned && !is_pulled && input.request_rune_type != static_cast<int>(RuneType::None)) {
+    if (!is_stunned && !is_pulled && !inventory_editing && input.request_rune_type != static_cast<int>(RuneType::None)) {
         const RuneType rune_type = static_cast<RuneType>(input.request_rune_type);
         const float mana_cost = GetRuneManaCost(rune_type);
         for (size_t i = 0; i < local_player->rune_slots.size(); ++i) {
@@ -1388,10 +1447,10 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
         local_player->facing = AimToFacing(local_player->aim_dir);
     }
 
-    if (!is_stunned && !is_pulled && input.primary_pressed && local_player->rune_placing_mode) {
+    if (!is_stunned && !is_pulled && !inventory_editing && input.primary_pressed && local_player->rune_placing_mode) {
         local_player->rune_placing_mode = false;
     }
-    if (!is_stunned && !is_pulled && input.grappling_pressed && !local_player->rune_placing_mode &&
+    if (!is_stunned && !is_pulled && !inventory_editing && input.grappling_pressed && !local_player->rune_placing_mode &&
         local_player->grappling_cooldown_remaining <= 0.0f) {
         TryStartGrapplingHook(*local_player, Vector2{input.aim_x, input.aim_y}, false);
     }
@@ -1403,7 +1462,7 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
     }
 
     const float movement_multiplier = GetPlayerMovementSpeedMultiplier(*local_player);
-    const Vector2 acceleration = (is_stunned || is_pulled)
+    const Vector2 acceleration = (is_stunned || is_pulled || inventory_editing)
                                      ? Vector2{0.0f, 0.0f}
                                      : Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
     local_player->vel = Vector2Add(local_player->vel, Vector2Scale(acceleration, dt));
@@ -1419,7 +1478,7 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
     ResolvePlayerVsMapObjects(*local_player);
     ResolvePlayerVsIceWallsLocal(*local_player);
 
-    if (is_stunned || is_pulled) {
+    if (is_stunned || is_pulled || inventory_editing) {
         local_player->action_state = PlayerActionState::Idle;
     } else if (local_player->melee_active_remaining > 0.0f) {
         local_player->action_state = PlayerActionState::Slashing;
@@ -1464,6 +1523,9 @@ void GameApp::Render() {
 
             if (ui_result.request_host) {
                 StartAsHost();
+            }
+            if (ui_result.request_exit_app) {
+                request_app_exit_ = true;
             }
             if (ui_result.request_join) {
                 const int join_port =
@@ -1602,6 +1664,7 @@ void GameApp::Render() {
             RenderBottomHud();
             RenderFpsCounter();
             RenderNetworkDebugPanel();
+            RenderInGameMenu();
             break;
 
         case AppScreen::PostMatch:
@@ -1724,6 +1787,8 @@ void GameApp::ReturnToMainMenu() {
     lobby_best_of_target_kills_ = settings_.lobby_best_of_target_kills;
     lobby_shrink_start_seconds_ = settings_.lobby_shrink_start_seconds;
     lobby_min_arena_radius_tiles_ = settings_.lobby_min_arena_radius_tiles;
+    in_game_menu_open_ = false;
+    in_game_menu_page_ = InGameMenuPage::Home;
     app_screen_ = AppScreen::MainMenu;
 }
 
@@ -1811,6 +1876,8 @@ void GameApp::StartMatchAsHost() {
     network_manager_.BroadcastMatchStart(MatchStartMessage{});
     network_manager_.BroadcastSnapshot(BuildHostSnapshot());
 
+    in_game_menu_open_ = false;
+    in_game_menu_page_ = InGameMenuPage::Home;
     app_screen_ = AppScreen::InMatch;
 }
 
@@ -2003,6 +2070,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             player.ui_dragging_slot = previous_local_ui_state.ui_dragging_slot;
             player.ui_drag_source_family = previous_local_ui_state.ui_drag_source_family;
             player.ui_drag_source_index = previous_local_ui_state.ui_drag_source_index;
+            player.ui_drag_rune_type = previous_local_ui_state.ui_drag_rune_type;
+            player.ui_drag_item_id = previous_local_ui_state.ui_drag_item_id;
+            player.ui_drag_item_count = previous_local_ui_state.ui_drag_item_count;
+            player.ui_drag_item_cooldown_remaining = previous_local_ui_state.ui_drag_item_cooldown_remaining;
+            player.ui_drag_item_cooldown_total = previous_local_ui_state.ui_drag_item_cooldown_total;
         }
         state_.players.push_back(player);
 
@@ -2799,6 +2871,36 @@ ClientInputMessage GameApp::BuildLocalInput(int local_player_id) {
     input.aim_x = mouse_world.x;
     input.aim_y = mouse_world.y;
 
+    if (app_screen_ == AppScreen::InMatch && in_game_menu_open_) {
+        input.move_x = 0.0f;
+        input.move_y = 0.0f;
+        pending_primary_pressed_ = false;
+        pending_grappling_pressed_ = false;
+        pending_select_rune_slot_ = -1;
+        pending_activate_item_slot_ = -1;
+        pending_toggle_inventory_mode_ = false;
+        return input;
+    }
+
+    if (app_screen_ == AppScreen::InMatch) {
+        if (const Player* local_player = FindPlayerById(state_.local_player_id);
+            local_player != nullptr && local_player->inventory_mode) {
+            input.move_x = 0.0f;
+            input.move_y = 0.0f;
+            input.primary_pressed = false;
+            input.grappling_pressed = false;
+            input.request_rune_type = static_cast<int>(RuneType::None);
+            input.request_item_id.clear();
+            input.toggle_inventory_mode = pending_toggle_inventory_mode_;
+            pending_primary_pressed_ = false;
+            pending_grappling_pressed_ = false;
+            pending_select_rune_slot_ = -1;
+            pending_activate_item_slot_ = -1;
+            pending_toggle_inventory_mode_ = false;
+            return input;
+        }
+    }
+
     // Use frame-latched edge inputs to avoid missing events when fixed-step updates
     // do not run on every render frame.
     input.primary_pressed = pending_primary_pressed_;
@@ -2907,11 +3009,16 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
     player.last_input_tick = input.tick;
     const bool is_stunned = HasStatusEffect(player, StatusEffectType::Stunned);
     const bool is_pulled = IsPlayerBeingPulled(player.id);
+    bool inventory_editing = player.inventory_mode;
 
     if (!is_stunned && !is_pulled && input.toggle_inventory_mode) {
         player.inventory_mode = !player.inventory_mode;
+        if (!player.inventory_mode) {
+            CancelInventoryDrag(player);
+        }
+        inventory_editing = player.inventory_mode;
     }
-    if (!is_stunned && !is_pulled && input.request_rune_type != static_cast<int>(RuneType::None)) {
+    if (!is_stunned && !is_pulled && !inventory_editing && input.request_rune_type != static_cast<int>(RuneType::None)) {
         const RuneType rune_type = static_cast<RuneType>(input.request_rune_type);
         const float mana_cost = GetRuneManaCost(rune_type);
         for (size_t i = 0; i < player.rune_slots.size(); ++i) {
@@ -2943,11 +3050,11 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         player.item_slot_cooldown_remaining[i] = std::max(0.0f, player.item_slot_cooldown_remaining[i] - dt);
     }
 
-    if (!is_stunned && !is_pulled && !input.request_item_id.empty()) {
+    if (!is_stunned && !is_pulled && !inventory_editing && !input.request_item_id.empty()) {
         TryActivateItemById(player, input.request_item_id);
     }
 
-    if (!is_stunned && !is_pulled && input.primary_pressed) {
+    if (!is_stunned && !is_pulled && !inventory_editing && input.primary_pressed) {
         if (player.rune_placing_mode) {
             if (TryPlaceRune(player, Vector2{input.aim_x, input.aim_y})) {
                 player.action_state = PlayerActionState::RunePlacing;
@@ -2962,7 +3069,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         }
     }
 
-    if (!is_stunned && !is_pulled && input.grappling_pressed && !player.rune_placing_mode &&
+    if (!is_stunned && !is_pulled && !inventory_editing && input.grappling_pressed && !player.rune_placing_mode &&
         player.grappling_cooldown_remaining <= 0.0f) {
         TryStartGrapplingHook(player, Vector2{input.aim_x, input.aim_y});
     }
@@ -2973,7 +3080,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
     }
 
     const float movement_multiplier = GetPlayerMovementSpeedMultiplier(player);
-    Vector2 acceleration = (is_stunned || is_pulled)
+    Vector2 acceleration = (is_stunned || is_pulled || inventory_editing)
                                ? Vector2{0.0f, 0.0f}
                                : Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
     player.vel = Vector2Add(player.vel, Vector2Scale(acceleration, dt));
@@ -2991,7 +3098,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
     ResolvePlayerVsMapObjects(player);
     ResolvePlayerVsIceWallsLocal(player);
 
-    if (is_stunned || is_pulled) {
+    if (is_stunned || is_pulled || inventory_editing) {
         player.action_state = PlayerActionState::Idle;
     } else if (player.melee_active_remaining > 0.0f) {
         player.action_state = PlayerActionState::Slashing;
@@ -3601,6 +3708,117 @@ void GameApp::CancelRegenerationStatuses(Player& player) {
             status.remaining_seconds = 0.0f;
         }
     }
+}
+
+void GameApp::CancelInventoryDrag(Player& player) {
+    if (!player.ui_dragging_slot) {
+        return;
+    }
+
+    if (player.ui_drag_source_family == SlotFamily::Rune) {
+        if (player.ui_drag_source_index >= 0 &&
+            player.ui_drag_source_index < static_cast<int>(player.rune_slots.size()) &&
+            player.rune_slots[player.ui_drag_source_index] == RuneType::None) {
+            player.rune_slots[player.ui_drag_source_index] = player.ui_drag_rune_type;
+        }
+        player.ui_drag_rune_type = RuneType::None;
+    } else if (player.ui_drag_source_family == SlotFamily::Item) {
+        if (player.ui_drag_source_index >= 0 &&
+            player.ui_drag_source_index < static_cast<int>(player.item_slots.size()) &&
+            player.item_slots[player.ui_drag_source_index].empty() &&
+            player.item_slot_counts[player.ui_drag_source_index] <= 0) {
+            player.item_slots[player.ui_drag_source_index] = player.ui_drag_item_id;
+            player.item_slot_counts[player.ui_drag_source_index] = player.ui_drag_item_count;
+            player.item_slot_cooldown_remaining[player.ui_drag_source_index] = player.ui_drag_item_cooldown_remaining;
+            player.item_slot_cooldown_total[player.ui_drag_source_index] = player.ui_drag_item_cooldown_total;
+        }
+        player.ui_drag_item_id.clear();
+        player.ui_drag_item_count = 0;
+        player.ui_drag_item_cooldown_remaining = 0.0f;
+        player.ui_drag_item_cooldown_total = 0.0f;
+    }
+
+    player.ui_dragging_slot = false;
+    player.ui_drag_source_index = -1;
+}
+
+void GameApp::BeginInventoryDrag(Player& player, SlotFamily family, int slot_index) {
+    CancelInventoryDrag(player);
+
+    player.ui_drag_source_family = family;
+    player.ui_drag_source_index = slot_index;
+    player.ui_dragging_slot = true;
+
+    if (family == SlotFamily::Rune) {
+        player.ui_drag_rune_type = player.rune_slots[slot_index];
+        player.rune_slots[slot_index] = RuneType::None;
+        if (player.selected_rune_slot == slot_index) {
+            player.selected_rune_type = RuneType::None;
+        }
+        return;
+    }
+
+    player.ui_drag_item_id = player.item_slots[slot_index];
+    player.ui_drag_item_count = player.item_slot_counts[slot_index];
+    player.ui_drag_item_cooldown_remaining = player.item_slot_cooldown_remaining[slot_index];
+    player.ui_drag_item_cooldown_total = player.item_slot_cooldown_total[slot_index];
+    player.item_slots[slot_index].clear();
+    player.item_slot_counts[slot_index] = 0;
+    player.item_slot_cooldown_remaining[slot_index] = 0.0f;
+    player.item_slot_cooldown_total[slot_index] = 0.0f;
+}
+
+void GameApp::DropInventoryDrag(Player& player, SlotFamily family, int slot_index) {
+    if (!player.ui_dragging_slot || player.ui_drag_source_family != family) {
+        return;
+    }
+
+    if (slot_index == player.ui_drag_source_index) {
+        CancelInventoryDrag(player);
+        return;
+    }
+
+    if (family == SlotFamily::Rune) {
+        const RuneType target = player.rune_slots[slot_index];
+        player.rune_slots[slot_index] = player.ui_drag_rune_type;
+        if (player.ui_drag_source_index >= 0 &&
+            player.ui_drag_source_index < static_cast<int>(player.rune_slots.size())) {
+            player.rune_slots[player.ui_drag_source_index] = target;
+        }
+        if (player.selected_rune_slot == player.ui_drag_source_index) {
+            player.selected_rune_slot = slot_index;
+        } else if (player.selected_rune_slot == slot_index) {
+            player.selected_rune_slot = player.ui_drag_source_index;
+        }
+        player.selected_rune_type = player.rune_slots[player.selected_rune_slot];
+        player.ui_drag_rune_type = RuneType::None;
+    } else {
+        const std::string target_id = player.item_slots[slot_index];
+        const int target_count = player.item_slot_counts[slot_index];
+        const float target_remaining = player.item_slot_cooldown_remaining[slot_index];
+        const float target_total = player.item_slot_cooldown_total[slot_index];
+
+        player.item_slots[slot_index] = player.ui_drag_item_id;
+        player.item_slot_counts[slot_index] = player.ui_drag_item_count;
+        player.item_slot_cooldown_remaining[slot_index] = player.ui_drag_item_cooldown_remaining;
+        player.item_slot_cooldown_total[slot_index] = player.ui_drag_item_cooldown_total;
+
+        if (player.ui_drag_source_index >= 0 &&
+            player.ui_drag_source_index < static_cast<int>(player.item_slots.size())) {
+            player.item_slots[player.ui_drag_source_index] = target_id;
+            player.item_slot_counts[player.ui_drag_source_index] = target_count;
+            player.item_slot_cooldown_remaining[player.ui_drag_source_index] = target_remaining;
+            player.item_slot_cooldown_total[player.ui_drag_source_index] = target_total;
+        }
+
+        player.ui_drag_item_id.clear();
+        player.ui_drag_item_count = 0;
+        player.ui_drag_item_cooldown_remaining = 0.0f;
+        player.ui_drag_item_cooldown_total = 0.0f;
+    }
+
+    player.ui_dragging_slot = false;
+    player.ui_drag_source_index = -1;
 }
 
 void GameApp::AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second) {
@@ -5480,10 +5698,8 @@ bool GameApp::IsTileRunePlaceable(const GridCoord& cell) const {
     }
 
     for (const auto& object : state_.map_objects) {
-        if (!object.alive || object.cell.x != cell.x || object.cell.y != cell.y) {
-            continue;
-        }
-        if (!object.walkable) {
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        if (BlocksRunePlacementAtCell(object, cell, proto)) {
             return false;
         }
     }
@@ -5523,20 +5739,16 @@ void GameApp::RenderWorld() {
 
     BeginMode2D(camera_);
     RenderMap();
-    EndMode2D();
-
-    BeginMode2D(camera_);
     RenderMapForeground();
-    EndMode2D();
-
-    BeginMode2D(camera_);
+    RenderInfluenceZones();
+    RenderGroundCompositeEffects();
     RenderGroundMapObjects();
+    RenderNonTerrainDepthSorted();
     EndMode2D();
 
     RenderObjectShadows();
 
     BeginMode2D(camera_);
-    RenderNonTerrainDepthSorted();
     RenderPlayerOverlays();
     RenderMeleeAttacks();
     RenderDamagePopups();
@@ -5646,7 +5858,7 @@ void GameApp::RenderObjectShadows() {
     const Texture2D huge_texture = sprite_metadata_128x128_.GetTexture();
 
     for (const auto& object : state_.map_objects) {
-        if (!object.alive) {
+        if (!object.alive || object.state == MapObjectState::Dying) {
             continue;
         }
         const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
@@ -5711,6 +5923,30 @@ void GameApp::RenderObjectShadows() {
                            -static_cast<float>(shadow_layer_target_.texture.height)};
     const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
     DrawTexturePro(shadow_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, Color{255, 255, 255, 85});
+}
+
+void GameApp::RenderInfluenceZones() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    for (const auto& zone : state_.influence_zones) {
+        if (!state_.map.IsInside(zone.cell)) {
+            continue;
+        }
+        const Rectangle dst = SnapRect(
+            {static_cast<float>(zone.cell.x * state_.map.cell_size), static_cast<float>(zone.cell.y * state_.map.cell_size),
+             static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
+        const char* animation = zone.team == Constants::kTeamRed ? "influence_zone_red" : "influence_zone_blue";
+        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
+            const Rectangle src =
+                InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
+                                Constants::kAtlasSampleInsetPixels);
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 170});
+        } else {
+            const Color tint =
+                zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};
+            DrawRectangleRec(dst, tint);
+        }
+    }
 }
 
 void GameApp::RenderNonTerrainDepthSorted() {
@@ -5815,6 +6051,10 @@ void GameApp::RenderNonTerrainDepthSorted() {
     for (size_t i = 0; i < state_.map_objects.size(); ++i) {
         const MapObjectInstance& object = state_.map_objects[i];
         if (!object.alive || IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
+            continue;
+        }
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        if (proto == nullptr) {
             continue;
         }
         const float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
@@ -6047,7 +6287,6 @@ void GameApp::RenderNonTerrainDepthSorted() {
         }
         return nullptr;
     };
-
     for (const RenderItem& item : items) {
         switch (item.kind) {
             case RenderKind::LegacyDecoration: {
@@ -6117,7 +6356,11 @@ void GameApp::RenderNonTerrainDepthSorted() {
                 if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
                     const Rectangle src =
                         InsetSourceRect(metadata->GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
-                    if (!proto->masked_occluder || !DrawMaskedOccluder(dst, *draw_texture, src, item.sort_y)) {
+                    if (proto->masked_occluder) {
+                        if (!DrawMaskedOccluder(dst, *draw_texture, src, item.sort_y)) {
+                            DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                        }
+                    } else {
                         DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
                     }
                 } else {
@@ -6559,7 +6802,6 @@ void GameApp::RenderNonTerrainDepthSorted() {
             }
         }
     }
-
 }
 
 void GameApp::RenderMap() {
@@ -6734,32 +6976,6 @@ void GameApp::RenderMapForeground() {
 
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
-    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
-    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
-    const bool has_large_texture = sprite_metadata_96x96_.IsLoaded();
-    const Texture2D large_texture = sprite_metadata_96x96_.GetTexture();
-    const auto get_metadata = [&](CompositeEffectSheet sheet) -> const SpriteMetadataLoader* {
-        switch (sheet) {
-            case CompositeEffectSheet::Base32:
-                return &sprite_metadata_;
-            case CompositeEffectSheet::Tall32x64:
-                return &sprite_metadata_tall_;
-            case CompositeEffectSheet::Large96x96:
-                return &sprite_metadata_96x96_;
-        }
-        return &sprite_metadata_;
-    };
-    const auto get_texture = [&](CompositeEffectSheet sheet) -> const Texture2D* {
-        switch (sheet) {
-            case CompositeEffectSheet::Base32:
-                return has_texture ? &texture : nullptr;
-            case CompositeEffectSheet::Tall32x64:
-                return has_tall_texture ? &tall_texture : nullptr;
-            case CompositeEffectSheet::Large96x96:
-                return has_large_texture ? &large_texture : nullptr;
-        }
-        return nullptr;
-    };
     const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
     const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
     const bool has_zone_overlay = has_texture && sprite_metadata_.HasAnimation("zone");
@@ -6776,18 +6992,10 @@ void GameApp::RenderMapForeground() {
     };
     const auto compute_grass_dual_grid_mask = [&](int x, int y) {
         int mask = 0;
-        if (sample_grass_for_dual_grid(x, y)) {
-            mask |= 1;
-        }
-        if (sample_grass_for_dual_grid(x + 1, y)) {
-            mask |= 2;
-        }
-        if (sample_grass_for_dual_grid(x + 1, y + 1)) {
-            mask |= 4;
-        }
-        if (sample_grass_for_dual_grid(x, y + 1)) {
-            mask |= 8;
-        }
+        if (sample_grass_for_dual_grid(x, y)) mask |= 1;
+        if (sample_grass_for_dual_grid(x + 1, y)) mask |= 2;
+        if (sample_grass_for_dual_grid(x + 1, y + 1)) mask |= 4;
+        if (sample_grass_for_dual_grid(x, y + 1)) mask |= 8;
         return mask;
     };
     const auto compute_grass_bitmask = [&](int x, int y) {
@@ -6847,8 +7055,7 @@ void GameApp::RenderMapForeground() {
 
             if (has_texture && has_grass_dual_grid) {
                 const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
-                const Rectangle terrain_dst =
-                    SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
+                const Rectangle terrain_dst = SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
                 const int mask = compute_grass_dual_grid_mask(x, y);
                 const bool has_land = sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Land);
 
@@ -6865,7 +7072,6 @@ void GameApp::RenderMapForeground() {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
                                    0.0f, WHITE);
                 }
-
                 draw_zone_overlay();
                 if (tile == TileType::SpawnPoint) {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
@@ -6899,9 +7105,9 @@ void GameApp::RenderMapForeground() {
                                        0.0f, tint);
                     }
                 } else {
-                    const Rectangle src = InsetSourceRect(
-                        sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
-                        Constants::kAtlasSampleInsetPixels);
+                    const Rectangle src =
+                        InsetSourceRect(sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
+                                        Constants::kAtlasSampleInsetPixels);
                     DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
                 }
                 if (tile == TileType::SpawnPoint) {
@@ -6909,45 +7115,54 @@ void GameApp::RenderMapForeground() {
                                 Color{240, 240, 240, 180});
                 }
                 draw_zone_overlay();
-            } else {
-                if (!has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
-                    Color fallback = Color{34, 120, 34, 255};
-                    if (dimmed) {
-                        fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
-                                         static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
-                                         static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness),
-                                         255};
-                    }
-                    DrawRectangleRec(dst, fallback);
-                    if (tile == TileType::SpawnPoint) {
-                        DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
-                                    Color{240, 240, 240, 180});
-                    }
+            } else if (!has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
+                Color fallback = Color{34, 120, 34, 255};
+                if (dimmed) {
+                    fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
+                                     static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
+                                     static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness),
+                                     255};
+                }
+                DrawRectangleRec(dst, fallback);
+                if (tile == TileType::SpawnPoint) {
+                    DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
+                                Color{240, 240, 240, 180});
                 }
                 draw_zone_overlay();
             }
         }
     }
+}
 
-    for (const auto& zone : state_.influence_zones) {
-        if (!state_.map.IsInside(zone.cell)) {
-            continue;
+void GameApp::RenderGroundCompositeEffects() {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const bool has_tall_texture = sprite_metadata_tall_.IsLoaded();
+    const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
+    const bool has_large_texture = sprite_metadata_96x96_.IsLoaded();
+    const Texture2D large_texture = sprite_metadata_96x96_.GetTexture();
+    const auto get_metadata = [&](CompositeEffectSheet sheet) -> const SpriteMetadataLoader* {
+        switch (sheet) {
+            case CompositeEffectSheet::Base32:
+                return &sprite_metadata_;
+            case CompositeEffectSheet::Tall32x64:
+                return &sprite_metadata_tall_;
+            case CompositeEffectSheet::Large96x96:
+                return &sprite_metadata_96x96_;
         }
-        const Rectangle dst = SnapRect(
-            {static_cast<float>(zone.cell.x * state_.map.cell_size), static_cast<float>(zone.cell.y * state_.map.cell_size),
-             static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
-        const char* animation = zone.team == Constants::kTeamRed ? "influence_zone_red" : "influence_zone_blue";
-        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
-            const Rectangle src =
-                InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
-                                Constants::kAtlasSampleInsetPixels);
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 170});
-        } else {
-            const Color tint =
-                zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};
-            DrawRectangleRec(dst, tint);
+        return &sprite_metadata_;
+    };
+    const auto get_texture = [&](CompositeEffectSheet sheet) -> const Texture2D* {
+        switch (sheet) {
+            case CompositeEffectSheet::Base32:
+                return has_texture ? &texture : nullptr;
+            case CompositeEffectSheet::Tall32x64:
+                return has_tall_texture ? &tall_texture : nullptr;
+            case CompositeEffectSheet::Large96x96:
+                return has_large_texture ? &large_texture : nullptr;
         }
-    }
+        return nullptr;
+    };
 
     for (const auto& effect : state_.composite_effects) {
         if (!effect.alive) {
@@ -7003,9 +7218,9 @@ void GameApp::RenderMapForeground() {
                     origin.y + 0.5f * static_cast<float>(state_.map.cell_size) +
                         part.offset_y_tiles * static_cast<float>(state_.map.cell_size),
                 };
-                const Rectangle src = InsetSourceRect(
-                    metadata->GetFrame(part.animation, "default", cast.elapsed_seconds),
-                    Constants::kAtlasSampleInsetPixels);
+                const Rectangle src =
+                    InsetSourceRect(metadata->GetFrame(part.animation, "default", cast.elapsed_seconds),
+                                    Constants::kAtlasSampleInsetPixels);
                 const float dst_w = static_cast<float>(metadata->GetCellWidth());
                 const float dst_h = static_cast<float>(metadata->GetCellHeight());
                 Rectangle dst = {part_center.x - dst_w * 0.5f, part_center.y - dst_h * 0.5f, dst_w, dst_h};
@@ -7040,9 +7255,9 @@ void GameApp::RenderMapForeground() {
                 origin.y + 0.5f * static_cast<float>(state_.map.cell_size) +
                     part.offset_y_tiles * static_cast<float>(state_.map.cell_size),
             };
-            const Rectangle src = InsetSourceRect(
-                metadata->GetFrame(part.animation, "default", dummy.state_time),
-                Constants::kAtlasSampleInsetPixels);
+            const Rectangle src =
+                InsetSourceRect(metadata->GetFrame(part.animation, "default", dummy.state_time),
+                                Constants::kAtlasSampleInsetPixels);
             const float dst_w = static_cast<float>(metadata->GetCellWidth());
             const float dst_h = static_cast<float>(metadata->GetCellHeight());
             Rectangle dst = {part_center.x - dst_w * 0.5f, part_center.y - dst_h * 0.5f, dst_w, dst_h};
@@ -7078,9 +7293,9 @@ void GameApp::RenderMapForeground() {
                         part.offset_y_tiles * static_cast<float>(state_.map.cell_size),
                 };
                 const float animation_time = status.total_seconds - status.remaining_seconds;
-                const Rectangle src = InsetSourceRect(
-                    metadata->GetFrame(part.animation, "default", animation_time),
-                    Constants::kAtlasSampleInsetPixels);
+                const Rectangle src =
+                    InsetSourceRect(metadata->GetFrame(part.animation, "default", animation_time),
+                                    Constants::kAtlasSampleInsetPixels);
                 const float dst_w = static_cast<float>(metadata->GetCellWidth());
                 const float dst_h = static_cast<float>(metadata->GetCellHeight());
                 Rectangle dst = {part_center.x - dst_w * 0.5f, part_center.y - dst_h * 0.5f, dst_w, dst_h};
@@ -7568,6 +7783,9 @@ void GameApp::RenderBottomHud() {
     const float slot_y = hud_y + panel_height - slot_row_height - 4.0f * scale;
     const float slot_spacing = 4.0f * scale;
     const int total_slots = Constants::kHudTotalSlotCount;
+    bool show_inventory_edit_hint = false;
+    bool drag_drop_completed = false;
+    bool inventory_slot_clicked = false;
     for (int i = 0; i < total_slots; ++i) {
         const float slot_x = hud_x + 12.0f * scale + static_cast<float>(i) * (Constants::kHudSlotSize * scale + slot_spacing);
         const Rectangle slot = {slot_x, slot_y, Constants::kHudSlotSize * scale, Constants::kHudSlotSize * scale};
@@ -7600,38 +7818,22 @@ void GameApp::RenderBottomHud() {
                  slot_font_size,
                  hovered ? Color{210, 214, 222, 255} : Color{180, 184, 196, 255});
 
+        if (!is_weapon_slot && hovered && !local_player->inventory_mode) {
+            show_inventory_edit_hint = true;
+        }
+
         if (!is_weapon_slot && local_player->inventory_mode && hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            inventory_slot_clicked = true;
             if (!local_player->ui_dragging_slot) {
                 const bool has_content =
                     is_rune_slot ? (local_player->rune_slots[slot_index] != RuneType::None)
                                  : (!local_player->item_slots[slot_index].empty() && local_player->item_slot_counts[slot_index] > 0);
                 if (has_content) {
-                    local_player->ui_dragging_slot = true;
-                    local_player->ui_drag_source_family = is_rune_slot ? SlotFamily::Rune : SlotFamily::Item;
-                    local_player->ui_drag_source_index = slot_index;
+                    BeginInventoryDrag(*local_player, is_rune_slot ? SlotFamily::Rune : SlotFamily::Item, slot_index);
                 }
             } else if (local_player->ui_drag_source_family == (is_rune_slot ? SlotFamily::Rune : SlotFamily::Item)) {
-                const int source_index = local_player->ui_drag_source_index;
-                if (source_index >= 0 && source_index != slot_index) {
-                    if (is_rune_slot) {
-                        std::swap(local_player->rune_slots[source_index], local_player->rune_slots[slot_index]);
-                        if (local_player->selected_rune_slot == source_index) {
-                            local_player->selected_rune_slot = slot_index;
-                        } else if (local_player->selected_rune_slot == slot_index) {
-                            local_player->selected_rune_slot = source_index;
-                        }
-                        local_player->selected_rune_type = local_player->rune_slots[local_player->selected_rune_slot];
-                    } else {
-                        std::swap(local_player->item_slots[source_index], local_player->item_slots[slot_index]);
-                        std::swap(local_player->item_slot_counts[source_index], local_player->item_slot_counts[slot_index]);
-                        std::swap(local_player->item_slot_cooldown_remaining[source_index],
-                                  local_player->item_slot_cooldown_remaining[slot_index]);
-                        std::swap(local_player->item_slot_cooldown_total[source_index],
-                                  local_player->item_slot_cooldown_total[slot_index]);
-                    }
-                }
-                local_player->ui_dragging_slot = false;
-                local_player->ui_drag_source_index = -1;
+                DropInventoryDrag(*local_player, is_rune_slot ? SlotFamily::Rune : SlotFamily::Item, slot_index);
+                drag_drop_completed = true;
             }
         }
 
@@ -7752,6 +7954,61 @@ void GameApp::RenderBottomHud() {
                        std::max(1.0f, scale * 0.75f), Color{90, 100, 120, 255});
         }
     }
+
+    if (local_player->inventory_mode && local_player->ui_dragging_slot && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+        !drag_drop_completed && !inventory_slot_clicked) {
+        CancelInventoryDrag(*local_player);
+    }
+
+    if (show_inventory_edit_hint && !local_player->inventory_mode) {
+        const char* hint_text = "Press Tab to edit";
+        const int hint_font_size = static_cast<int>(std::roundf(9.0f * scale));
+        const int hint_padding_x = static_cast<int>(std::roundf(8.0f * scale));
+        const int hint_padding_y = static_cast<int>(std::roundf(6.0f * scale));
+        const int hint_width = MeasureText(hint_text, hint_font_size) + hint_padding_x * 2;
+        const int hint_height = hint_font_size + hint_padding_y * 2;
+        const float hint_x = mouse.x + 10.0f;
+        const float hint_y = mouse.y + 10.0f;
+        const Rectangle bubble = {hint_x, hint_y, static_cast<float>(hint_width), static_cast<float>(hint_height)};
+        DrawRectangleRec(bubble, Color{24, 28, 34, 235});
+        DrawRectangleLinesEx(bubble, 1.0f, Color{80, 92, 112, 255});
+        DrawText(hint_text, static_cast<int>(hint_x) + hint_padding_x, static_cast<int>(hint_y) + hint_padding_y,
+                 hint_font_size, RAYWHITE);
+    }
+
+    if (local_player->inventory_mode && local_player->ui_dragging_slot) {
+        const float base_icon_size =
+            std::min(Constants::kHudSlotSize * scale - 8.0f * scale, Constants::kHudSlotSize * scale - 18.0f * scale);
+        const float icon_size =
+            std::min({Constants::kHudSlotSize * scale - 2.0f * scale,
+                      Constants::kHudSlotSize * scale - 10.0f * scale,
+                      base_icon_size * 1.2f});
+        const Rectangle drag_dst = {mouse.x + 10.0f, mouse.y + 10.0f, icon_size, icon_size};
+        if (local_player->ui_drag_source_family == SlotFamily::Rune) {
+            const char* animation = GetRuneSpriteAnimationKey(local_player->ui_drag_rune_type);
+            if (local_player->ui_drag_rune_type != RuneType::None && sprite_metadata_.IsLoaded() &&
+                sprite_metadata_.HasAnimation(animation)) {
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
+                                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(sprite_metadata_.GetTexture(), src, SnapRect(drag_dst), {0, 0}, 0.0f,
+                               Color{255, 255, 255, 230});
+            }
+        } else if (!local_player->ui_drag_item_id.empty()) {
+            if (const ObjectPrototype* proto = FindObjectPrototype(local_player->ui_drag_item_id);
+                proto != nullptr && sprite_metadata_.IsLoaded() && sprite_metadata_.HasAnimation(proto->idle_animation)) {
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame(proto->idle_animation, "default", render_time_seconds_),
+                                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(sprite_metadata_.GetTexture(), src, SnapRect(drag_dst), {0, 0}, 0.0f,
+                               Color{255, 255, 255, 230});
+                DrawText(TextFormat("%d", local_player->ui_drag_item_count),
+                         static_cast<int>(drag_dst.x + drag_dst.width - 12.0f * scale),
+                         static_cast<int>(drag_dst.y + drag_dst.height - 12.0f * scale),
+                         static_cast<int>(std::roundf(8.0f * scale)), WHITE);
+            }
+        }
+    }
 }
 
 void GameApp::RenderFpsCounter() {
@@ -7773,6 +8030,49 @@ void GameApp::RenderFpsCounter() {
     DrawRectangleRec(panel, Color{20, 24, 30, 220});
     DrawRectangleLinesEx(panel, 1.0f, Color{70, 82, 104, 255});
     DrawText(text.c_str(), static_cast<int>(x + 8.0f), static_cast<int>(y + 6.0f), font_size, RAYWHITE);
+}
+
+void GameApp::RenderInGameMenu() {
+    if (app_screen_ != AppScreen::InMatch || !in_game_menu_open_) {
+        return;
+    }
+
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{0, 0, 0, 145});
+
+    const float width = 320.0f;
+    const float height = 260.0f;
+    const float x = (static_cast<float>(GetScreenWidth()) - width) * 0.5f;
+    const float y = (static_cast<float>(GetScreenHeight()) - height) * 0.5f;
+    const Rectangle panel = {x, y, width, height};
+    DrawRectangleRec(panel, Color{25, 28, 34, 245});
+    DrawRectangleLinesEx(panel, 1.0f, Color{68, 75, 88, 255});
+
+    if (in_game_menu_page_ == InGameMenuPage::Home) {
+        DrawText("Game Menu", static_cast<int>(x + 20.0f), static_cast<int>(y + 18.0f), 28, RAYWHITE);
+
+        if (GuiButton({x + 50.0f, y + 70.0f, 220.0f, 40.0f}, "Return To Game")) {
+            in_game_menu_open_ = false;
+        }
+        if (GuiButton({x + 50.0f, y + 124.0f, 220.0f, 40.0f}, "Settings")) {
+            in_game_menu_page_ = InGameMenuPage::Settings;
+        }
+        if (GuiButton({x + 50.0f, y + 178.0f, 220.0f, 40.0f}, "Leave Game")) {
+            ReturnToMainMenu();
+        }
+        return;
+    }
+
+    DrawText("Settings", static_cast<int>(x + 20.0f), static_cast<int>(y + 18.0f), 28, RAYWHITE);
+    bool updated_debug_panel = show_network_debug_panel_;
+    GuiCheckBox({x + 20.0f, y + 82.0f, 24.0f, 24.0f}, "Show Network Debug Panel", &updated_debug_panel);
+    if (updated_debug_panel != show_network_debug_panel_) {
+        show_network_debug_panel_ = updated_debug_panel;
+        settings_.show_network_debug_panel = show_network_debug_panel_;
+        config_manager_.Save(settings_);
+    }
+    if (GuiButton({x + 20.0f, y + height - 52.0f, 120.0f, 32.0f}, "Back")) {
+        in_game_menu_page_ = InGameMenuPage::Home;
+    }
 }
 
 void GameApp::RenderNetworkDebugPanel() {

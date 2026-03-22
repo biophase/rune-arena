@@ -9,7 +9,8 @@
 namespace {
 
 enum class MainMenuPage {
-    Home,
+    Root,
+    Play,
     Settings,
     Controls,
 };
@@ -49,14 +50,17 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
     result.show_network_debug_panel = show_network_debug_panel;
 
     const int center_x = GetScreenWidth() / 2;
-    static MainMenuPage page = MainMenuPage::Home;
+    static MainMenuPage page = MainMenuPage::Root;
     const int panel_width = (page == MainMenuPage::Controls) ? 620 : 520;
-    const int panel_height = (page == MainMenuPage::Controls) ? 520 : 440;
+    const int panel_height =
+        (page == MainMenuPage::Controls) ? 520 : (page == MainMenuPage::Root ? 320 : 440);
     const int panel_x = center_x - panel_width / 2;
     const int panel_y = 90;
 
-    DrawRectangle(panel_x, panel_y, panel_width, panel_height, Color{25, 28, 34, 255});
-    DrawRectangleLines(panel_x, panel_y, panel_width, panel_height, Color{68, 75, 88, 255});
+    if (page != MainMenuPage::Root) {
+        DrawRectangle(panel_x, panel_y, panel_width, panel_height, Color{25, 28, 34, 255});
+        DrawRectangleLines(panel_x, panel_y, panel_width, panel_height, Color{68, 75, 88, 255});
+    }
 
     static bool edit_name = false;
     static int selected_host_index = -1;
@@ -68,8 +72,29 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         selected_host_index = -1;
     }
 
-    if (page == MainMenuPage::Home) {
-        DrawText("Rune Arena", panel_x + 20, panel_y + 16, 30, RAYWHITE);
+    if (page == MainMenuPage::Root) {
+        const char* title = "Rune Arena";
+        const int title_font_size = 30;
+        const int title_width = MeasureText(title, title_font_size);
+        DrawText(title, center_x - title_width / 2, panel_y + 16, title_font_size, RAYWHITE);
+
+        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 82), 220, 44}, "Play")) {
+            page = MainMenuPage::Play;
+        }
+        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 142), 220, 44}, "Settings")) {
+            page = MainMenuPage::Settings;
+            draft_bindings = current_bindings;
+            draft_show_network_debug_panel = show_network_debug_panel;
+            rebinding_action = -1;
+        }
+        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 202), 220, 44}, "Exit")) {
+            result.request_exit_app = true;
+        }
+
+    } else if (page == MainMenuPage::Play) {
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            page = MainMenuPage::Root;
+        }
 
         Rectangle name_box = {static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 70), 320, 32};
         Rectangle join_box = {static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 138), 320, 32};
@@ -86,11 +111,8 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 190), 180, 40}, "Host Game")) {
             result.request_host = true;
         }
-        if (GuiButton({static_cast<float>(panel_x + 420), static_cast<float>(panel_y + 190), 80, 40}, "Settings")) {
-            page = MainMenuPage::Settings;
-            draft_bindings = current_bindings;
-            draft_show_network_debug_panel = show_network_debug_panel;
-            rebinding_action = -1;
+        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 236), 180, 36}, "Back")) {
+            page = MainMenuPage::Root;
         }
 
         const bool can_join =
@@ -109,19 +131,19 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         }
 
         if (!status_message.empty()) {
-            DrawText(status_message.c_str(), panel_x + 20, panel_y + 236, 14,
+            DrawText(status_message.c_str(), panel_x + 20, panel_y + 276, 14,
                      status_is_error ? Color{255, 122, 122, 255} : Color{154, 214, 255, 255});
         }
 
-        DrawText("Discovered LAN Hosts", panel_x + 20, panel_y + 254, 18, Color{190, 198, 220, 255});
-        DrawText("Select one host, then press Join Game.", panel_x + 230, panel_y + 194, 13,
+        DrawText("Select a host to join.", panel_x + 220, panel_y + 236, 13,
                  can_join ? Color{150, 210, 150, 255} : Color{210, 180, 120, 255});
+        DrawText("Discovered LAN Hosts", panel_x + 20, panel_y + 294, 18, Color{190, 198, 220, 255});
         int row = 0;
         for (const DiscoveredHost& host : discovered_hosts) {
             if (row >= 4) {
                 break;
             }
-            const int y = panel_y + 282 + row * 28;
+            const int y = panel_y + 322 + row * 28;
             const Rectangle row_rect = {static_cast<float>(panel_x + 20), static_cast<float>(y), 470.0f, 24.0f};
             const bool selected = row == selected_host_index;
             DrawRectangleRec(row_rect, selected ? Color{63, 78, 101, 255} : Color{40, 44, 53, 255});
@@ -135,11 +157,10 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
             }
             ++row;
         }
-
-        DrawText(TextFormat("Config: %s", config_path.c_str()), panel_x + 20, panel_y + panel_height - 24, 12,
-                 Color{140, 147, 160, 255});
     } else if (page == MainMenuPage::Settings) {
-        DrawText("Settings", panel_x + 20, panel_y + 16, 30, RAYWHITE);
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            page = MainMenuPage::Root;
+        }
         bool updated_debug_panel = draft_show_network_debug_panel;
         GuiCheckBox({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 88), 24, 24},
                     "Show Network Debug Panel", &updated_debug_panel);
@@ -157,13 +178,13 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
             rebind_block_frames = 0;
         }
         if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 180), 180, 36}, "Back")) {
-            page = MainMenuPage::Home;
+            page = MainMenuPage::Root;
         }
+        DrawText(TextFormat("Config: %s", config_path.c_str()), panel_x + 20, panel_y + panel_height - 40, 12,
+                 Color{140, 147, 160, 255});
         DrawText(TextFormat("Controls Config: %s", controls_path.c_str()), panel_x + 20, panel_y + panel_height - 24,
                  12, Color{140, 147, 160, 255});
     } else {
-        DrawText("Controls", panel_x + 20, panel_y + 16, 30, RAYWHITE);
-
         if (rebinding_action >= 0) {
             if (rebind_block_frames > 0) {
                 rebind_block_frames -= 1;
@@ -173,6 +194,8 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
                 draft_bindings.*(kActionRows[static_cast<size_t>(rebinding_action)].member) = *captured;
                 rebinding_action = -1;
             }
+        } else if (IsKeyPressed(KEY_ESCAPE)) {
+            page = MainMenuPage::Settings;
         }
 
         DrawText("Action", panel_x + 20, panel_y + 58, 18, Color{190, 198, 220, 255});
