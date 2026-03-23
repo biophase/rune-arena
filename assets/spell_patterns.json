@@ -11,29 +11,56 @@
         "catalist_rune" :{
             "old":"c",
             "latest":"C"
+        },
+        "fire_storm" :{
+            "old":"s",
+            "latest":"S"
         }
     },
+
     "spell_patterns":{
         "fire_bolt":{
             "order_relevent" : true,
             "directions":{
-                "right":
-                [
-                    ["F","f"]
+                "right":[
+                    [
+                        ["F","f"]
+                    ],
+                    [
+                        ["F","s"]
+                    ]
+
                 ],
                 "left":
                 [
-                    ["f","F"]
+                    [
+                        ["f","F"]
+                    ],
+                    [
+                        ["s","F"]
+                    ]
                 ],
                 "top":
                 [
-                    ["f"],
-                    ["F"]
+                    [
+                        ["f"],
+                        ["F"]
+                    ],
+                    [
+                        ["s"],
+                        ["F"]
+                    ]
                 ],
                 "bot":
                 [
-                    ["F"],
-                    ["f"]
+                    [
+                        ["F"],
+                        ["f"]
+                    ],
+                    [
+                        ["F"],
+                        ["s"]
+                    ]
                 ]
             }
         },

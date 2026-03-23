@@ -1,6 +1,7 @@
 #include "spells/fire_bolt_spell.h"
 
 #include "core/constants.h"
+#include "game/projectile.h"
 
 namespace {
 
@@ -40,6 +41,9 @@ void FireBoltSpell::Cast(GameState& state, EventQueue& event_queue) {
     projectile.radius = Constants::kProjectileRadius * Constants::kFireBoltScale;
     projectile.damage = Constants::kProjectileDamage;
     projectile.animation_key = "projectile_fire_bolt";
+    if (static_variant_) {
+        ConfigureLargeStaticFireBolt(projectile, false);
+    }
     projectile.emitter_enabled = true;
     projectile.emitter_emit_every_frames = Constants::kProjectileSmokeEmitEveryFrames;
     projectile.emitter_frame_counter = 0;

@@ -88,7 +88,9 @@ bool SpellPatternLoader::LoadFromFile(const std::string& path) {
     if (abbreviations_it != json.end() && abbreviations_it->is_object()) {
         for (auto it = abbreviations_it->begin(); it != abbreviations_it->end(); ++it) {
             RuneType rune_type = RuneType::Fire;
-            if (it.key().find("water") != std::string::npos) {
+            if (it.key().find("storm") != std::string::npos) {
+                rune_type = RuneType::FireStormDummy;
+            } else if (it.key().find("water") != std::string::npos) {
                 rune_type = RuneType::Water;
             } else if (it.key().find("catal") != std::string::npos) {
                 rune_type = RuneType::Catalyst;

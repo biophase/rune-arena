@@ -139,7 +139,7 @@ float SmoothRootSigmoid(float t) {
 }
 
 bool IsStaticFireBolt(const Projectile& projectile) {
-    return projectile.animation_key == "fire_bolt_static" || projectile.animation_key == "fire_storm_static_large";
+    return projectile.animation_key == "fire_storm_static_large";
 }
 
 struct StatusEffectUiSpec {
@@ -2214,8 +2214,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             }
             const auto previous_animation_it = previous_projectile_animation_keys.find(projectile_id);
             const bool was_static = previous_animation_it != previous_projectile_animation_keys.end() &&
-                                    (previous_animation_it->second == "fire_bolt_static" ||
-                                     previous_animation_it->second == "fire_storm_static_large");
+                                    previous_animation_it->second == "fire_storm_static_large";
             Particle explosion_vfx;
             explosion_vfx.pos = projectile_pos;
             explosion_vfx.vel = {0.0f, 0.0f};
@@ -4502,11 +4501,7 @@ void GameApp::UpdateProjectiles(float dt) {
                 }
 
                 if (projectile.animation_key == "projectile_fire_bolt") {
-                    projectile.animation_key = "fire_storm_static_large";
-                    projectile.radius *= Constants::kStaticFireBoltScaleMultiplier;
-                    projectile.resume_vel = Vector2Scale(projectile.vel, Constants::kStaticFireBoltSpeedMultiplier);
-                    projectile.vel = {0.0f, 0.0f};
-                    projectile.upgrade_pause_remaining = Constants::kStaticFireBoltUpgradePauseSeconds;
+                    ConfigureLargeStaticFireBolt(projectile, true);
 
                     Particle upgrade_vfx;
                     upgrade_vfx.pos = projectile.pos;
@@ -5488,6 +5483,8 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
         SpellDirection direction = SpellDirection::Right;
         GridCoord cast_origin;
         std::vector<GridCoord> matched_cells;
+        std::vector<int> matched_fire_storm_dummy_ids;
+        bool static_fire_bolt = false;
     };
 
     const auto& patterns = spell_patterns_.GetPatterns();
@@ -5531,6 +5528,7 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
                     const GridCoord top_left = {event.cell.x - anchor.x, event.cell.y - anchor.y};
 
                     std::vector<GridCoord> matched_cells;
+                    std::vector<int> matched_fire_storm_dummy_ids;
                     bool is_match = true;
                     for (int y = 0; y < rows && is_match; ++y) {
                         for (int x = 0; x < cols && is_match; ++x) {
@@ -5550,33 +5548,48 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
                                 break;
                             }
 
-                            const auto rune_it = std::find_if(state_.runes.begin(), state_.runes.end(),
-                                                              [&](const Rune& rune) {
-                                                                  if (!rune.active || !(rune.cell == cell) ||
-                                                                      rune.rune_type != info->rune_type) {
-                                                                      return false;
-                                                                  }
+                            bool cell_matched = false;
+                            if (info->rune_type == RuneType::FireStormDummy) {
+                                const auto dummy_it =
+                                    std::find_if(state_.fire_storm_dummies.begin(), state_.fire_storm_dummies.end(),
+                                                 [&](const FireStormDummy& dummy) {
+                                                     return dummy.alive &&
+                                                            dummy.state != FireStormDummyState::Dying &&
+                                                            dummy.cell == cell;
+                                                 });
+                                if (dummy_it != state_.fire_storm_dummies.end()) {
+                                    cell_matched = true;
+                                    matched_fire_storm_dummy_ids.push_back(dummy_it->id);
+                                }
+                            } else {
+                                const auto rune_it = std::find_if(state_.runes.begin(), state_.runes.end(),
+                                                                  [&](const Rune& rune) {
+                                                                      if (!rune.active || !(rune.cell == cell) ||
+                                                                          rune.rune_type != info->rune_type) {
+                                                                          return false;
+                                                                      }
 
-                                                                  const PlacementConstraint constraint =
-                                                                      pattern.order_relevant
-                                                                          ? info->placement_constraint
-                                                                          : PlacementConstraint::Any;
-                                                                  if (constraint == PlacementConstraint::Latest) {
-                                                                      return rune.placement_order ==
-                                                                             event.placement_order;
-                                                                  }
-                                                                  if (constraint == PlacementConstraint::Old) {
-                                                                      return rune.placement_order <
-                                                                             event.placement_order;
-                                                                  }
-                                                                  return true;
-                                                              });
+                                                                      const PlacementConstraint constraint =
+                                                                          pattern.order_relevant
+                                                                              ? info->placement_constraint
+                                                                              : PlacementConstraint::Any;
+                                                                      if (constraint == PlacementConstraint::Latest) {
+                                                                          return rune.placement_order ==
+                                                                                 event.placement_order;
+                                                                      }
+                                                                      if (constraint == PlacementConstraint::Old) {
+                                                                          return rune.placement_order <
+                                                                                 event.placement_order;
+                                                                      }
+                                                                      return true;
+                                                                  });
+                                cell_matched = rune_it != state_.runes.end();
+                            }
 
-                            if (rune_it == state_.runes.end()) {
+                            if (!cell_matched) {
                                 is_match = false;
                                 break;
                             }
-
                             matched_cells.push_back(cell);
                         }
                     }
@@ -5591,6 +5604,7 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
                               });
 
                     GridCoord cast_origin = event.cell;
+                    const bool static_fire_bolt = !matched_fire_storm_dummy_ids.empty();
                     if (pattern.spell_name == "fire_storm") {
                         for (int y = 0; y < rows; ++y) {
                             for (int x = 0; x < cols; ++x) {
@@ -5622,11 +5636,17 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
                         pending_matches.begin(), pending_matches.end(),
                         [&](const PendingSpellMatch& match) {
                             return match.spell_name == pattern.spell_name && match.direction == directional.direction &&
-                                   match.cast_origin == cast_origin && match.matched_cells == matched_cells;
+                                   match.cast_origin == cast_origin && match.matched_cells == matched_cells &&
+                                   match.matched_fire_storm_dummy_ids == matched_fire_storm_dummy_ids &&
+                                   match.static_fire_bolt == static_fire_bolt;
                         });
                     if (!duplicate) {
-                        pending_matches.push_back(
-                            PendingSpellMatch{pattern.spell_name, directional.direction, cast_origin, matched_cells});
+                        pending_matches.push_back(PendingSpellMatch{pattern.spell_name,
+                                                                    directional.direction,
+                                                                    cast_origin,
+                                                                    matched_cells,
+                                                                    matched_fire_storm_dummy_ids,
+                                                                    static_fire_bolt});
                     }
                 }
             }
@@ -5638,11 +5658,13 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
     }
 
     std::vector<GridCoord> consumed_cells;
+    std::vector<int> consumed_fire_storm_dummy_ids;
     for (const auto& match : pending_matches) {
         event_queue_.Push(RunePatternCompletedEvent{match.spell_name, match.direction, match.cast_origin, match.matched_cells});
 
         if (match.spell_name == "fire_bolt") {
-            FireBoltSpell spell(CellToWorldCenter(match.cast_origin), event.player_id, match.direction);
+            FireBoltSpell spell(CellToWorldCenter(match.cast_origin), event.player_id, match.direction,
+                                match.static_fire_bolt);
             spell.Cast(state_, event_queue_);
             PlaySfxIfVisible(sfx_fireball_created_.sound, sfx_fireball_created_.loaded, CellToWorldCenter(match.cast_origin));
         } else if (match.spell_name == "ice_wall") {
@@ -5672,6 +5694,14 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
                 consumed_cells.push_back(matched_cell);
             }
         }
+        for (int dummy_id : match.matched_fire_storm_dummy_ids) {
+            const bool already_consumed =
+                std::find(consumed_fire_storm_dummy_ids.begin(), consumed_fire_storm_dummy_ids.end(), dummy_id) !=
+                consumed_fire_storm_dummy_ids.end();
+            if (!already_consumed) {
+                consumed_fire_storm_dummy_ids.push_back(dummy_id);
+            }
+        }
     }
 
     for (auto& rune : state_.runes) {
@@ -5684,6 +5714,20 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
         rune.active = false;
         rune.activation_total_seconds = 0.0f;
         rune.activation_remaining_seconds = 0.0f;
+    }
+
+    for (auto& dummy : state_.fire_storm_dummies) {
+        const bool should_consume =
+            dummy.alive &&
+            std::find(consumed_fire_storm_dummy_ids.begin(), consumed_fire_storm_dummy_ids.end(), dummy.id) !=
+                consumed_fire_storm_dummy_ids.end();
+        if (!should_consume) {
+            continue;
+        }
+        dummy.state = FireStormDummyState::Dying;
+        dummy.state_time = 0.0f;
+        dummy.state_duration = GetCompositeEffectDurationSeconds("fire_storm_death");
+        fire_storm_dummy_lightning_seconds_remaining_[dummy.id] = 0.0f;
     }
 }
 
