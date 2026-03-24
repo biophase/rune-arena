@@ -128,6 +128,134 @@ struct OccluderRevealCircle {
     float outer_radius_px = 0.0f;
 };
 
+struct InfluenceBoundarySegment {
+    Vector2 start = {0.0f, 0.0f};
+    Vector2 end = {0.0f, 0.0f};
+};
+
+std::unordered_set<int64_t> CollectInfluenceZoneCells(const std::vector<InfluenceZoneCell>& zones, int team) {
+    std::unordered_set<int64_t> active_cells;
+    active_cells.reserve(zones.size() * 2);
+    for (const auto& zone : zones) {
+        if (zone.team == team) {
+            active_cells.insert(MakeGridKey(zone.cell));
+        }
+    }
+    return active_cells;
+}
+
+std::vector<InfluenceBoundarySegment> CollectInfluenceBoundarySegments(const std::unordered_set<int64_t>& active_cells,
+                                                                       int cell_size) {
+    if (active_cells.empty() || cell_size <= 0) {
+        return {};
+    }
+    std::vector<InfluenceBoundarySegment> segments;
+    segments.reserve(active_cells.size() * 2);
+    for (const int64_t key : active_cells) {
+        const GridCoord cell = {static_cast<int>(key >> 32), static_cast<int>(key & 0xffffffff)};
+        const float x0 = static_cast<float>(cell.x * cell_size);
+        const float y0 = static_cast<float>(cell.y * cell_size);
+        const float x1 = x0 + static_cast<float>(cell_size);
+        const float y1 = y0 + static_cast<float>(cell_size);
+
+        const GridCoord left = {cell.x - 1, cell.y};
+        const GridCoord right = {cell.x + 1, cell.y};
+        const GridCoord top = {cell.x, cell.y - 1};
+        const GridCoord bottom = {cell.x, cell.y + 1};
+
+        if (!active_cells.count(MakeGridKey(left))) {
+            segments.push_back({{x0, y0}, {x0, y1}});
+        }
+        if (!active_cells.count(MakeGridKey(right))) {
+            segments.push_back({{x1, y0}, {x1, y1}});
+        }
+        if (!active_cells.count(MakeGridKey(top))) {
+            segments.push_back({{x0, y0}, {x1, y0}});
+        }
+        if (!active_cells.count(MakeGridKey(bottom))) {
+            segments.push_back({{x0, y1}, {x1, y1}});
+        }
+    }
+    return segments;
+}
+
+float DistanceSqPointToSegment(Vector2 p, Vector2 a, Vector2 b) {
+    const Vector2 ab = Vector2Subtract(b, a);
+    const float ab_len_sq = Vector2LengthSqr(ab);
+    if (ab_len_sq <= 0.0001f) {
+        return Vector2DistanceSqr(p, a);
+    }
+    const float t = std::clamp(Vector2DotProduct(Vector2Subtract(p, a), ab) / ab_len_sq, 0.0f, 1.0f);
+    const Vector2 closest = Vector2Add(a, Vector2Scale(ab, t));
+    return Vector2DistanceSqr(p, closest);
+}
+
+void BuildInfluenceDistanceTexture(Texture2D* texture, bool* has_texture,
+                                   const std::unordered_set<int64_t>& active_cells,
+                                   const std::vector<InfluenceBoundarySegment>& segments, int map_width, int map_height,
+                                   int cell_size, int samples_per_tile) {
+    if (texture == nullptr || has_texture == nullptr) {
+        return;
+    }
+
+    const int tex_width = std::max(1, map_width * samples_per_tile);
+    const int tex_height = std::max(1, map_height * samples_per_tile);
+    if (*has_texture && (texture->width != tex_width || texture->height != tex_height)) {
+        UnloadTexture(*texture);
+        *texture = {};
+        *has_texture = false;
+    }
+    if (!*has_texture) {
+        Image image = GenImageColor(tex_width, tex_height, BLACK);
+        *texture = LoadTextureFromImage(image);
+        UnloadImage(image);
+        *has_texture = (texture->id != 0);
+        if (*has_texture) {
+            SetTextureFilter(*texture, TEXTURE_FILTER_BILINEAR);
+            SetTextureWrap(*texture, TEXTURE_WRAP_CLAMP);
+        }
+    }
+    if (!*has_texture) {
+        return;
+    }
+
+    constexpr float kOuterTailPx = 6.0f;
+    constexpr float kInnerTailPx = 22.0f;
+    const float min_signed_dist = -kOuterTailPx;
+    const float max_signed_dist = kInnerTailPx;
+    const float sample_step = static_cast<float>(cell_size) / static_cast<float>(samples_per_tile);
+
+    std::vector<Color> pixels(static_cast<size_t>(tex_width * tex_height), Color{0, 0, 0, 255});
+    if (segments.empty()) {
+        UpdateTexture(*texture, pixels.data());
+        return;
+    }
+
+    for (int y = 0; y < tex_height; ++y) {
+        for (int x = 0; x < tex_width; ++x) {
+            const Vector2 sample_world = {(static_cast<float>(x) + 0.5f) * sample_step,
+                                          (static_cast<float>(y) + 0.5f) * sample_step};
+            const GridCoord cell = {static_cast<int>(std::floor(sample_world.x / static_cast<float>(cell_size))),
+                                    static_cast<int>(std::floor(sample_world.y / static_cast<float>(cell_size)))};
+            const bool inside = active_cells.count(MakeGridKey(cell)) > 0;
+
+            float min_dist_sq = std::numeric_limits<float>::max();
+            for (const InfluenceBoundarySegment& segment : segments) {
+                min_dist_sq = std::min(min_dist_sq, DistanceSqPointToSegment(sample_world, segment.start, segment.end));
+            }
+
+            float signed_dist = std::sqrt(std::max(0.0f, min_dist_sq));
+            signed_dist = inside ? signed_dist : -signed_dist;
+            signed_dist = std::clamp(signed_dist, min_signed_dist, max_signed_dist);
+            const float encoded = (signed_dist - min_signed_dist) / (max_signed_dist - min_signed_dist);
+            const unsigned char value = static_cast<unsigned char>(std::roundf(encoded * 255.0f));
+            pixels[static_cast<size_t>(y * tex_width + x)] = Color{value, value, value, 255};
+        }
+    }
+
+    UpdateTexture(*texture, pixels.data());
+}
+
 bool ContainsWorldPointExpanded(const Rectangle& rect, Vector2 point, float radius) {
     return point.x >= rect.x - radius && point.x <= rect.x + rect.width + radius &&
            point.y >= rect.y - radius && point.y <= rect.y + rect.height + radius;
@@ -594,6 +722,7 @@ bool GameApp::Initialize() {
     resolved_zone_fill_overlay_shader_path_ = ResolveRuntimePath(Constants::kZoneFillOverlayShaderPath);
     resolved_zone_border_overlay_shader_path_ = ResolveRuntimePath(Constants::kZoneBorderOverlayShaderPath);
     resolved_map_bounds_fade_shader_path_ = ResolveRuntimePath(Constants::kMapBoundsFadeShaderPath);
+    resolved_influence_zone_overlay_shader_path_ = ResolveRuntimePath(Constants::kInfluenceZoneOverlayShaderPath);
 
     objects_database_.LoadFromFile(resolved_objects_config_path_);
     composite_effects_loader_.LoadFromFile(resolved_composite_effects_path_);
@@ -720,6 +849,16 @@ void GameApp::Shutdown() {
         world_layer_target_ = {};
         has_world_layer_target_ = false;
     }
+    if (has_influence_zone_distance_red_texture_) {
+        UnloadTexture(influence_zone_distance_red_texture_);
+        influence_zone_distance_red_texture_ = {};
+        has_influence_zone_distance_red_texture_ = false;
+    }
+    if (has_influence_zone_distance_blue_texture_) {
+        UnloadTexture(influence_zone_distance_blue_texture_);
+        influence_zone_distance_blue_texture_ = {};
+        has_influence_zone_distance_blue_texture_ = false;
+    }
     if (audio_device_ready_) {
         CloseAudioDevice();
         audio_device_ready_ = false;
@@ -803,6 +942,23 @@ void GameApp::LoadRenderShaders() {
             map_bounds_fade_fade_rect_max_loc_ = GetShaderLocation(map_bounds_fade_shader_, "uFadeRectMax");
         }
     }
+
+    if (FileExists(resolved_influence_zone_overlay_shader_path_.c_str())) {
+        influence_zone_overlay_shader_ = LoadShader(nullptr, resolved_influence_zone_overlay_shader_path_.c_str());
+        has_influence_zone_overlay_shader_ = (influence_zone_overlay_shader_.id != 0);
+        if (has_influence_zone_overlay_shader_) {
+            influence_zone_overlay_screen_height_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uScreenHeight");
+            influence_zone_overlay_camera_target_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uCameraTarget");
+            influence_zone_overlay_camera_offset_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uCameraOffset");
+            influence_zone_overlay_camera_zoom_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uCameraZoom");
+            influence_zone_overlay_map_size_world_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uMapSizeWorld");
+            influence_zone_overlay_signed_distance_range_loc_ =
+                GetShaderLocation(influence_zone_overlay_shader_, "uSignedDistanceRange");
+            influence_zone_overlay_tint_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uTint");
+            influence_zone_overlay_pattern_phase_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uPatternPhase");
+            influence_zone_overlay_pattern_frame_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uPatternFrame");
+        }
+    }
 }
 
 void GameApp::UnloadRenderShaders() {
@@ -836,6 +992,11 @@ void GameApp::UnloadRenderShaders() {
     }
     map_bounds_fade_shader_ = {};
     has_map_bounds_fade_shader_ = false;
+    if (has_influence_zone_overlay_shader_) {
+        UnloadShader(influence_zone_overlay_shader_);
+    }
+    influence_zone_overlay_shader_ = {};
+    has_influence_zone_overlay_shader_ = false;
     occluder_reveal_count_loc_ = -1;
     occluder_reveal_data_loc_ = -1;
     occluder_reveal_screen_height_loc_ = -1;
@@ -869,6 +1030,15 @@ void GameApp::UnloadRenderShaders() {
     map_bounds_fade_camera_zoom_loc_ = -1;
     map_bounds_fade_fade_rect_min_loc_ = -1;
     map_bounds_fade_fade_rect_max_loc_ = -1;
+    influence_zone_overlay_screen_height_loc_ = -1;
+    influence_zone_overlay_camera_target_loc_ = -1;
+    influence_zone_overlay_camera_offset_loc_ = -1;
+    influence_zone_overlay_camera_zoom_loc_ = -1;
+    influence_zone_overlay_map_size_world_loc_ = -1;
+    influence_zone_overlay_signed_distance_range_loc_ = -1;
+    influence_zone_overlay_tint_loc_ = -1;
+    influence_zone_overlay_pattern_phase_loc_ = -1;
+    influence_zone_overlay_pattern_frame_loc_ = -1;
 }
 
 bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y) {
@@ -4240,6 +4410,7 @@ void GameApp::UpdateIceWalls(float dt) {
 void GameApp::UpdateRunes(float dt) {
     std::vector<RunePlacedEvent> activated_runes;
     std::vector<int> expired_rune_ids;
+    bool influence_changed = false;
     for (auto& rune : state_.runes) {
         if (!rune.active) {
             rune.activation_remaining_seconds = std::max(0.0f, rune.activation_remaining_seconds - dt);
@@ -4248,6 +4419,9 @@ void GameApp::UpdateRunes(float dt) {
             }
 
             rune.active = true;
+            if (rune.creates_influence_zone) {
+                influence_changed = true;
+            }
             activated_runes.push_back(
                 RunePlacedEvent{rune.owner_player_id, rune.owner_team, rune.cell, rune.rune_type, rune.placement_order});
             continue;
@@ -4285,6 +4459,7 @@ void GameApp::UpdateRunes(float dt) {
                         (static_cast<float>(frame_count) / std::max(0.001f, fps)) * Constants::kEarthRuneSlamSlowdown;
                 }
                 rune.earth_roots_spawned = false;
+                influence_changed = influence_changed || rune.creates_influence_zone;
                 rune.creates_influence_zone = false;
                 PlaySfxIfVisible(sfx_earth_rune_launch_.sound, sfx_earth_rune_launch_.loaded, CellToWorldCenter(rune.cell));
                 break;
@@ -4342,13 +4517,13 @@ void GameApp::UpdateRunes(float dt) {
             state_.runes.end());
     }
 
-    if (!activated_runes.empty()) {
+    if (!activated_runes.empty() || !expired_rune_ids.empty() || influence_changed) {
         RebuildInfluenceZones();
+    }
+    if (!activated_runes.empty()) {
         for (const RunePlacedEvent& event : activated_runes) {
             event_queue_.Push(event);
         }
-    } else if (!state_.influence_zones.empty()) {
-        RebuildInfluenceZones();
     }
 }
 
@@ -4507,6 +4682,18 @@ void GameApp::RebuildInfluenceZones() {
                            }),
             state_.influence_zones.end());
     }
+
+    constexpr int kInfluenceDistanceSamplesPerTile = 2;
+    const auto red_cells = CollectInfluenceZoneCells(state_.influence_zones, Constants::kTeamRed);
+    const auto blue_cells = CollectInfluenceZoneCells(state_.influence_zones, Constants::kTeamBlue);
+    BuildInfluenceDistanceTexture(&influence_zone_distance_red_texture_, &has_influence_zone_distance_red_texture_,
+                                  red_cells, CollectInfluenceBoundarySegments(red_cells, state_.map.cell_size),
+                                  state_.map.width, state_.map.height, state_.map.cell_size,
+                                  kInfluenceDistanceSamplesPerTile);
+    BuildInfluenceDistanceTexture(&influence_zone_distance_blue_texture_, &has_influence_zone_distance_blue_texture_,
+                                  blue_cells, CollectInfluenceBoundarySegments(blue_cells, state_.map.cell_size),
+                                  state_.map.width, state_.map.height, state_.map.cell_size,
+                                  kInfluenceDistanceSamplesPerTile);
 }
 
 void GameApp::ResolvePlayerVsIceWalls(Player& player) {
@@ -5513,13 +5700,16 @@ void GameApp::HandleEventsHost() {
 
     event_queue_.Clear();
 
+    const size_t before_rune_count = state_.runes.size();
     state_.runes.erase(std::remove_if(state_.runes.begin(), state_.runes.end(),
                                       [](const Rune& rune) {
                                           return !rune.active && rune.activation_remaining_seconds <= 0.0f &&
                                                  rune.activation_total_seconds <= 0.0f;
                                       }),
                        state_.runes.end());
-    RebuildInfluenceZones();
+    if (state_.runes.size() != before_rune_count) {
+        RebuildInfluenceZones();
+    }
 }
 
 bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
@@ -5954,7 +6144,10 @@ void GameApp::RenderWorld() {
     DrawObjectShadowLayer();
 
     BeginMode2D(camera_);
-    RenderNonTerrainDepthSorted();
+    RenderNonTerrainDepthSorted(DepthSortedRenderPass::UnderInfluenceOverlay);
+    RenderInfluenceZoneOverlay();
+    RenderInfluenceZoneAnimatedTiles();
+    RenderNonTerrainDepthSorted(DepthSortedRenderPass::OverInfluenceOverlay);
     RenderMeleeAttacks();
     RenderDamagePopups();
     EndMode2D();
@@ -6263,6 +6456,84 @@ void GameApp::RenderZoneBorderOverlay() {
     EndShaderMode();
 }
 
+void GameApp::RenderInfluenceZoneOverlay() {
+    if (!has_influence_zone_overlay_shader_ || state_.map.cell_size <= 0 || state_.map.width <= 0 || state_.map.height <= 0) {
+        return;
+    }
+
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float camera_target[2] = {camera_.target.x, camera_.target.y};
+    const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+    const float camera_zoom = camera_.zoom;
+    const float map_size_world[2] = {static_cast<float>(state_.map.width * state_.map.cell_size),
+                                     static_cast<float>(state_.map.height * state_.map.cell_size)};
+    const float signed_distance_range[2] = {-6.0f, 22.0f};
+    const float pattern_frame = std::floor(render_time_seconds_ * 10.0f);
+
+    SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_screen_height_loc_, &screen_height,
+                   SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_camera_target_loc_, camera_target,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_camera_offset_loc_, camera_offset,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_camera_zoom_loc_, &camera_zoom,
+                   SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_map_size_world_loc_, map_size_world,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_signed_distance_range_loc_,
+                    signed_distance_range, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_pattern_frame_loc_, &pattern_frame,
+                   SHADER_UNIFORM_FLOAT);
+
+    const auto draw_team_field = [&](const Texture2D& texture, bool has_texture, const float tint[4], float pattern_phase) {
+        if (!has_texture) {
+            return;
+        }
+
+        const Rectangle src = {0.0f, 0.0f, static_cast<float>(texture.width), static_cast<float>(texture.height)};
+        const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+        BeginShaderMode(influence_zone_overlay_shader_);
+        SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_tint_loc_, tint, SHADER_UNIFORM_VEC4, 1);
+        SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_pattern_phase_loc_, &pattern_phase,
+                       SHADER_UNIFORM_FLOAT);
+        DrawTexturePro(texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+        EndShaderMode();
+    };
+
+    const float red_tint[4] = {1.0f, 100.0f / 255.0f, 100.0f / 255.0f, 1.0f};
+    const float blue_tint[4] = {120.0f / 255.0f, 150.0f / 255.0f, 1.0f, 1.0f};
+    draw_team_field(influence_zone_distance_red_texture_, has_influence_zone_distance_red_texture_, red_tint, 0.0f);
+    draw_team_field(influence_zone_distance_blue_texture_, has_influence_zone_distance_blue_texture_, blue_tint, 1.0f);
+}
+
+void GameApp::RenderInfluenceZoneAnimatedTiles() {
+    if (state_.influence_zones.empty()) {
+        return;
+    }
+
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    for (const auto& zone : state_.influence_zones) {
+        if (!state_.map.IsInside(zone.cell)) {
+            continue;
+        }
+        const Rectangle dst = SnapRect(
+            {static_cast<float>(zone.cell.x * state_.map.cell_size), static_cast<float>(zone.cell.y * state_.map.cell_size),
+             static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
+        const char* animation = zone.team == Constants::kTeamRed ? "influence_zone_red" : "influence_zone_blue";
+        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
+            const Rectangle src =
+                InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
+                                Constants::kAtlasSampleInsetPixels);
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 170});
+        } else {
+            const Color tint =
+                zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};
+            DrawRectangleRec(dst, tint);
+        }
+    }
+}
+
 void GameApp::RenderMapBoundsFadeOverlay() {
     if (!has_map_bounds_fade_shader_ || state_.map.cell_size <= 0) {
         return;
@@ -6292,7 +6563,7 @@ void GameApp::RenderMapBoundsFadeOverlay() {
     EndShaderMode();
 }
 
-void GameApp::RenderNonTerrainDepthSorted() {
+void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
     enum class RenderKind {
         LegacyDecoration,
         MapObject,
@@ -6347,6 +6618,18 @@ void GameApp::RenderNonTerrainDepthSorted() {
             default:
                 return 12;
         }
+    };
+
+    const auto pass_matches = [&](RenderKind kind) {
+        switch (pass) {
+            case DepthSortedRenderPass::UnderInfluenceOverlay:
+                return kind == RenderKind::CompositeEffectPart || kind == RenderKind::FireStormDummyPart ||
+                       kind == RenderKind::EarthRootsPart || kind == RenderKind::Rune || kind == RenderKind::IceWall;
+            case DepthSortedRenderPass::OverInfluenceOverlay:
+                return !(kind == RenderKind::CompositeEffectPart || kind == RenderKind::FireStormDummyPart ||
+                         kind == RenderKind::EarthRootsPart || kind == RenderKind::Rune || kind == RenderKind::IceWall);
+        }
+        return true;
     };
 
     std::vector<RenderItem> items;
@@ -6628,6 +6911,9 @@ void GameApp::RenderNonTerrainDepthSorted() {
     };
 
     for (const RenderItem& item : items) {
+        if (!pass_matches(item.kind)) {
+            continue;
+        }
         switch (item.kind) {
             case RenderKind::LegacyDecoration: {
                 if (!has_tall_texture || state_.map.width <= 0) {
@@ -7456,26 +7742,6 @@ void GameApp::RenderMapForeground() {
                     }
                 }
             }
-        }
-    }
-
-    for (const auto& zone : state_.influence_zones) {
-        if (!state_.map.IsInside(zone.cell)) {
-            continue;
-        }
-        const Rectangle dst = SnapRect(
-            {static_cast<float>(zone.cell.x * state_.map.cell_size), static_cast<float>(zone.cell.y * state_.map.cell_size),
-             static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
-        const char* animation = zone.team == Constants::kTeamRed ? "influence_zone_red" : "influence_zone_blue";
-        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
-            const Rectangle src =
-                InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
-                                Constants::kAtlasSampleInsetPixels);
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 170});
-        } else {
-            const Color tint =
-                zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};
-            DrawRectangleRec(dst, tint);
         }
     }
 

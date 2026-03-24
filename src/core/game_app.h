@@ -149,7 +149,13 @@ class GameApp {
     void EnsureShadowLayerRenderTarget();
     void UpdateObjectShadowLayer();
     void DrawObjectShadowLayer();
-    void RenderNonTerrainDepthSorted();
+    enum class DepthSortedRenderPass {
+        UnderInfluenceOverlay,
+        OverInfluenceOverlay,
+    };
+    void RenderNonTerrainDepthSorted(DepthSortedRenderPass pass);
+    void RenderInfluenceZoneOverlay();
+    void RenderInfluenceZoneAnimatedTiles();
     void RenderRunes();
     void RenderIceWalls();
     void RenderPlayers();
@@ -254,6 +260,7 @@ class GameApp {
     std::string resolved_zone_fill_overlay_shader_path_;
     std::string resolved_zone_border_overlay_shader_path_;
     std::string resolved_map_bounds_fade_shader_path_;
+    std::string resolved_influence_zone_overlay_shader_path_;
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;
     double connect_attempt_start_seconds_ = 0.0;
@@ -306,6 +313,8 @@ class GameApp {
     bool has_zone_border_overlay_shader_ = false;
     Shader map_bounds_fade_shader_ = {};
     bool has_map_bounds_fade_shader_ = false;
+    Shader influence_zone_overlay_shader_ = {};
+    bool has_influence_zone_overlay_shader_ = false;
     int occluder_reveal_count_loc_ = -1;
     int occluder_reveal_data_loc_ = -1;
     int occluder_reveal_screen_height_loc_ = -1;
@@ -339,7 +348,20 @@ class GameApp {
     int map_bounds_fade_camera_zoom_loc_ = -1;
     int map_bounds_fade_fade_rect_min_loc_ = -1;
     int map_bounds_fade_fade_rect_max_loc_ = -1;
+    int influence_zone_overlay_screen_height_loc_ = -1;
+    int influence_zone_overlay_camera_target_loc_ = -1;
+    int influence_zone_overlay_camera_offset_loc_ = -1;
+    int influence_zone_overlay_camera_zoom_loc_ = -1;
+    int influence_zone_overlay_map_size_world_loc_ = -1;
+    int influence_zone_overlay_signed_distance_range_loc_ = -1;
+    int influence_zone_overlay_tint_loc_ = -1;
+    int influence_zone_overlay_pattern_phase_loc_ = -1;
+    int influence_zone_overlay_pattern_frame_loc_ = -1;
     float camera_shake_time_remaining_ = 0.0f;
+    Texture2D influence_zone_distance_red_texture_ = {};
+    Texture2D influence_zone_distance_blue_texture_ = {};
+    bool has_influence_zone_distance_red_texture_ = false;
+    bool has_influence_zone_distance_blue_texture_ = false;
     std::unordered_map<int, float> fire_storm_dummy_lightning_seconds_remaining_;
     std::unordered_map<int, float> fire_storm_dummy_lightning_cooldown_seconds_remaining_;
     std::unordered_map<int, bool> fire_storm_cast_impact_played_;

@@ -3607,7 +3607,7 @@
   "layers": [
    { "name": "glow/shadow", "opacity": 36, "blendMode": "normal" },
    { "name": "Sprite Sheet", "opacity": 255, "blendMode": "normal" },
-   { "name": "foreground", "opacity": 97, "blendMode": "normal" },
+   { "name": "foreground", "opacity": 255, "blendMode": "normal" },
    { "name": "foreground_far", "opacity": 255, "blendMode": "normal" },
    { "name": "Layer 1", "opacity": 255, "blendMode": "normal" },
    { "name": "front_glow", "opacity": 61, "blendMode": "normal" }
