@@ -16,6 +16,8 @@ uniform vec2 uSignedDistanceRange;
 uniform vec4 uTint;
 uniform float uPatternPhase;
 uniform float uPatternFrame;
+uniform sampler2D uToDistanceTexture;
+uniform float uBlendT;
 
 vec2 ScreenToWorld(vec2 screenPos) {
     return (screenPos - uCameraOffset) / max(uCameraZoom, 0.0001) + uCameraTarget;
@@ -119,8 +121,9 @@ void main() {
     }
 
     vec2 uv = worldPos / max(uMapSizeWorld, vec2(0.0001));
-    float encoded = texture(texture0, uv).r;
-    float signedDistPx = DecodeSignedDistance(encoded);
+    float fromEncoded = texture(texture0, uv).r;
+    float toEncoded = texture(uToDistanceTexture, uv).r;
+    float signedDistPx = mix(DecodeSignedDistance(fromEncoded), DecodeSignedDistance(toEncoded), clamp(uBlendT, 0.0, 1.0));
     float density = EdgeDensity(signedDistPx) * 0.8;
     const float densityFloor = 0.00000325;
     if (density <= densityFloor) {
@@ -140,7 +143,7 @@ void main() {
     float binIndex = floor(normalizedDensity * 4.0);
     binIndex = clamp(binIndex, 0.0, 3.0);
     float quantizedLightness = mix(0.4, 0.6, binIndex / 3.0);
-    float quantizedAlpha = mix(0.05, 0.25, binIndex / 3.0);
+    float quantizedAlpha = mix(0.05, 0.20, binIndex / 3.0);
 
     vec3 hsl = RgbToHsl(uTint.rgb);
     hsl.z = quantizedLightness;

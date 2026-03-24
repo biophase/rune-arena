@@ -141,6 +141,7 @@ constexpr int kHudLowManaTintB = 255;
 constexpr float kHudLowManaBrightness = 0.55f;
 constexpr float kInventoryDimAlpha = 0.45f;
 constexpr float kInfluenceZoneAlpha = 0.6f;
+constexpr float kInfluenceZoneTransitionSeconds = 0.3f;
 constexpr int kDefaultMatchDurationSeconds = 300;
 constexpr int kDefaultBestOfTargetKills = 5;
 constexpr float kDefaultShrinkStartSeconds = 150.0f;

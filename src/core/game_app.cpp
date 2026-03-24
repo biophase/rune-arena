@@ -211,15 +211,11 @@ float DistanceSqPointToSegment(Vector2 p, Vector2 a, Vector2 b) {
 }
 
 void BuildInfluenceDistanceTexture(Texture2D* texture, bool* has_texture,
-                                   const std::unordered_set<int64_t>& active_cells,
-                                   const std::vector<InfluenceBoundarySegment>& segments, int map_width, int map_height,
-                                   int cell_size, int samples_per_tile) {
-    if (texture == nullptr || has_texture == nullptr) {
+                                   const std::vector<Color>& pixels, int tex_width, int tex_height) {
+    if (texture == nullptr || has_texture == nullptr || tex_width <= 0 || tex_height <= 0 ||
+        pixels.size() != static_cast<size_t>(tex_width * tex_height)) {
         return;
     }
-
-    const int tex_width = std::max(1, map_width * samples_per_tile);
-    const int tex_height = std::max(1, map_height * samples_per_tile);
     if (*has_texture && (texture->width != tex_width || texture->height != tex_height)) {
         UnloadTexture(*texture);
         *texture = {};
@@ -239,15 +235,29 @@ void BuildInfluenceDistanceTexture(Texture2D* texture, bool* has_texture,
         return;
     }
 
+    UpdateTexture(*texture, pixels.data());
+}
+
+void BuildInfluenceDistanceField(InfluenceDistanceField* field, const std::unordered_set<int64_t>& active_cells,
+                                 const std::vector<InfluenceBoundarySegment>& segments, int map_width, int map_height,
+                                 int cell_size, int samples_per_tile) {
+    if (field == nullptr) {
+        return;
+    }
+
+    const int tex_width = std::max(1, map_width * samples_per_tile);
+    const int tex_height = std::max(1, map_height * samples_per_tile);
+    field->width = tex_width;
+    field->height = tex_height;
+
     constexpr float kOuterTailPx = 6.0f;
     constexpr float kInnerTailPx = 22.0f;
     const float min_signed_dist = -kOuterTailPx;
     const float max_signed_dist = kInnerTailPx;
     const float sample_step = static_cast<float>(cell_size) / static_cast<float>(samples_per_tile);
 
-    std::vector<Color> pixels(static_cast<size_t>(tex_width * tex_height), Color{0, 0, 0, 255});
+    field->pixels.assign(static_cast<size_t>(tex_width * tex_height), Color{0, 0, 0, 255});
     if (segments.empty()) {
-        UpdateTexture(*texture, pixels.data());
         return;
     }
 
@@ -269,11 +279,70 @@ void BuildInfluenceDistanceTexture(Texture2D* texture, bool* has_texture,
             signed_dist = std::clamp(signed_dist, min_signed_dist, max_signed_dist);
             const float encoded = (signed_dist - min_signed_dist) / (max_signed_dist - min_signed_dist);
             const unsigned char value = static_cast<unsigned char>(std::roundf(encoded * 255.0f));
-            pixels[static_cast<size_t>(y * tex_width + x)] = Color{value, value, value, 255};
+            field->pixels[static_cast<size_t>(y * tex_width + x)] = Color{value, value, value, 255};
         }
     }
+}
 
-    UpdateTexture(*texture, pixels.data());
+void ClearInfluenceDistanceField(InfluenceDistanceField* field) {
+    if (field == nullptr) {
+        return;
+    }
+    field->width = 0;
+    field->height = 0;
+    field->pixels.clear();
+}
+
+bool HasInfluenceDistanceField(const InfluenceDistanceField& field) {
+    return field.width > 0 && field.height > 0 &&
+           field.pixels.size() == static_cast<size_t>(field.width * field.height);
+}
+
+void CopyInfluenceDistanceField(const InfluenceDistanceField& src, InfluenceDistanceField* dst) {
+    if (dst == nullptr) {
+        return;
+    }
+    *dst = src;
+}
+
+void BlendInfluenceDistanceField(const InfluenceDistanceField& from, const InfluenceDistanceField& to,
+                                 float t, InfluenceDistanceField* out) {
+    if (out == nullptr) {
+        return;
+    }
+    if (!HasInfluenceDistanceField(from)) {
+        *out = to;
+        return;
+    }
+    if (!HasInfluenceDistanceField(to)) {
+        *out = from;
+        return;
+    }
+    if (from.width != to.width || from.height != to.height ||
+        from.pixels.size() != to.pixels.size()) {
+        *out = to;
+        return;
+    }
+
+    out->width = to.width;
+    out->height = to.height;
+    out->pixels.resize(to.pixels.size());
+    const float blend = std::clamp(t, 0.0f, 1.0f);
+    for (size_t i = 0; i < to.pixels.size(); ++i) {
+        const float from_v = static_cast<float>(from.pixels[i].r);
+        const float to_v = static_cast<float>(to.pixels[i].r);
+        const unsigned char value = static_cast<unsigned char>(std::round(from_v + (to_v - from_v) * blend));
+        out->pixels[i] = Color{value, value, value, 255};
+    }
+}
+
+void BuildZeroInfluenceDistanceField(int width, int height, InfluenceDistanceField* field) {
+    if (field == nullptr) {
+        return;
+    }
+    field->width = std::max(0, width);
+    field->height = std::max(0, height);
+    field->pixels.assign(static_cast<size_t>(field->width * field->height), Color{0, 0, 0, 255});
 }
 
 bool ContainsWorldPointExpanded(const Rectangle& rect, Vector2 point, float radius) {
@@ -869,15 +938,25 @@ void GameApp::Shutdown() {
         world_layer_target_ = {};
         has_world_layer_target_ = false;
     }
-    if (has_influence_zone_distance_red_texture_) {
-        UnloadTexture(influence_zone_distance_red_texture_);
-        influence_zone_distance_red_texture_ = {};
-        has_influence_zone_distance_red_texture_ = false;
+    if (has_influence_zone_distance_red_from_texture_) {
+        UnloadTexture(influence_zone_distance_red_from_texture_);
+        influence_zone_distance_red_from_texture_ = {};
+        has_influence_zone_distance_red_from_texture_ = false;
     }
-    if (has_influence_zone_distance_blue_texture_) {
-        UnloadTexture(influence_zone_distance_blue_texture_);
-        influence_zone_distance_blue_texture_ = {};
-        has_influence_zone_distance_blue_texture_ = false;
+    if (has_influence_zone_distance_blue_from_texture_) {
+        UnloadTexture(influence_zone_distance_blue_from_texture_);
+        influence_zone_distance_blue_from_texture_ = {};
+        has_influence_zone_distance_blue_from_texture_ = false;
+    }
+    if (has_influence_zone_distance_red_to_texture_) {
+        UnloadTexture(influence_zone_distance_red_to_texture_);
+        influence_zone_distance_red_to_texture_ = {};
+        has_influence_zone_distance_red_to_texture_ = false;
+    }
+    if (has_influence_zone_distance_blue_to_texture_) {
+        UnloadTexture(influence_zone_distance_blue_to_texture_);
+        influence_zone_distance_blue_to_texture_ = {};
+        has_influence_zone_distance_blue_to_texture_ = false;
     }
     if (audio_device_ready_) {
         CloseAudioDevice();
@@ -977,6 +1056,9 @@ void GameApp::LoadRenderShaders() {
             influence_zone_overlay_tint_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uTint");
             influence_zone_overlay_pattern_phase_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uPatternPhase");
             influence_zone_overlay_pattern_frame_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uPatternFrame");
+            influence_zone_overlay_to_distance_texture_loc_ =
+                GetShaderLocation(influence_zone_overlay_shader_, "uToDistanceTexture");
+            influence_zone_overlay_blend_t_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uBlendT");
         }
     }
 }
@@ -1059,6 +1141,8 @@ void GameApp::UnloadRenderShaders() {
     influence_zone_overlay_tint_loc_ = -1;
     influence_zone_overlay_pattern_phase_loc_ = -1;
     influence_zone_overlay_pattern_frame_loc_ = -1;
+    influence_zone_overlay_to_distance_texture_loc_ = -1;
+    influence_zone_overlay_blend_t_loc_ = -1;
 }
 
 bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y) {
@@ -1529,6 +1613,9 @@ void GameApp::UpdateLobby(float dt) {
 }
 
 void GameApp::UpdateMatch(float dt) {
+    influence_zone_transition_elapsed_seconds_ =
+        std::min(Constants::kInfluenceZoneTransitionSeconds, influence_zone_transition_elapsed_seconds_ + dt);
+
     if (escape_pressed_this_update_) {
         if (Player* local_player = FindPlayerById(state_.local_player_id);
             local_player != nullptr && local_player->inventory_mode) {
@@ -2190,16 +2277,23 @@ void GameApp::StartMatchAsHost() {
 
 void GameApp::ClearInfluenceZoneVisuals() {
     state_.influence_zones.clear();
-    if (has_influence_zone_distance_red_texture_) {
-        UnloadTexture(influence_zone_distance_red_texture_);
-        influence_zone_distance_red_texture_ = {};
-        has_influence_zone_distance_red_texture_ = false;
-    }
-    if (has_influence_zone_distance_blue_texture_) {
-        UnloadTexture(influence_zone_distance_blue_texture_);
-        influence_zone_distance_blue_texture_ = {};
-        has_influence_zone_distance_blue_texture_ = false;
-    }
+    auto clear_texture = [](Texture2D* texture, bool* has_texture) {
+        if (texture == nullptr || has_texture == nullptr || !*has_texture) {
+            return;
+        }
+        UnloadTexture(*texture);
+        *texture = {};
+        *has_texture = false;
+    };
+    clear_texture(&influence_zone_distance_red_from_texture_, &has_influence_zone_distance_red_from_texture_);
+    clear_texture(&influence_zone_distance_blue_from_texture_, &has_influence_zone_distance_blue_from_texture_);
+    clear_texture(&influence_zone_distance_red_to_texture_, &has_influence_zone_distance_red_to_texture_);
+    clear_texture(&influence_zone_distance_blue_to_texture_, &has_influence_zone_distance_blue_to_texture_);
+    ClearInfluenceDistanceField(&influence_zone_distance_red_from_field_);
+    ClearInfluenceDistanceField(&influence_zone_distance_blue_from_field_);
+    ClearInfluenceDistanceField(&influence_zone_distance_red_to_field_);
+    ClearInfluenceDistanceField(&influence_zone_distance_blue_to_field_);
+    influence_zone_transition_elapsed_seconds_ = Constants::kInfluenceZoneTransitionSeconds;
     influence_zone_signature_ = 0;
     has_influence_zone_signature_ = false;
 }
@@ -4739,22 +4833,58 @@ void GameApp::RebuildInfluenceZones() {
         *texture = {};
         *has_texture = false;
     };
-    if (red_cells.empty()) {
-        clear_distance_texture(&influence_zone_distance_red_texture_, &has_influence_zone_distance_red_texture_);
-    } else {
-        BuildInfluenceDistanceTexture(&influence_zone_distance_red_texture_, &has_influence_zone_distance_red_texture_,
-                                      red_cells, CollectInfluenceBoundarySegments(red_cells, state_.map.cell_size),
-                                      state_.map.width, state_.map.height, state_.map.cell_size,
-                                      kInfluenceDistanceSamplesPerTile);
-    }
-    if (blue_cells.empty()) {
-        clear_distance_texture(&influence_zone_distance_blue_texture_, &has_influence_zone_distance_blue_texture_);
-    } else {
-        BuildInfluenceDistanceTexture(&influence_zone_distance_blue_texture_, &has_influence_zone_distance_blue_texture_,
-                                      blue_cells, CollectInfluenceBoundarySegments(blue_cells, state_.map.cell_size),
-                                      state_.map.width, state_.map.height, state_.map.cell_size,
-                                      kInfluenceDistanceSamplesPerTile);
-    }
+    const float transition_t =
+        std::clamp(influence_zone_transition_elapsed_seconds_ / std::max(0.0001f, Constants::kInfluenceZoneTransitionSeconds),
+                   0.0f, 1.0f);
+    auto rebuild_team_texture = [&](const std::unordered_set<int64_t>& cells, InfluenceDistanceField* from_field,
+                                    Texture2D* from_texture, bool* has_from, InfluenceDistanceField* to_field,
+                                    Texture2D* to_texture, bool* has_to) {
+        InfluenceDistanceField rebuilt_field;
+        BuildInfluenceDistanceField(&rebuilt_field, cells, CollectInfluenceBoundarySegments(cells, state_.map.cell_size),
+                                    state_.map.width, state_.map.height, state_.map.cell_size,
+                                    kInfluenceDistanceSamplesPerTile);
+
+        if (!has_influence_zone_signature_) {
+            if (!cells.empty()) {
+                BuildZeroInfluenceDistanceField(rebuilt_field.width, rebuilt_field.height, from_field);
+                BuildInfluenceDistanceTexture(from_texture, has_from, from_field->pixels, from_field->width,
+                                              from_field->height);
+                *to_field = std::move(rebuilt_field);
+                BuildInfluenceDistanceTexture(to_texture, has_to, to_field->pixels, to_field->width, to_field->height);
+            } else {
+                ClearInfluenceDistanceField(from_field);
+                ClearInfluenceDistanceField(to_field);
+                clear_distance_texture(from_texture, has_from);
+                clear_distance_texture(to_texture, has_to);
+            }
+            return;
+        }
+
+        InfluenceDistanceField current_visible;
+        if (HasInfluenceDistanceField(*from_field) && HasInfluenceDistanceField(*to_field)) {
+            BlendInfluenceDistanceField(*from_field, *to_field, transition_t, &current_visible);
+        } else if (HasInfluenceDistanceField(*to_field)) {
+            CopyInfluenceDistanceField(*to_field, &current_visible);
+        } else if (HasInfluenceDistanceField(*from_field)) {
+            CopyInfluenceDistanceField(*from_field, &current_visible);
+        } else {
+            CopyInfluenceDistanceField(rebuilt_field, &current_visible);
+        }
+
+        *from_field = std::move(current_visible);
+        BuildInfluenceDistanceTexture(from_texture, has_from, from_field->pixels, from_field->width, from_field->height);
+        *to_field = std::move(rebuilt_field);
+        BuildInfluenceDistanceTexture(to_texture, has_to, to_field->pixels, to_field->width, to_field->height);
+    };
+
+    rebuild_team_texture(red_cells, &influence_zone_distance_red_from_field_, &influence_zone_distance_red_from_texture_,
+                         &has_influence_zone_distance_red_from_texture_, &influence_zone_distance_red_to_field_,
+                         &influence_zone_distance_red_to_texture_, &has_influence_zone_distance_red_to_texture_);
+    rebuild_team_texture(blue_cells, &influence_zone_distance_blue_from_field_, &influence_zone_distance_blue_from_texture_,
+                         &has_influence_zone_distance_blue_from_texture_, &influence_zone_distance_blue_to_field_,
+                         &influence_zone_distance_blue_to_texture_, &has_influence_zone_distance_blue_to_texture_);
+
+    influence_zone_transition_elapsed_seconds_ = 0.0f;
     influence_zone_signature_ = new_signature;
     has_influence_zone_signature_ = true;
 }
@@ -6532,6 +6662,9 @@ void GameApp::RenderInfluenceZoneOverlay() {
                                      static_cast<float>(state_.map.height * state_.map.cell_size)};
     const float signed_distance_range[2] = {-6.0f, 22.0f};
     const float pattern_frame = std::floor(render_time_seconds_ * 10.0f);
+    const float blend_t = std::clamp(influence_zone_transition_elapsed_seconds_ /
+                                         std::max(0.0001f, Constants::kInfluenceZoneTransitionSeconds),
+                                     0.0f, 1.0f);
 
     SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_screen_height_loc_, &screen_height,
                    SHADER_UNIFORM_FLOAT);
@@ -6548,25 +6681,34 @@ void GameApp::RenderInfluenceZoneOverlay() {
     SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_pattern_frame_loc_, &pattern_frame,
                    SHADER_UNIFORM_FLOAT);
 
-    const auto draw_team_field = [&](const Texture2D& texture, bool has_texture, const float tint[4], float pattern_phase) {
-        if (!has_texture) {
+    const auto draw_team_field = [&](const Texture2D& from_texture, bool has_from, const Texture2D& to_texture,
+                                     bool has_to, const float tint[4], float pattern_phase) {
+        if (!has_from && !has_to) {
             return;
         }
 
-        const Rectangle src = {0.0f, 0.0f, static_cast<float>(texture.width), static_cast<float>(texture.height)};
+        const Texture2D& draw_texture = has_from ? from_texture : to_texture;
+        const Texture2D& target_texture = has_to ? to_texture : draw_texture;
+        const float draw_blend_t = (has_from && has_to) ? blend_t : 1.0f;
+        const Rectangle src = {0.0f, 0.0f, static_cast<float>(draw_texture.width), static_cast<float>(draw_texture.height)};
         const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
         BeginShaderMode(influence_zone_overlay_shader_);
         SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_tint_loc_, tint, SHADER_UNIFORM_VEC4, 1);
         SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_pattern_phase_loc_, &pattern_phase,
                        SHADER_UNIFORM_FLOAT);
-        DrawTexturePro(texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+        SetShaderValueTexture(influence_zone_overlay_shader_, influence_zone_overlay_to_distance_texture_loc_, target_texture);
+        SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_blend_t_loc_, &draw_blend_t,
+                       SHADER_UNIFORM_FLOAT);
+        DrawTexturePro(draw_texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
         EndShaderMode();
     };
 
     const float red_tint[4] = {1.0f, 100.0f / 255.0f, 100.0f / 255.0f, 1.0f};
     const float blue_tint[4] = {120.0f / 255.0f, 150.0f / 255.0f, 1.0f, 1.0f};
-    draw_team_field(influence_zone_distance_red_texture_, has_influence_zone_distance_red_texture_, red_tint, 0.0f);
-    draw_team_field(influence_zone_distance_blue_texture_, has_influence_zone_distance_blue_texture_, blue_tint, 1.0f);
+    draw_team_field(influence_zone_distance_red_from_texture_, has_influence_zone_distance_red_from_texture_,
+                    influence_zone_distance_red_to_texture_, has_influence_zone_distance_red_to_texture_, red_tint, 0.0f);
+    draw_team_field(influence_zone_distance_blue_from_texture_, has_influence_zone_distance_blue_from_texture_,
+                    influence_zone_distance_blue_to_texture_, has_influence_zone_distance_blue_to_texture_, blue_tint, 1.0f);
 }
 
 void GameApp::RenderInfluenceZoneAnimatedTiles() {
@@ -6588,7 +6730,7 @@ void GameApp::RenderInfluenceZoneAnimatedTiles() {
             const Rectangle src =
                 InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
                                 Constants::kAtlasSampleInsetPixels);
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 170});
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 128});
         } else {
             const Color tint =
                 zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};

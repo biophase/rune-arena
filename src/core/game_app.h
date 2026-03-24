@@ -32,6 +32,12 @@ enum class AppScreen {
     PostMatch,
 };
 
+struct InfluenceDistanceField {
+    int width = 0;
+    int height = 0;
+    std::vector<Color> pixels;
+};
+
 class GameApp {
   public:
     explicit GameApp(bool force_windowed_launch = false);
@@ -358,11 +364,18 @@ class GameApp {
     int influence_zone_overlay_tint_loc_ = -1;
     int influence_zone_overlay_pattern_phase_loc_ = -1;
     int influence_zone_overlay_pattern_frame_loc_ = -1;
+    int influence_zone_overlay_to_distance_texture_loc_ = -1;
+    int influence_zone_overlay_blend_t_loc_ = -1;
     float camera_shake_time_remaining_ = 0.0f;
-    Texture2D influence_zone_distance_red_texture_ = {};
-    Texture2D influence_zone_distance_blue_texture_ = {};
-    bool has_influence_zone_distance_red_texture_ = false;
-    bool has_influence_zone_distance_blue_texture_ = false;
+    Texture2D influence_zone_distance_red_from_texture_ = {};
+    Texture2D influence_zone_distance_blue_from_texture_ = {};
+    Texture2D influence_zone_distance_red_to_texture_ = {};
+    Texture2D influence_zone_distance_blue_to_texture_ = {};
+    bool has_influence_zone_distance_red_from_texture_ = false;
+    bool has_influence_zone_distance_blue_from_texture_ = false;
+    bool has_influence_zone_distance_red_to_texture_ = false;
+    bool has_influence_zone_distance_blue_to_texture_ = false;
+    float influence_zone_transition_elapsed_seconds_ = Constants::kInfluenceZoneTransitionSeconds;
     uint64_t influence_zone_signature_ = 0;
     bool has_influence_zone_signature_ = false;
     std::unordered_map<int, float> fire_storm_dummy_lightning_seconds_remaining_;
@@ -376,6 +389,10 @@ class GameApp {
         std::vector<int> fulfilled_slot_rune_ids;
     };
     std::vector<AltarInstance> altars_;
+    InfluenceDistanceField influence_zone_distance_red_from_field_;
+    InfluenceDistanceField influence_zone_distance_blue_from_field_;
+    InfluenceDistanceField influence_zone_distance_red_to_field_;
+    InfluenceDistanceField influence_zone_distance_blue_to_field_;
 
     bool audio_device_ready_ = false;
     LoadedSfx sfx_fireball_created_;
