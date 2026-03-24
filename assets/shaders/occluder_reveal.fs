@@ -12,11 +12,6 @@ uniform vec4 uRevealData[8];
 uniform float uScreenHeight;
 uniform float uInsideAlpha;
 uniform vec4 uSourceRectPx;
-uniform vec2 uCameraTarget;
-uniform vec2 uCameraOffset;
-uniform float uCameraZoom;
-uniform vec2 uArenaCenter;
-uniform float uArenaRadius;
 
 float Bayer4(vec2 p) {
     int x = int(mod(p.x, 4.0));
@@ -29,15 +24,6 @@ float Bayer4(vec2 p) {
         15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0
     );
     return thresholds[idx];
-}
-
-float UnsafeCoverage() {
-    if (uArenaRadius <= 0.0 || uCameraZoom <= 0.0) {
-        return 0.0;
-    }
-    vec2 screenPos = vec2(gl_FragCoord.x, uScreenHeight - gl_FragCoord.y);
-    vec2 worldPos = (screenPos - uCameraOffset) / uCameraZoom + uCameraTarget;
-    return step(uArenaRadius, distance(worldPos, uArenaCenter));
 }
 
 void main() {
@@ -67,11 +53,6 @@ void main() {
             alphaMul = (reveal > dither) ? uInsideAlpha : 1.0;
         }
         texel.a *= alphaMul;
-    }
-
-    if (UnsafeCoverage() > 0.5) {
-        float luma = dot(texel.rgb, vec3(0.299, 0.587, 0.114));
-        texel.rgb = vec3(luma);
     }
 
     finalColor = texel;

@@ -25,6 +25,10 @@ namespace {
 
 float ClampDt(float dt) { return std::min(dt, 0.1f); }
 
+bool IsOutsideZoneDamageSource(const char* source) {
+    return source != nullptr && std::strcmp(source, "outside_zone") == 0;
+}
+
 int DetermineWinningTeam(const MatchState& match) {
     if (match.red_team_kills > match.blue_team_kills) {
         return Constants::kTeamRed;
@@ -586,6 +590,9 @@ bool GameApp::Initialize() {
     resolved_menu_background_path_ = ResolveRuntimePath(Constants::kMenuBackgroundPath);
     resolved_occluder_reveal_shader_path_ = ResolveRuntimePath(Constants::kOccluderRevealShaderPath);
     resolved_water_gradient_shader_path_ = ResolveRuntimePath(Constants::kWaterGradientShaderPath);
+    resolved_zone_post_process_shader_path_ = ResolveRuntimePath(Constants::kZonePostProcessShaderPath);
+    resolved_zone_fill_overlay_shader_path_ = ResolveRuntimePath(Constants::kZoneFillOverlayShaderPath);
+    resolved_zone_border_overlay_shader_path_ = ResolveRuntimePath(Constants::kZoneBorderOverlayShaderPath);
 
     objects_database_.LoadFromFile(resolved_objects_config_path_);
     composite_effects_loader_.LoadFromFile(resolved_composite_effects_path_);
@@ -707,6 +714,11 @@ void GameApp::Shutdown() {
         shadow_layer_target_ = {};
         has_shadow_layer_target_ = false;
     }
+    if (has_world_layer_target_) {
+        UnloadRenderTexture(world_layer_target_);
+        world_layer_target_ = {};
+        has_world_layer_target_ = false;
+    }
     if (audio_device_ready_) {
         CloseAudioDevice();
         audio_device_ready_ = false;
@@ -716,18 +728,16 @@ void GameApp::Shutdown() {
 
 void GameApp::LoadRenderShaders() {
     UnloadRenderShaders();
-    if (!FileExists(resolved_occluder_reveal_shader_path_.c_str())) {
-        return;
-    }
-
-    occluder_reveal_shader_ = LoadShader(nullptr, resolved_occluder_reveal_shader_path_.c_str());
-    has_occluder_reveal_shader_ = (occluder_reveal_shader_.id != 0);
-    if (has_occluder_reveal_shader_) {
-        occluder_reveal_count_loc_ = GetShaderLocation(occluder_reveal_shader_, "uRevealCount");
-        occluder_reveal_data_loc_ = GetShaderLocation(occluder_reveal_shader_, "uRevealData");
-        occluder_reveal_screen_height_loc_ = GetShaderLocation(occluder_reveal_shader_, "uScreenHeight");
-        occluder_reveal_inside_alpha_loc_ = GetShaderLocation(occluder_reveal_shader_, "uInsideAlpha");
-        occluder_reveal_source_rect_loc_ = GetShaderLocation(occluder_reveal_shader_, "uSourceRectPx");
+    if (FileExists(resolved_occluder_reveal_shader_path_.c_str())) {
+        occluder_reveal_shader_ = LoadShader(nullptr, resolved_occluder_reveal_shader_path_.c_str());
+        has_occluder_reveal_shader_ = (occluder_reveal_shader_.id != 0);
+        if (has_occluder_reveal_shader_) {
+            occluder_reveal_count_loc_ = GetShaderLocation(occluder_reveal_shader_, "uRevealCount");
+            occluder_reveal_data_loc_ = GetShaderLocation(occluder_reveal_shader_, "uRevealData");
+            occluder_reveal_screen_height_loc_ = GetShaderLocation(occluder_reveal_shader_, "uScreenHeight");
+            occluder_reveal_inside_alpha_loc_ = GetShaderLocation(occluder_reveal_shader_, "uInsideAlpha");
+            occluder_reveal_source_rect_loc_ = GetShaderLocation(occluder_reveal_shader_, "uSourceRectPx");
+        }
     }
 
     if (FileExists(resolved_water_gradient_shader_path_.c_str())) {
@@ -737,6 +747,46 @@ void GameApp::LoadRenderShaders() {
             water_gradient_screen_height_loc_ = GetShaderLocation(water_gradient_shader_, "uScreenHeight");
             water_gradient_start_loc_ = GetShaderLocation(water_gradient_shader_, "uGradientStart");
             water_gradient_end_loc_ = GetShaderLocation(water_gradient_shader_, "uGradientEnd");
+        }
+    }
+
+    if (FileExists(resolved_zone_post_process_shader_path_.c_str())) {
+        zone_post_process_shader_ = LoadShader(nullptr, resolved_zone_post_process_shader_path_.c_str());
+        has_zone_post_process_shader_ = (zone_post_process_shader_.id != 0);
+        if (has_zone_post_process_shader_) {
+            zone_post_process_screen_height_loc_ = GetShaderLocation(zone_post_process_shader_, "uScreenHeight");
+            zone_post_process_camera_target_loc_ = GetShaderLocation(zone_post_process_shader_, "uCameraTarget");
+            zone_post_process_camera_offset_loc_ = GetShaderLocation(zone_post_process_shader_, "uCameraOffset");
+            zone_post_process_camera_zoom_loc_ = GetShaderLocation(zone_post_process_shader_, "uCameraZoom");
+            zone_post_process_zone_center_loc_ = GetShaderLocation(zone_post_process_shader_, "uZoneCenter");
+            zone_post_process_zone_radius_loc_ = GetShaderLocation(zone_post_process_shader_, "uZoneRadius");
+        }
+    }
+
+    if (FileExists(resolved_zone_fill_overlay_shader_path_.c_str())) {
+        zone_fill_overlay_shader_ = LoadShader(nullptr, resolved_zone_fill_overlay_shader_path_.c_str());
+        has_zone_fill_overlay_shader_ = (zone_fill_overlay_shader_.id != 0);
+        if (has_zone_fill_overlay_shader_) {
+            zone_fill_overlay_screen_height_loc_ = GetShaderLocation(zone_fill_overlay_shader_, "uScreenHeight");
+            zone_fill_overlay_camera_target_loc_ = GetShaderLocation(zone_fill_overlay_shader_, "uCameraTarget");
+            zone_fill_overlay_camera_offset_loc_ = GetShaderLocation(zone_fill_overlay_shader_, "uCameraOffset");
+            zone_fill_overlay_camera_zoom_loc_ = GetShaderLocation(zone_fill_overlay_shader_, "uCameraZoom");
+            zone_fill_overlay_zone_center_loc_ = GetShaderLocation(zone_fill_overlay_shader_, "uZoneCenter");
+            zone_fill_overlay_zone_radius_loc_ = GetShaderLocation(zone_fill_overlay_shader_, "uZoneRadius");
+            zone_fill_overlay_zone_fill_rect_loc_ = GetShaderLocation(zone_fill_overlay_shader_, "uZoneFillRectPx");
+        }
+    }
+
+    if (FileExists(resolved_zone_border_overlay_shader_path_.c_str())) {
+        zone_border_overlay_shader_ = LoadShader(nullptr, resolved_zone_border_overlay_shader_path_.c_str());
+        has_zone_border_overlay_shader_ = (zone_border_overlay_shader_.id != 0);
+        if (has_zone_border_overlay_shader_) {
+            zone_border_overlay_screen_height_loc_ = GetShaderLocation(zone_border_overlay_shader_, "uScreenHeight");
+            zone_border_overlay_camera_target_loc_ = GetShaderLocation(zone_border_overlay_shader_, "uCameraTarget");
+            zone_border_overlay_camera_offset_loc_ = GetShaderLocation(zone_border_overlay_shader_, "uCameraOffset");
+            zone_border_overlay_camera_zoom_loc_ = GetShaderLocation(zone_border_overlay_shader_, "uCameraZoom");
+            zone_border_overlay_zone_center_loc_ = GetShaderLocation(zone_border_overlay_shader_, "uZoneCenter");
+            zone_border_overlay_zone_radius_loc_ = GetShaderLocation(zone_border_overlay_shader_, "uZoneRadius");
         }
     }
 }
@@ -752,6 +802,21 @@ void GameApp::UnloadRenderShaders() {
     }
     water_gradient_shader_ = {};
     has_water_gradient_shader_ = false;
+    if (has_zone_post_process_shader_) {
+        UnloadShader(zone_post_process_shader_);
+    }
+    zone_post_process_shader_ = {};
+    has_zone_post_process_shader_ = false;
+    if (has_zone_fill_overlay_shader_) {
+        UnloadShader(zone_fill_overlay_shader_);
+    }
+    zone_fill_overlay_shader_ = {};
+    has_zone_fill_overlay_shader_ = false;
+    if (has_zone_border_overlay_shader_) {
+        UnloadShader(zone_border_overlay_shader_);
+    }
+    zone_border_overlay_shader_ = {};
+    has_zone_border_overlay_shader_ = false;
     occluder_reveal_count_loc_ = -1;
     occluder_reveal_data_loc_ = -1;
     occluder_reveal_screen_height_loc_ = -1;
@@ -760,6 +825,25 @@ void GameApp::UnloadRenderShaders() {
     water_gradient_screen_height_loc_ = -1;
     water_gradient_start_loc_ = -1;
     water_gradient_end_loc_ = -1;
+    zone_post_process_screen_height_loc_ = -1;
+    zone_post_process_camera_target_loc_ = -1;
+    zone_post_process_camera_offset_loc_ = -1;
+    zone_post_process_camera_zoom_loc_ = -1;
+    zone_post_process_zone_center_loc_ = -1;
+    zone_post_process_zone_radius_loc_ = -1;
+    zone_fill_overlay_screen_height_loc_ = -1;
+    zone_fill_overlay_camera_target_loc_ = -1;
+    zone_fill_overlay_camera_offset_loc_ = -1;
+    zone_fill_overlay_camera_zoom_loc_ = -1;
+    zone_fill_overlay_zone_center_loc_ = -1;
+    zone_fill_overlay_zone_radius_loc_ = -1;
+    zone_fill_overlay_zone_fill_rect_loc_ = -1;
+    zone_border_overlay_screen_height_loc_ = -1;
+    zone_border_overlay_camera_target_loc_ = -1;
+    zone_border_overlay_camera_offset_loc_ = -1;
+    zone_border_overlay_camera_zoom_loc_ = -1;
+    zone_border_overlay_zone_center_loc_ = -1;
+    zone_border_overlay_zone_radius_loc_ = -1;
 }
 
 bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y) {
@@ -897,6 +981,9 @@ void GameApp::LoadAudioAssets() {
     load_sfx(sfx_grappling_latch_, Constants::kSfxGrapplingLatchPath, Constants::kSfxVolumeGrapplingLatch);
     load_sfx(sfx_earth_rune_launch_, Constants::kSfxEarthRuneLaunchPath, Constants::kSfxVolumeEarthRuneLaunch);
     load_sfx(sfx_earth_rune_impact_, Constants::kSfxEarthRuneImpactPath, Constants::kSfxVolumeEarthRuneImpact);
+    for (size_t i = 0; i < sfx_zone_damage_.size(); ++i) {
+        load_sfx(sfx_zone_damage_[i], Constants::kSfxZoneDamagePaths[i], Constants::kSfxVolumeZoneDamage);
+    }
     for (size_t i = 0; i < sfx_footstep_dirt_.size(); ++i) {
         load_sfx(sfx_footstep_dirt_[i], Constants::kSfxFootstepDirtPaths[i], Constants::kSfxVolumeFootstepDirt);
     }
@@ -963,6 +1050,9 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_grappling_latch_);
     unload_sfx(sfx_earth_rune_launch_);
     unload_sfx(sfx_earth_rune_impact_);
+    for (auto& clip : sfx_zone_damage_) {
+        unload_sfx(clip);
+    }
     for (auto& clip : sfx_footstep_dirt_) {
         unload_sfx(clip);
     }
@@ -2485,8 +2575,26 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 continue;
             }
             if (previous_hp_it->second > player.hp) {
-                SpawnDamagePopup(player.pos, previous_hp_it->second - player.hp, false);
-                PlaySfxIfVisible(sfx_player_damaged_.sound, sfx_player_damaged_.loaded, player.pos);
+                const int damage = previous_hp_it->second - player.hp;
+                SpawnDamagePopup(player.pos, damage, false);
+                const int zone_tick_damage = static_cast<int>(
+                    std::lround(Constants::kArenaUnsafeDamagePerSecond * Constants::kArenaUnsafeDamageTickSeconds));
+                if (damage == zone_tick_damage && IsOutsideArena(player.pos)) {
+                    std::vector<size_t> loaded_indices;
+                    loaded_indices.reserve(sfx_zone_damage_.size());
+                    for (size_t i = 0; i < sfx_zone_damage_.size(); ++i) {
+                        if (sfx_zone_damage_[i].loaded) {
+                            loaded_indices.push_back(i);
+                        }
+                    }
+                    if (!loaded_indices.empty()) {
+                        std::uniform_int_distribution<size_t> dist(0, loaded_indices.size() - 1);
+                        const LoadedSfx& clip = sfx_zone_damage_[loaded_indices[dist(rng_)]];
+                        PlaySfxIfVisible(clip.sound, clip.loaded, player.pos);
+                    }
+                } else {
+                    PlaySfxIfVisible(sfx_player_damaged_.sound, sfx_player_damaged_.loaded, player.pos);
+                }
             } else if (previous_hp_it->second < player.hp) {
                 SpawnDamagePopup(player.pos, player.hp - previous_hp_it->second, true);
             }
@@ -3135,11 +3243,13 @@ void GameApp::UpdateArena(float dt) {
             continue;
         }
 
-        player.outside_zone_damage_accumulator += Constants::kArenaUnsafeDamagePerSecond * dt;
-        const int zone_damage = static_cast<int>(std::floor(player.outside_zone_damage_accumulator));
-        if (zone_damage > 0) {
-            player.outside_zone_damage_accumulator -= static_cast<float>(zone_damage);
-            ApplyDamageToPlayer(player, -1, zone_damage, "outside_zone", false);
+        player.outside_zone_damage_accumulator += dt;
+        const float tick_seconds = Constants::kArenaUnsafeDamageTickSeconds;
+        const int zone_tick_damage =
+            static_cast<int>(std::lround(Constants::kArenaUnsafeDamagePerSecond * tick_seconds));
+        while (player.outside_zone_damage_accumulator >= tick_seconds) {
+            player.outside_zone_damage_accumulator -= tick_seconds;
+            ApplyDamageToPlayer(player, -1, zone_tick_damage, "outside_zone", false);
         }
     }
 }
@@ -3969,7 +4079,22 @@ bool GameApp::ApplyDamageToPlayer(Player& target, int attacker_player_id, int da
     target.hp = std::max(0, target.hp - damage);
     event_queue_.Push(PlayerHitEvent{attacker_player_id, target.id, damage, source != nullptr ? source : "unknown"});
     SpawnDamagePopup(target.pos, damage, false);
-    PlaySfxIfVisible(sfx_player_damaged_.sound, sfx_player_damaged_.loaded, target.pos);
+    if (IsOutsideZoneDamageSource(source)) {
+        std::vector<size_t> loaded_indices;
+        loaded_indices.reserve(sfx_zone_damage_.size());
+        for (size_t i = 0; i < sfx_zone_damage_.size(); ++i) {
+            if (sfx_zone_damage_[i].loaded) {
+                loaded_indices.push_back(i);
+            }
+        }
+        if (!loaded_indices.empty()) {
+            std::uniform_int_distribution<size_t> dist(0, loaded_indices.size() - 1);
+            const LoadedSfx& clip = sfx_zone_damage_[loaded_indices[dist(rng_)]];
+            PlaySfxIfVisible(clip.sound, clip.loaded, target.pos);
+        }
+    } else {
+        PlaySfxIfVisible(sfx_player_damaged_.sound, sfx_player_damaged_.loaded, target.pos);
+    }
 
     if (target.hp <= 0) {
         HandlePlayerDeath(target, attacker_player_id, count_kill_for_attacker);
@@ -5780,6 +5905,14 @@ const Player* GameApp::FindPlayerById(int id) const {
 
 void GameApp::RenderWorld() {
     UpdateCameraTarget();
+    UpdateObjectShadowLayer();
+    EnsureWorldLayerRenderTarget();
+    if (!has_world_layer_target_) {
+        return;
+    }
+
+    BeginTextureMode(world_layer_target_);
+    ClearBackground(BLANK);
 
     BeginMode2D(camera_);
     RenderMap();
@@ -5793,15 +5926,46 @@ void GameApp::RenderWorld() {
     RenderGroundMapObjects();
     EndMode2D();
 
-    RenderObjectShadows();
+    DrawObjectShadowLayer();
 
     BeginMode2D(camera_);
     RenderNonTerrainDepthSorted();
-    RenderPlayerOverlays();
     RenderMeleeAttacks();
     RenderDamagePopups();
     RenderRunePlacementOverlay();
     EndMode2D();
+
+    EndTextureMode();
+    DrawWorldLayerWithZonePostProcess();
+    RenderZoneFillOverlay();
+    RenderZoneBorderOverlay();
+
+    BeginMode2D(camera_);
+    RenderPlayerOverlays();
+    EndMode2D();
+}
+
+void GameApp::EnsureWorldLayerRenderTarget() {
+    const int width = GetScreenWidth();
+    const int height = GetScreenHeight();
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    if (has_world_layer_target_ && world_layer_target_.texture.width == width &&
+        world_layer_target_.texture.height == height) {
+        return;
+    }
+    if (has_world_layer_target_) {
+        UnloadRenderTexture(world_layer_target_);
+        world_layer_target_ = {};
+        has_world_layer_target_ = false;
+    }
+
+    world_layer_target_ = LoadRenderTexture(width, height);
+    has_world_layer_target_ = (world_layer_target_.id != 0);
+    if (has_world_layer_target_) {
+        SetTextureFilter(world_layer_target_.texture, TEXTURE_FILTER_POINT);
+    }
 }
 
 void GameApp::EnsureShadowLayerRenderTarget() {
@@ -5888,7 +6052,7 @@ void GameApp::RenderGroundMapObjects() {
     }
 }
 
-void GameApp::RenderObjectShadows() {
+void GameApp::UpdateObjectShadowLayer() {
     EnsureShadowLayerRenderTarget();
     if (!has_shadow_layer_target_) {
         return;
@@ -5966,11 +6130,111 @@ void GameApp::RenderObjectShadows() {
 
     EndMode2D();
     EndTextureMode();
+}
 
+void GameApp::DrawObjectShadowLayer() {
+    if (!has_shadow_layer_target_) {
+        return;
+    }
     const Rectangle src = {0.0f, 0.0f, static_cast<float>(shadow_layer_target_.texture.width),
                            -static_cast<float>(shadow_layer_target_.texture.height)};
     const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
     DrawTexturePro(shadow_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, Color{255, 255, 255, 85});
+}
+
+void GameApp::DrawWorldLayerWithZonePostProcess() {
+    if (!has_world_layer_target_) {
+        return;
+    }
+
+    const Rectangle src = {0.0f, 0.0f, static_cast<float>(world_layer_target_.texture.width),
+                           -static_cast<float>(world_layer_target_.texture.height)};
+    const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+    if (!has_zone_post_process_shader_) {
+        DrawTexturePro(world_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+        return;
+    }
+
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float camera_target[2] = {camera_.target.x, camera_.target.y};
+    const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+    const float camera_zoom = camera_.zoom;
+    const float zone_center[2] = {state_.match.arena_center_world.x, state_.match.arena_center_world.y};
+    const float zone_radius = state_.match.arena_radius_world;
+
+    SetShaderValue(zone_post_process_shader_, zone_post_process_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(zone_post_process_shader_, zone_post_process_camera_target_loc_, camera_target,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(zone_post_process_shader_, zone_post_process_camera_offset_loc_, camera_offset,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(zone_post_process_shader_, zone_post_process_camera_zoom_loc_, &camera_zoom, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(zone_post_process_shader_, zone_post_process_zone_center_loc_, zone_center, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(zone_post_process_shader_, zone_post_process_zone_radius_loc_, &zone_radius, SHADER_UNIFORM_FLOAT);
+
+    BeginShaderMode(zone_post_process_shader_);
+    DrawTexturePro(world_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+    EndShaderMode();
+}
+
+void GameApp::RenderZoneFillOverlay() {
+    if (!has_zone_fill_overlay_shader_ || !sprite_metadata_.IsLoaded() || !sprite_metadata_.HasAnimation("zone_fill")) {
+        return;
+    }
+
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const Rectangle frame_rect = sprite_metadata_.GetFrame("zone_fill", "default", render_time_seconds_);
+    const Rectangle src = {0.0f, 0.0f, static_cast<float>(texture.width), static_cast<float>(texture.height)};
+    const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float camera_target[2] = {camera_.target.x, camera_.target.y};
+    const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+    const float camera_zoom = camera_.zoom;
+    const float zone_center[2] = {state_.match.arena_center_world.x, state_.match.arena_center_world.y};
+    const float zone_radius = state_.match.arena_radius_world;
+    const float zone_fill_rect_px[4] = {frame_rect.x, frame_rect.y, frame_rect.width, frame_rect.height};
+
+    SetShaderValue(zone_fill_overlay_shader_, zone_fill_overlay_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(zone_fill_overlay_shader_, zone_fill_overlay_camera_target_loc_, camera_target, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(zone_fill_overlay_shader_, zone_fill_overlay_camera_offset_loc_, camera_offset, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(zone_fill_overlay_shader_, zone_fill_overlay_camera_zoom_loc_, &camera_zoom, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(zone_fill_overlay_shader_, zone_fill_overlay_zone_center_loc_, zone_center, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(zone_fill_overlay_shader_, zone_fill_overlay_zone_radius_loc_, &zone_radius, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(zone_fill_overlay_shader_, zone_fill_overlay_zone_fill_rect_loc_, zone_fill_rect_px,
+                    SHADER_UNIFORM_VEC4, 1);
+
+    BeginShaderMode(zone_fill_overlay_shader_);
+    DrawTexturePro(texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+    EndShaderMode();
+}
+
+void GameApp::RenderZoneBorderOverlay() {
+    if (!has_zone_border_overlay_shader_) {
+        return;
+    }
+
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float camera_target[2] = {camera_.target.x, camera_.target.y};
+    const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+    const float camera_zoom = camera_.zoom;
+    const float zone_center[2] = {state_.match.arena_center_world.x, state_.match.arena_center_world.y};
+    const float zone_radius = state_.match.arena_radius_world;
+
+    SetShaderValue(zone_border_overlay_shader_, zone_border_overlay_screen_height_loc_, &screen_height,
+                   SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(zone_border_overlay_shader_, zone_border_overlay_camera_target_loc_, camera_target,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(zone_border_overlay_shader_, zone_border_overlay_camera_offset_loc_, camera_offset,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(zone_border_overlay_shader_, zone_border_overlay_camera_zoom_loc_, &camera_zoom,
+                   SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(zone_border_overlay_shader_, zone_border_overlay_zone_center_loc_, zone_center,
+                    SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(zone_border_overlay_shader_, zone_border_overlay_zone_radius_loc_, &zone_radius,
+                   SHADER_UNIFORM_FLOAT);
+
+    BeginShaderMode(zone_border_overlay_shader_);
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), WHITE);
+    EndShaderMode();
 }
 
 void GameApp::RenderNonTerrainDepthSorted() {
@@ -6955,28 +7219,13 @@ void GameApp::RenderMap() {
                     DrawRectangleRec(terrain_dst, Color{26, 96, 152, 255});
                 }
             } else if (has_texture && tile == TileType::Water) {
-                const Vector2 tile_center = {dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f};
-                const bool dimmed = IsOutsideArena(tile_center);
-                const Color tint = dimmed ? Color{static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
-                                                  static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
-                                                  static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
-                                                  255}
-                                          : WHITE;
                 const Rectangle src = InsetSourceRect(
                     sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
                     Constants::kAtlasSampleInsetPixels);
-                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
             } else {
                 if (tile == TileType::Water) {
-                    Color fallback = Color{26, 96, 152, 255};
-                    const Vector2 tile_center = {dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f};
-                    if (IsOutsideArena(tile_center)) {
-                        fallback = Color{
-                            static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
-                            static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
-                            static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness), 255};
-                    }
-                    DrawRectangleRec(dst, fallback);
+                    DrawRectangleRec(dst, Color{26, 96, 152, 255});
                 }
             }
         }
@@ -7022,7 +7271,6 @@ void GameApp::RenderMapForeground() {
     };
     const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
     const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
-    const bool has_zone_overlay = has_texture && sprite_metadata_.HasAnimation("zone");
     const auto is_grass_family = [](TileType tile) {
         return tile == TileType::Grass || tile == TileType::SpawnPoint;
     };
@@ -7083,28 +7331,6 @@ void GameApp::RenderMapForeground() {
             const Rectangle dst = SnapRect(
                 {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
                  static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
-            const Vector2 tile_center = {dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f};
-            const bool dimmed = IsOutsideArena(tile_center);
-            const Color tint = dimmed ? Color{static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
-                                              static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
-                                              static_cast<unsigned char>(255.0f * Constants::kOutsideZoneTileBrightness),
-                                              255}
-                                      : WHITE;
-
-            const auto draw_zone_overlay = [&]() {
-                if (!dimmed) {
-                    return;
-                }
-                if (has_zone_overlay) {
-                    const Rectangle zone_src =
-                        InsetSourceRect(sprite_metadata_.GetFrame("zone", "default", render_time_seconds_),
-                                        Constants::kAtlasSampleInsetPixels);
-                    DrawTexturePro(texture, zone_src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 128});
-                } else {
-                    DrawRectangleRec(dst, Color{0, 0, 0, 128});
-                }
-            };
-
             if (has_texture && has_grass_dual_grid) {
                 const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
                 const Rectangle terrain_dst =
@@ -7125,8 +7351,6 @@ void GameApp::RenderMapForeground() {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
                                    0.0f, WHITE);
                 }
-
-                draw_zone_overlay();
                 if (tile == TileType::SpawnPoint) {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                 Color{240, 240, 240, 180});
@@ -7144,47 +7368,38 @@ void GameApp::RenderMapForeground() {
                         sprite_metadata_.GetBitmaskFrame("tile_grass", mask, render_time_seconds_,
                                                          SpriteFrameLayer::Background, src)) {
                         DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), dst, {0, 0},
-                                       0.0f, tint);
+                                       0.0f, WHITE);
                     }
                     if (has_foreground &&
                         sprite_metadata_.GetBitmaskFrame("tile_grass", mask, render_time_seconds_,
                                                          SpriteFrameLayer::Foreground, src)) {
                         DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), dst, {0, 0},
-                                       0.0f, tint);
+                                       0.0f, WHITE);
                     }
                     if (!has_background && !has_foreground &&
                         sprite_metadata_.GetBitmaskFrame("tile_grass", mask, render_time_seconds_,
                                                          SpriteFrameLayer::Single, src)) {
                         DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), dst, {0, 0},
-                                       0.0f, tint);
+                                       0.0f, WHITE);
                     }
                 } else {
                     const Rectangle src = InsetSourceRect(
                         sprite_metadata_.GetFrame("tile_grass", "default", render_time_seconds_),
                         Constants::kAtlasSampleInsetPixels);
-                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, tint);
+                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
                 }
                 if (tile == TileType::SpawnPoint) {
                     DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                 Color{240, 240, 240, 180});
                 }
-                draw_zone_overlay();
             } else {
                 if (!has_texture && (tile == TileType::Grass || tile == TileType::SpawnPoint)) {
-                    Color fallback = Color{34, 120, 34, 255};
-                    if (dimmed) {
-                        fallback = Color{static_cast<unsigned char>(fallback.r * Constants::kOutsideZoneTileBrightness),
-                                         static_cast<unsigned char>(fallback.g * Constants::kOutsideZoneTileBrightness),
-                                         static_cast<unsigned char>(fallback.b * Constants::kOutsideZoneTileBrightness),
-                                         255};
-                    }
-                    DrawRectangleRec(dst, fallback);
+                    DrawRectangleRec(dst, Color{34, 120, 34, 255});
                     if (tile == TileType::SpawnPoint) {
                         DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                     Color{240, 240, 240, 180});
                     }
                 }
-                draw_zone_overlay();
             }
         }
     }

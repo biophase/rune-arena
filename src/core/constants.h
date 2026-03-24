@@ -150,6 +150,7 @@ constexpr int kMatchDurationSeconds = 120;
 constexpr int kMaxHp = 100;
 constexpr float kRespawnDelaySeconds = 3.0f;
 constexpr float kArenaUnsafeDamagePerSecond = 5.0f;
+constexpr float kArenaUnsafeDamageTickSeconds = 3.0f;
 constexpr float kArenaSpawnBufferTiles = 3.0f;
 constexpr float kOutsideZoneTileBrightness = 0.5f;
 constexpr float kPlayerHealthBarWidth = 32.0f;
@@ -212,6 +213,9 @@ constexpr const char* kCompositeEffectsPath = "assets/composite_effects.json";
 constexpr const char* kMenuBackgroundPath = "assets/menu_background.png";
 constexpr const char* kOccluderRevealShaderPath = "assets/shaders/occluder_reveal.fs";
 constexpr const char* kWaterGradientShaderPath = "assets/shaders/water_gradient.fs";
+constexpr const char* kZonePostProcessShaderPath = "assets/shaders/zone_desaturate.fs";
+constexpr const char* kZoneFillOverlayShaderPath = "assets/shaders/zone_fill_overlay.fs";
+constexpr const char* kZoneBorderOverlayShaderPath = "assets/shaders/zone_border_overlay.fs";
 constexpr const char* kSfxFireballCreatedPath = "assets/sfx/ogg/SFX/Spells/Fireball 1.ogg";
 constexpr const char* kSfxMeleeAttackPath = "assets/sfx/ogg/SFX/Attacks/Sword Attacks Hits and Blocks/Sword Attack 1.ogg";
 constexpr const char* kSfxCreateRunePath = "assets/sfx/ogg/SFX/Torch/Light Torch 1.ogg";
@@ -233,6 +237,11 @@ constexpr const char* kSfxGrapplingLatchPath =
     "assets/sfx/ogg/SFX/Attacks/Bow Attacks Hits and Blocks/Bow Impact Hit 1.ogg";
 constexpr const char* kSfxEarthRuneLaunchPath = "assets/sfx/EM_EARTH_LAUNCH_01.ogg";
 constexpr const char* kSfxEarthRuneImpactPath = "assets/sfx/EM_EARTH_IMPACT_01.ogg";
+constexpr std::array<const char*, 3> kSfxZoneDamagePaths = {
+    "assets/sfx/Arcane_AttackF1.wav",
+    "assets/sfx/Arcane_AttackF2.wav",
+    "assets/sfx/Arcane_AttackF3.wav",
+};
 constexpr std::array<const char*, 5> kSfxFootstepDirtPaths = {
     "assets/sfx/ogg/SFX/Footsteps/Dirt/Dirt Walk 1.ogg",
     "assets/sfx/ogg/SFX/Footsteps/Dirt/Dirt Walk 2.ogg",
@@ -258,6 +267,7 @@ constexpr float kSfxVolumeDrinkPotion = 0.65f;
 constexpr float kSfxVolumeFireStormCast = 0.75f;
 constexpr float kSfxVolumeFireStormImpact = 0.72f;
 constexpr float kSfxVolumeStaticUpgrade = 0.72f;
+constexpr float kSfxVolumeZoneDamage = 0.60f;
 constexpr float kSfxVolumeStaticBoltImpact = 0.78f;
 constexpr float kSfxVolumeGrapplingThrow = 0.68f;
 constexpr float kSfxVolumeGrapplingLatch = 0.72f;
