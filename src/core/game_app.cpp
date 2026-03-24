@@ -1,10 +1,12 @@
 #include "core/game_app.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <limits>
 #include <random>
 #include <string>
@@ -148,10 +150,9 @@ struct OccluderRevealCircle {
     float outer_radius_px = 0.0f;
 };
 
-struct InfluenceBoundarySegment {
-    Vector2 start = {0.0f, 0.0f};
-    Vector2 end = {0.0f, 0.0f};
-};
+constexpr int kInfluenceDistanceSamplesPerTile = 2;
+constexpr float kInfluenceDistanceOuterTailPx = 6.0f;
+constexpr float kInfluenceDistanceInnerTailPx = 22.0f;
 
 std::unordered_set<int64_t> CollectInfluenceZoneCells(const std::vector<InfluenceZoneCell>& zones, int team) {
     std::unordered_set<int64_t> active_cells;
@@ -164,50 +165,81 @@ std::unordered_set<int64_t> CollectInfluenceZoneCells(const std::vector<Influenc
     return active_cells;
 }
 
-std::vector<InfluenceBoundarySegment> CollectInfluenceBoundarySegments(const std::unordered_set<int64_t>& active_cells,
-                                                                       int cell_size) {
-    if (active_cells.empty() || cell_size <= 0) {
-        return {};
+void DistanceTransform1D(const std::vector<float>& input, int n, std::vector<float>* output) {
+    if (output == nullptr || n <= 0) {
+        return;
     }
-    std::vector<InfluenceBoundarySegment> segments;
-    segments.reserve(active_cells.size() * 2);
-    for (const int64_t key : active_cells) {
-        const GridCoord cell = {static_cast<int>(key >> 32), static_cast<int>(key & 0xffffffff)};
-        const float x0 = static_cast<float>(cell.x * cell_size);
-        const float y0 = static_cast<float>(cell.y * cell_size);
-        const float x1 = x0 + static_cast<float>(cell_size);
-        const float y1 = y0 + static_cast<float>(cell_size);
+    constexpr float kInf = 1.0e20f;
+    output->assign(static_cast<size_t>(n), 0.0f);
+    std::vector<int> v(static_cast<size_t>(n), 0);
+    std::vector<float> z(static_cast<size_t>(n + 1), 0.0f);
 
-        const GridCoord left = {cell.x - 1, cell.y};
-        const GridCoord right = {cell.x + 1, cell.y};
-        const GridCoord top = {cell.x, cell.y - 1};
-        const GridCoord bottom = {cell.x, cell.y + 1};
+    int k = 0;
+    v[0] = 0;
+    z[0] = -kInf;
+    z[1] = kInf;
 
-        if (!active_cells.count(MakeGridKey(left))) {
-            segments.push_back({{x0, y0}, {x0, y1}});
+    for (int q = 1; q < n; ++q) {
+        float s = 0.0f;
+        while (true) {
+            const int vk = v[static_cast<size_t>(k)];
+            s = ((input[static_cast<size_t>(q)] + static_cast<float>(q * q)) -
+                 (input[static_cast<size_t>(vk)] + static_cast<float>(vk * vk))) /
+                std::max(1.0f, 2.0f * static_cast<float>(q - vk));
+            if (s > z[static_cast<size_t>(k)]) {
+                break;
+            }
+            --k;
         }
-        if (!active_cells.count(MakeGridKey(right))) {
-            segments.push_back({{x1, y0}, {x1, y1}});
-        }
-        if (!active_cells.count(MakeGridKey(top))) {
-            segments.push_back({{x0, y0}, {x1, y0}});
-        }
-        if (!active_cells.count(MakeGridKey(bottom))) {
-            segments.push_back({{x0, y1}, {x1, y1}});
-        }
+        ++k;
+        v[static_cast<size_t>(k)] = q;
+        z[static_cast<size_t>(k)] = s;
+        z[static_cast<size_t>(k + 1)] = kInf;
     }
-    return segments;
+
+    k = 0;
+    for (int q = 0; q < n; ++q) {
+        while (z[static_cast<size_t>(k + 1)] < static_cast<float>(q)) {
+            ++k;
+        }
+        const float dx = static_cast<float>(q - v[static_cast<size_t>(k)]);
+        (*output)[static_cast<size_t>(q)] = dx * dx + input[static_cast<size_t>(v[static_cast<size_t>(k)])];
+    }
 }
 
-float DistanceSqPointToSegment(Vector2 p, Vector2 a, Vector2 b) {
-    const Vector2 ab = Vector2Subtract(b, a);
-    const float ab_len_sq = Vector2LengthSqr(ab);
-    if (ab_len_sq <= 0.0001f) {
-        return Vector2DistanceSqr(p, a);
+std::vector<float> DistanceTransform2D(const std::vector<float>& input, int width, int height) {
+    if (width <= 0 || height <= 0 || input.size() != static_cast<size_t>(width * height)) {
+        return {};
     }
-    const float t = std::clamp(Vector2DotProduct(Vector2Subtract(p, a), ab) / ab_len_sq, 0.0f, 1.0f);
-    const Vector2 closest = Vector2Add(a, Vector2Scale(ab, t));
-    return Vector2DistanceSqr(p, closest);
+
+    std::vector<float> temp(static_cast<size_t>(width * height), 0.0f);
+    std::vector<float> output(static_cast<size_t>(width * height), 0.0f);
+    std::vector<float> line_input;
+    std::vector<float> line_output;
+
+    line_input.resize(static_cast<size_t>(height));
+    for (int x = 0; x < width; ++x) {
+        for (int y = 0; y < height; ++y) {
+            line_input[static_cast<size_t>(y)] = input[static_cast<size_t>(y * width + x)];
+        }
+        DistanceTransform1D(line_input, height, &line_output);
+        for (int y = 0; y < height; ++y) {
+            temp[static_cast<size_t>(y * width + x)] = line_output[static_cast<size_t>(y)];
+        }
+    }
+
+    line_input.resize(static_cast<size_t>(width));
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            line_input[static_cast<size_t>(x)] = temp[static_cast<size_t>(y * width + x)];
+        }
+        DistanceTransform1D(line_input, width, &line_output);
+        for (int x = 0; x < width; ++x) {
+            output[static_cast<size_t>(y * width + x)] = line_output[static_cast<size_t>(x)];
+        }
+    }
+
+    return output;
 }
 
 void BuildInfluenceDistanceTexture(Texture2D* texture, bool* has_texture,
@@ -239,8 +271,7 @@ void BuildInfluenceDistanceTexture(Texture2D* texture, bool* has_texture,
 }
 
 void BuildInfluenceDistanceField(InfluenceDistanceField* field, const std::unordered_set<int64_t>& active_cells,
-                                 const std::vector<InfluenceBoundarySegment>& segments, int map_width, int map_height,
-                                 int cell_size, int samples_per_tile) {
+                                 int map_width, int map_height, int cell_size, int samples_per_tile) {
     if (field == nullptr) {
         return;
     }
@@ -250,36 +281,57 @@ void BuildInfluenceDistanceField(InfluenceDistanceField* field, const std::unord
     field->width = tex_width;
     field->height = tex_height;
 
-    constexpr float kOuterTailPx = 6.0f;
-    constexpr float kInnerTailPx = 22.0f;
-    const float min_signed_dist = -kOuterTailPx;
-    const float max_signed_dist = kInnerTailPx;
+    const float min_signed_dist = -kInfluenceDistanceOuterTailPx;
+    const float max_signed_dist = kInfluenceDistanceInnerTailPx;
     const float sample_step = static_cast<float>(cell_size) / static_cast<float>(samples_per_tile);
 
     field->pixels.assign(static_cast<size_t>(tex_width * tex_height), Color{0, 0, 0, 255});
-    if (segments.empty()) {
+    if (active_cells.empty()) {
         return;
     }
 
+    std::vector<uint8_t> inside_mask(static_cast<size_t>(tex_width * tex_height), 0);
+    for (const int64_t key : active_cells) {
+        const GridCoord cell = {static_cast<int>(key >> 32), static_cast<int>(key & 0xffffffff)};
+        if (cell.x < 0 || cell.y < 0 || cell.x >= map_width || cell.y >= map_height) {
+            continue;
+        }
+        const int x0 = cell.x * samples_per_tile;
+        const int y0 = cell.y * samples_per_tile;
+        for (int sy = 0; sy < samples_per_tile; ++sy) {
+            for (int sx = 0; sx < samples_per_tile; ++sx) {
+                const int x = x0 + sx;
+                const int y = y0 + sy;
+                inside_mask[static_cast<size_t>(y * tex_width + x)] = 1;
+            }
+        }
+    }
+
+    constexpr float kInf = 1.0e20f;
+    std::vector<float> inside_features(static_cast<size_t>(tex_width * tex_height), kInf);
+    std::vector<float> outside_features(static_cast<size_t>(tex_width * tex_height), kInf);
+    for (size_t i = 0; i < inside_mask.size(); ++i) {
+        if (inside_mask[i] != 0) {
+            inside_features[i] = 0.0f;
+        } else {
+            outside_features[i] = 0.0f;
+        }
+    }
+
+    const std::vector<float> dist_to_inside_sq = DistanceTransform2D(inside_features, tex_width, tex_height);
+    const std::vector<float> dist_to_outside_sq = DistanceTransform2D(outside_features, tex_width, tex_height);
+
     for (int y = 0; y < tex_height; ++y) {
         for (int x = 0; x < tex_width; ++x) {
-            const Vector2 sample_world = {(static_cast<float>(x) + 0.5f) * sample_step,
-                                          (static_cast<float>(y) + 0.5f) * sample_step};
-            const GridCoord cell = {static_cast<int>(std::floor(sample_world.x / static_cast<float>(cell_size))),
-                                    static_cast<int>(std::floor(sample_world.y / static_cast<float>(cell_size)))};
-            const bool inside = active_cells.count(MakeGridKey(cell)) > 0;
-
-            float min_dist_sq = std::numeric_limits<float>::max();
-            for (const InfluenceBoundarySegment& segment : segments) {
-                min_dist_sq = std::min(min_dist_sq, DistanceSqPointToSegment(sample_world, segment.start, segment.end));
-            }
-
-            float signed_dist = std::sqrt(std::max(0.0f, min_dist_sq));
+            const size_t index = static_cast<size_t>(y * tex_width + x);
+            const bool inside = inside_mask[index] != 0;
+            const float dist_sq = inside ? dist_to_outside_sq[index] : dist_to_inside_sq[index];
+            float signed_dist = std::sqrt(std::max(0.0f, dist_sq)) * sample_step;
             signed_dist = inside ? signed_dist : -signed_dist;
             signed_dist = std::clamp(signed_dist, min_signed_dist, max_signed_dist);
             const float encoded = (signed_dist - min_signed_dist) / (max_signed_dist - min_signed_dist);
             const unsigned char value = static_cast<unsigned char>(std::roundf(encoded * 255.0f));
-            field->pixels[static_cast<size_t>(y * tex_width + x)] = Color{value, value, value, 255};
+            field->pixels[index] = Color{value, value, value, 255};
         }
     }
 }
@@ -343,6 +395,19 @@ void BuildZeroInfluenceDistanceField(int width, int height, InfluenceDistanceFie
     field->width = std::max(0, width);
     field->height = std::max(0, height);
     field->pixels.assign(static_cast<size_t>(field->width * field->height), Color{0, 0, 0, 255});
+}
+
+InfluenceBuildResult BuildInfluenceFields(const InfluenceBuildRequest& request) {
+    InfluenceBuildResult result;
+    result.signature = request.signature;
+    result.generation = request.generation;
+    const auto red_cells = CollectInfluenceZoneCells(request.zones, Constants::kTeamRed);
+    const auto blue_cells = CollectInfluenceZoneCells(request.zones, Constants::kTeamBlue);
+    BuildInfluenceDistanceField(&result.red_field, red_cells, request.map_width, request.map_height, request.cell_size,
+                                request.samples_per_tile);
+    BuildInfluenceDistanceField(&result.blue_field, blue_cells, request.map_width, request.map_height,
+                                request.cell_size, request.samples_per_tile);
+    return result;
 }
 
 bool ContainsWorldPointExpanded(const Rectangle& rect, Vector2 point, float radius) {
@@ -1220,6 +1285,7 @@ void GameApp::Update(float dt) {
     dt = ClampDt(dt);
     escape_pressed_this_update_ = pending_escape_pressed_;
     pending_escape_pressed_ = false;
+    PumpInfluenceFieldBuilds();
     switch (app_screen_) {
         case AppScreen::MainMenu:
             UpdateMainMenu(dt);
@@ -1237,6 +1303,96 @@ void GameApp::Update(float dt) {
             UpdatePostMatch(dt);
             break;
     }
+}
+
+void GameApp::PumpInfluenceFieldBuilds() {
+    if (influence_build_in_flight_ && influence_build_future_.valid()) {
+        const auto status = influence_build_future_.wait_for(std::chrono::milliseconds(0));
+        if (status == std::future_status::ready) {
+            InfluenceBuildResult result = influence_build_future_.get();
+            influence_build_in_flight_ = false;
+            if (result.generation == influence_build_generation_ && has_influence_zone_signature_ &&
+                result.signature == influence_zone_signature_) {
+                ApplyInfluenceBuildResult(std::move(result));
+            }
+        }
+    }
+
+    if (!influence_build_in_flight_ && pending_influence_build_request_.has_value()) {
+        StartPendingInfluenceFieldBuild();
+    }
+}
+
+void GameApp::StartPendingInfluenceFieldBuild() {
+    if (influence_build_in_flight_ || !pending_influence_build_request_.has_value()) {
+        return;
+    }
+    InfluenceBuildRequest request = std::move(*pending_influence_build_request_);
+    pending_influence_build_request_.reset();
+    influence_build_future_ = std::async(std::launch::async, [request]() { return BuildInfluenceFields(request); });
+    influence_build_in_flight_ = true;
+}
+
+void GameApp::ApplyInfluenceBuildResult(InfluenceBuildResult&& result) {
+    auto clear_distance_texture = [](Texture2D* texture, bool* has_texture) {
+        if (texture == nullptr || has_texture == nullptr || !*has_texture) {
+            return;
+        }
+        UnloadTexture(*texture);
+        *texture = {};
+        *has_texture = false;
+    };
+
+    const float transition_t =
+        std::clamp(influence_zone_transition_elapsed_seconds_ / std::max(0.0001f, Constants::kInfluenceZoneTransitionSeconds),
+                   0.0f, 1.0f);
+    auto apply_team_result = [&](InfluenceDistanceField&& rebuilt_field, InfluenceDistanceField* from_field,
+                                 Texture2D* from_texture, bool* has_from, InfluenceDistanceField* to_field,
+                                 Texture2D* to_texture, bool* has_to) {
+        if (!has_influence_zone_signature_) {
+            return;
+        }
+
+        if (!HasInfluenceDistanceField(*from_field) && !HasInfluenceDistanceField(*to_field)) {
+            if (std::all_of(rebuilt_field.pixels.begin(), rebuilt_field.pixels.end(),
+                            [](const Color& c) { return c.r == 0; })) {
+                ClearInfluenceDistanceField(from_field);
+                ClearInfluenceDistanceField(to_field);
+                clear_distance_texture(from_texture, has_from);
+                clear_distance_texture(to_texture, has_to);
+                return;
+            }
+            BuildZeroInfluenceDistanceField(rebuilt_field.width, rebuilt_field.height, from_field);
+            BuildInfluenceDistanceTexture(from_texture, has_from, from_field->pixels, from_field->width, from_field->height);
+            *to_field = std::move(rebuilt_field);
+            BuildInfluenceDistanceTexture(to_texture, has_to, to_field->pixels, to_field->width, to_field->height);
+            return;
+        }
+
+        InfluenceDistanceField current_visible;
+        if (HasInfluenceDistanceField(*from_field) && HasInfluenceDistanceField(*to_field)) {
+            BlendInfluenceDistanceField(*from_field, *to_field, transition_t, &current_visible);
+        } else if (HasInfluenceDistanceField(*to_field)) {
+            CopyInfluenceDistanceField(*to_field, &current_visible);
+        } else {
+            CopyInfluenceDistanceField(*from_field, &current_visible);
+        }
+
+        *from_field = std::move(current_visible);
+        BuildInfluenceDistanceTexture(from_texture, has_from, from_field->pixels, from_field->width, from_field->height);
+        *to_field = std::move(rebuilt_field);
+        BuildInfluenceDistanceTexture(to_texture, has_to, to_field->pixels, to_field->width, to_field->height);
+    };
+
+    apply_team_result(std::move(result.red_field), &influence_zone_distance_red_from_field_,
+                      &influence_zone_distance_red_from_texture_, &has_influence_zone_distance_red_from_texture_,
+                      &influence_zone_distance_red_to_field_, &influence_zone_distance_red_to_texture_,
+                      &has_influence_zone_distance_red_to_texture_);
+    apply_team_result(std::move(result.blue_field), &influence_zone_distance_blue_from_field_,
+                      &influence_zone_distance_blue_from_texture_, &has_influence_zone_distance_blue_from_texture_,
+                      &influence_zone_distance_blue_to_field_, &influence_zone_distance_blue_to_texture_,
+                      &has_influence_zone_distance_blue_to_texture_);
+    influence_zone_transition_elapsed_seconds_ = 0.0f;
 }
 
 void GameApp::UpdateMainMenu(float /*dt*/) {
@@ -2293,6 +2449,8 @@ void GameApp::ClearInfluenceZoneVisuals() {
     ClearInfluenceDistanceField(&influence_zone_distance_blue_from_field_);
     ClearInfluenceDistanceField(&influence_zone_distance_red_to_field_);
     ClearInfluenceDistanceField(&influence_zone_distance_blue_to_field_);
+    pending_influence_build_request_.reset();
+    influence_build_generation_ += 1;
     influence_zone_transition_elapsed_seconds_ = Constants::kInfluenceZoneTransitionSeconds;
     influence_zone_signature_ = 0;
     has_influence_zone_signature_ = false;
@@ -4821,72 +4979,25 @@ void GameApp::RebuildInfluenceZones() {
     if (has_influence_zone_signature_ && influence_zone_signature_ == new_signature) {
         return;
     }
-
-    constexpr int kInfluenceDistanceSamplesPerTile = 2;
-    const auto red_cells = CollectInfluenceZoneCells(state_.influence_zones, Constants::kTeamRed);
-    const auto blue_cells = CollectInfluenceZoneCells(state_.influence_zones, Constants::kTeamBlue);
-    auto clear_distance_texture = [](Texture2D* texture, bool* has_texture) {
-        if (texture == nullptr || has_texture == nullptr || !*has_texture) {
-            return;
-        }
-        UnloadTexture(*texture);
-        *texture = {};
-        *has_texture = false;
-    };
-    const float transition_t =
-        std::clamp(influence_zone_transition_elapsed_seconds_ / std::max(0.0001f, Constants::kInfluenceZoneTransitionSeconds),
-                   0.0f, 1.0f);
-    auto rebuild_team_texture = [&](const std::unordered_set<int64_t>& cells, InfluenceDistanceField* from_field,
-                                    Texture2D* from_texture, bool* has_from, InfluenceDistanceField* to_field,
-                                    Texture2D* to_texture, bool* has_to) {
-        InfluenceDistanceField rebuilt_field;
-        BuildInfluenceDistanceField(&rebuilt_field, cells, CollectInfluenceBoundarySegments(cells, state_.map.cell_size),
-                                    state_.map.width, state_.map.height, state_.map.cell_size,
-                                    kInfluenceDistanceSamplesPerTile);
-
-        if (!has_influence_zone_signature_) {
-            if (!cells.empty()) {
-                BuildZeroInfluenceDistanceField(rebuilt_field.width, rebuilt_field.height, from_field);
-                BuildInfluenceDistanceTexture(from_texture, has_from, from_field->pixels, from_field->width,
-                                              from_field->height);
-                *to_field = std::move(rebuilt_field);
-                BuildInfluenceDistanceTexture(to_texture, has_to, to_field->pixels, to_field->width, to_field->height);
-            } else {
-                ClearInfluenceDistanceField(from_field);
-                ClearInfluenceDistanceField(to_field);
-                clear_distance_texture(from_texture, has_from);
-                clear_distance_texture(to_texture, has_to);
-            }
-            return;
-        }
-
-        InfluenceDistanceField current_visible;
-        if (HasInfluenceDistanceField(*from_field) && HasInfluenceDistanceField(*to_field)) {
-            BlendInfluenceDistanceField(*from_field, *to_field, transition_t, &current_visible);
-        } else if (HasInfluenceDistanceField(*to_field)) {
-            CopyInfluenceDistanceField(*to_field, &current_visible);
-        } else if (HasInfluenceDistanceField(*from_field)) {
-            CopyInfluenceDistanceField(*from_field, &current_visible);
-        } else {
-            CopyInfluenceDistanceField(rebuilt_field, &current_visible);
-        }
-
-        *from_field = std::move(current_visible);
-        BuildInfluenceDistanceTexture(from_texture, has_from, from_field->pixels, from_field->width, from_field->height);
-        *to_field = std::move(rebuilt_field);
-        BuildInfluenceDistanceTexture(to_texture, has_to, to_field->pixels, to_field->width, to_field->height);
-    };
-
-    rebuild_team_texture(red_cells, &influence_zone_distance_red_from_field_, &influence_zone_distance_red_from_texture_,
-                         &has_influence_zone_distance_red_from_texture_, &influence_zone_distance_red_to_field_,
-                         &influence_zone_distance_red_to_texture_, &has_influence_zone_distance_red_to_texture_);
-    rebuild_team_texture(blue_cells, &influence_zone_distance_blue_from_field_, &influence_zone_distance_blue_from_texture_,
-                         &has_influence_zone_distance_blue_from_texture_, &influence_zone_distance_blue_to_field_,
-                         &influence_zone_distance_blue_to_texture_, &has_influence_zone_distance_blue_to_texture_);
-
-    influence_zone_transition_elapsed_seconds_ = 0.0f;
+    if (!has_influence_zone_signature_ && state_.influence_zones.empty()) {
+        return;
+    }
     influence_zone_signature_ = new_signature;
     has_influence_zone_signature_ = true;
+
+    InfluenceBuildRequest request;
+    request.signature = new_signature;
+    request.generation = influence_build_generation_;
+    request.map_width = state_.map.width;
+    request.map_height = state_.map.height;
+    request.cell_size = state_.map.cell_size;
+    request.samples_per_tile = kInfluenceDistanceSamplesPerTile;
+    request.zones = state_.influence_zones;
+    pending_influence_build_request_ = std::move(request);
+
+    if (!influence_build_in_flight_) {
+        StartPendingInfluenceFieldBuild();
+    }
 }
 
 void GameApp::ResolvePlayerVsIceWalls(Player& player) {
@@ -6730,7 +6841,7 @@ void GameApp::RenderInfluenceZoneAnimatedTiles() {
             const Rectangle src =
                 InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
                                 Constants::kAtlasSampleInsetPixels);
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 128});
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, 32});
         } else {
             const Color tint =
                 zone.team == Constants::kTeamRed ? Color{255, 100, 100, 96} : Color{120, 150, 255, 96};

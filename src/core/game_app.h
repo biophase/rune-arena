@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 #include <deque>
+#include <future>
 #include <random>
 
 #include <raylib.h>
@@ -38,6 +39,23 @@ struct InfluenceDistanceField {
     std::vector<Color> pixels;
 };
 
+struct InfluenceBuildRequest {
+    uint64_t signature = 0;
+    int generation = 0;
+    int map_width = 0;
+    int map_height = 0;
+    int cell_size = 0;
+    int samples_per_tile = 1;
+    std::vector<InfluenceZoneCell> zones;
+};
+
+struct InfluenceBuildResult {
+    uint64_t signature = 0;
+    int generation = 0;
+    InfluenceDistanceField red_field;
+    InfluenceDistanceField blue_field;
+};
+
 class GameApp {
   public:
     explicit GameApp(bool force_windowed_launch = false);
@@ -58,6 +76,9 @@ class GameApp {
     void UpdatePostMatch(float dt);
     void UpdateClientVisualSmoothing(float dt);
     void ApplyClientLocalInputPreview(const ClientInputMessage& input, float dt);
+    void PumpInfluenceFieldBuilds();
+    void StartPendingInfluenceFieldBuild();
+    void ApplyInfluenceBuildResult(InfluenceBuildResult&& result);
 
     void StartAsHost();
     void StartAsClient(const std::string& ip, int port);
@@ -393,6 +414,10 @@ class GameApp {
     InfluenceDistanceField influence_zone_distance_blue_from_field_;
     InfluenceDistanceField influence_zone_distance_red_to_field_;
     InfluenceDistanceField influence_zone_distance_blue_to_field_;
+    std::optional<InfluenceBuildRequest> pending_influence_build_request_;
+    std::future<InfluenceBuildResult> influence_build_future_;
+    bool influence_build_in_flight_ = false;
+    int influence_build_generation_ = 0;
 
     bool audio_device_ready_ = false;
     LoadedSfx sfx_fireball_created_;
