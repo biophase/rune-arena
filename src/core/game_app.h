@@ -60,6 +60,7 @@ class GameApp {
     void StartMatchAsHost();
     void ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot);
     ServerSnapshotMessage BuildHostSnapshot();
+    void ClearInfluenceZoneVisuals();
 
     ClientInputMessage BuildLocalInput(int local_player_id);
     void SimulateHostGameplay(float dt);
@@ -362,6 +363,8 @@ class GameApp {
     Texture2D influence_zone_distance_blue_texture_ = {};
     bool has_influence_zone_distance_red_texture_ = false;
     bool has_influence_zone_distance_blue_texture_ = false;
+    uint64_t influence_zone_signature_ = 0;
+    bool has_influence_zone_signature_ = false;
     std::unordered_map<int, float> fire_storm_dummy_lightning_seconds_remaining_;
     std::unordered_map<int, float> fire_storm_dummy_lightning_cooldown_seconds_remaining_;
     std::unordered_map<int, bool> fire_storm_cast_impact_played_;

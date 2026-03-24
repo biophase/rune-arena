@@ -43,6 +43,26 @@ int64_t MakeGridKey(const GridCoord& cell) {
     return (static_cast<int64_t>(cell.x) << 32) ^ static_cast<uint32_t>(cell.y);
 }
 
+uint64_t ComputeInfluenceZoneSignature(const std::vector<InfluenceZoneCell>& zones) {
+    std::vector<uint64_t> keys;
+    keys.reserve(zones.size());
+    for (const auto& zone : zones) {
+        uint64_t packed = static_cast<uint64_t>(static_cast<uint32_t>(zone.cell.x)) << 32;
+        packed ^= static_cast<uint64_t>(static_cast<uint32_t>(zone.cell.y)) << 1;
+        packed ^= static_cast<uint64_t>(static_cast<uint32_t>(zone.team & 0x1));
+        keys.push_back(packed);
+    }
+    std::sort(keys.begin(), keys.end());
+    uint64_t hash = 1469598103934665603ull;
+    for (uint64_t key : keys) {
+        hash ^= key;
+        hash *= 1099511628211ull;
+    }
+    hash ^= static_cast<uint64_t>(keys.size());
+    hash *= 1099511628211ull;
+    return hash;
+}
+
 std::vector<GridCoord> CollectConnectedActiveIceWallCells(const std::vector<IceWallPiece>& walls, const GridCoord& seed) {
     std::unordered_set<int64_t> active_cells;
     active_cells.reserve(walls.size() * 2);
@@ -2044,6 +2064,7 @@ void GameApp::ReturnToMainMenu() {
     }
 
     state_ = GameState{};
+    ClearInfluenceZoneVisuals();
     map_loader_.Load(resolved_map_path_, &objects_database_, state_.map);
 
     event_queue_.Clear();
@@ -2078,6 +2099,7 @@ void GameApp::ReturnToMainMenu() {
 }
 
 void GameApp::StartMatchAsHost() {
+    ClearInfluenceZoneVisuals();
     state_.match = MatchState{};
     state_.match.mode_type = lobby_mode_type_;
     state_.match.round_time_seconds = lobby_round_time_seconds_;
@@ -2164,6 +2186,22 @@ void GameApp::StartMatchAsHost() {
     in_game_menu_open_ = false;
     in_game_menu_page_ = InGameMenuPage::Home;
     app_screen_ = AppScreen::InMatch;
+}
+
+void GameApp::ClearInfluenceZoneVisuals() {
+    state_.influence_zones.clear();
+    if (has_influence_zone_distance_red_texture_) {
+        UnloadTexture(influence_zone_distance_red_texture_);
+        influence_zone_distance_red_texture_ = {};
+        has_influence_zone_distance_red_texture_ = false;
+    }
+    if (has_influence_zone_distance_blue_texture_) {
+        UnloadTexture(influence_zone_distance_blue_texture_);
+        influence_zone_distance_blue_texture_ = {};
+        has_influence_zone_distance_blue_texture_ = false;
+    }
+    influence_zone_signature_ = 0;
+    has_influence_zone_signature_ = false;
 }
 
 void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) {
@@ -4648,7 +4686,7 @@ void GameApp::UpdateEarthRootsGroups(float dt) {
 }
 
 void GameApp::RebuildInfluenceZones() {
-    state_.influence_zones.clear();
+    std::vector<InfluenceZoneCell> rebuilt_zones;
     for (const auto& rune : state_.runes) {
         if (!rune.active || !rune.creates_influence_zone) {
             continue;
@@ -4659,13 +4697,13 @@ void GameApp::RebuildInfluenceZones() {
                 if (!state_.map.IsInside(cell)) {
                     continue;
                 }
-                auto it = std::find_if(state_.influence_zones.begin(), state_.influence_zones.end(),
+                auto it = std::find_if(rebuilt_zones.begin(), rebuilt_zones.end(),
                                        [&](const InfluenceZoneCell& zone) { return zone.cell == cell; });
-                if (it != state_.influence_zones.end()) {
+                if (it != rebuilt_zones.end()) {
                     it->team = rune.owner_team;
                     it->source_rune_id = rune.id;
                 } else {
-                    state_.influence_zones.push_back(InfluenceZoneCell{rune.id, rune.owner_team, cell});
+                    rebuilt_zones.push_back(InfluenceZoneCell{rune.id, rune.owner_team, cell});
                 }
             }
         }
@@ -4675,25 +4713,50 @@ void GameApp::RebuildInfluenceZones() {
         if (!rune.active || !rune.volatile_cast) {
             continue;
         }
-        state_.influence_zones.erase(
-            std::remove_if(state_.influence_zones.begin(), state_.influence_zones.end(),
+        rebuilt_zones.erase(
+            std::remove_if(rebuilt_zones.begin(), rebuilt_zones.end(),
                            [&](const InfluenceZoneCell& zone) {
                                return zone.cell == rune.cell && zone.team != rune.owner_team;
                            }),
-            state_.influence_zones.end());
+            rebuilt_zones.end());
+    }
+
+    state_.influence_zones = rebuilt_zones;
+
+    const uint64_t new_signature = ComputeInfluenceZoneSignature(state_.influence_zones);
+    if (has_influence_zone_signature_ && influence_zone_signature_ == new_signature) {
+        return;
     }
 
     constexpr int kInfluenceDistanceSamplesPerTile = 2;
     const auto red_cells = CollectInfluenceZoneCells(state_.influence_zones, Constants::kTeamRed);
     const auto blue_cells = CollectInfluenceZoneCells(state_.influence_zones, Constants::kTeamBlue);
-    BuildInfluenceDistanceTexture(&influence_zone_distance_red_texture_, &has_influence_zone_distance_red_texture_,
-                                  red_cells, CollectInfluenceBoundarySegments(red_cells, state_.map.cell_size),
-                                  state_.map.width, state_.map.height, state_.map.cell_size,
-                                  kInfluenceDistanceSamplesPerTile);
-    BuildInfluenceDistanceTexture(&influence_zone_distance_blue_texture_, &has_influence_zone_distance_blue_texture_,
-                                  blue_cells, CollectInfluenceBoundarySegments(blue_cells, state_.map.cell_size),
-                                  state_.map.width, state_.map.height, state_.map.cell_size,
-                                  kInfluenceDistanceSamplesPerTile);
+    auto clear_distance_texture = [](Texture2D* texture, bool* has_texture) {
+        if (texture == nullptr || has_texture == nullptr || !*has_texture) {
+            return;
+        }
+        UnloadTexture(*texture);
+        *texture = {};
+        *has_texture = false;
+    };
+    if (red_cells.empty()) {
+        clear_distance_texture(&influence_zone_distance_red_texture_, &has_influence_zone_distance_red_texture_);
+    } else {
+        BuildInfluenceDistanceTexture(&influence_zone_distance_red_texture_, &has_influence_zone_distance_red_texture_,
+                                      red_cells, CollectInfluenceBoundarySegments(red_cells, state_.map.cell_size),
+                                      state_.map.width, state_.map.height, state_.map.cell_size,
+                                      kInfluenceDistanceSamplesPerTile);
+    }
+    if (blue_cells.empty()) {
+        clear_distance_texture(&influence_zone_distance_blue_texture_, &has_influence_zone_distance_blue_texture_);
+    } else {
+        BuildInfluenceDistanceTexture(&influence_zone_distance_blue_texture_, &has_influence_zone_distance_blue_texture_,
+                                      blue_cells, CollectInfluenceBoundarySegments(blue_cells, state_.map.cell_size),
+                                      state_.map.width, state_.map.height, state_.map.cell_size,
+                                      kInfluenceDistanceSamplesPerTile);
+    }
+    influence_zone_signature_ = new_signature;
+    has_influence_zone_signature_ = true;
 }
 
 void GameApp::ResolvePlayerVsIceWalls(Player& player) {
