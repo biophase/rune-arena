@@ -5932,7 +5932,6 @@ void GameApp::RenderWorld() {
     RenderNonTerrainDepthSorted();
     RenderMeleeAttacks();
     RenderDamagePopups();
-    RenderRunePlacementOverlay();
     EndMode2D();
 
     EndTextureMode();
@@ -5941,6 +5940,7 @@ void GameApp::RenderWorld() {
     RenderZoneBorderOverlay();
 
     BeginMode2D(camera_);
+    RenderRunePlacementOverlay();
     RenderPlayerOverlays();
     EndMode2D();
 }
