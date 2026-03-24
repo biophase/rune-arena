@@ -593,6 +593,7 @@ bool GameApp::Initialize() {
     resolved_zone_post_process_shader_path_ = ResolveRuntimePath(Constants::kZonePostProcessShaderPath);
     resolved_zone_fill_overlay_shader_path_ = ResolveRuntimePath(Constants::kZoneFillOverlayShaderPath);
     resolved_zone_border_overlay_shader_path_ = ResolveRuntimePath(Constants::kZoneBorderOverlayShaderPath);
+    resolved_map_bounds_fade_shader_path_ = ResolveRuntimePath(Constants::kMapBoundsFadeShaderPath);
 
     objects_database_.LoadFromFile(resolved_objects_config_path_);
     composite_effects_loader_.LoadFromFile(resolved_composite_effects_path_);
@@ -789,6 +790,19 @@ void GameApp::LoadRenderShaders() {
             zone_border_overlay_zone_radius_loc_ = GetShaderLocation(zone_border_overlay_shader_, "uZoneRadius");
         }
     }
+
+    if (FileExists(resolved_map_bounds_fade_shader_path_.c_str())) {
+        map_bounds_fade_shader_ = LoadShader(nullptr, resolved_map_bounds_fade_shader_path_.c_str());
+        has_map_bounds_fade_shader_ = (map_bounds_fade_shader_.id != 0);
+        if (has_map_bounds_fade_shader_) {
+            map_bounds_fade_screen_height_loc_ = GetShaderLocation(map_bounds_fade_shader_, "uScreenHeight");
+            map_bounds_fade_camera_target_loc_ = GetShaderLocation(map_bounds_fade_shader_, "uCameraTarget");
+            map_bounds_fade_camera_offset_loc_ = GetShaderLocation(map_bounds_fade_shader_, "uCameraOffset");
+            map_bounds_fade_camera_zoom_loc_ = GetShaderLocation(map_bounds_fade_shader_, "uCameraZoom");
+            map_bounds_fade_fade_rect_min_loc_ = GetShaderLocation(map_bounds_fade_shader_, "uFadeRectMin");
+            map_bounds_fade_fade_rect_max_loc_ = GetShaderLocation(map_bounds_fade_shader_, "uFadeRectMax");
+        }
+    }
 }
 
 void GameApp::UnloadRenderShaders() {
@@ -817,6 +831,11 @@ void GameApp::UnloadRenderShaders() {
     }
     zone_border_overlay_shader_ = {};
     has_zone_border_overlay_shader_ = false;
+    if (has_map_bounds_fade_shader_) {
+        UnloadShader(map_bounds_fade_shader_);
+    }
+    map_bounds_fade_shader_ = {};
+    has_map_bounds_fade_shader_ = false;
     occluder_reveal_count_loc_ = -1;
     occluder_reveal_data_loc_ = -1;
     occluder_reveal_screen_height_loc_ = -1;
@@ -844,6 +863,12 @@ void GameApp::UnloadRenderShaders() {
     zone_border_overlay_camera_zoom_loc_ = -1;
     zone_border_overlay_zone_center_loc_ = -1;
     zone_border_overlay_zone_radius_loc_ = -1;
+    map_bounds_fade_screen_height_loc_ = -1;
+    map_bounds_fade_camera_target_loc_ = -1;
+    map_bounds_fade_camera_offset_loc_ = -1;
+    map_bounds_fade_camera_zoom_loc_ = -1;
+    map_bounds_fade_fade_rect_min_loc_ = -1;
+    map_bounds_fade_fade_rect_max_loc_ = -1;
 }
 
 bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y) {
@@ -5938,6 +5963,7 @@ void GameApp::RenderWorld() {
     DrawWorldLayerWithZonePostProcess();
     RenderZoneFillOverlay();
     RenderZoneBorderOverlay();
+    RenderMapBoundsFadeOverlay();
 
     BeginMode2D(camera_);
     RenderRunePlacementOverlay();
@@ -6233,6 +6259,35 @@ void GameApp::RenderZoneBorderOverlay() {
                    SHADER_UNIFORM_FLOAT);
 
     BeginShaderMode(zone_border_overlay_shader_);
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), WHITE);
+    EndShaderMode();
+}
+
+void GameApp::RenderMapBoundsFadeOverlay() {
+    if (!has_map_bounds_fade_shader_ || state_.map.cell_size <= 0) {
+        return;
+    }
+
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float camera_target[2] = {camera_.target.x, camera_.target.y};
+    const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+    const float camera_zoom = camera_.zoom;
+    const float cell = static_cast<float>(state_.map.cell_size);
+    const float dual_grid_offset = cell * 0.5f;
+    const float map_width_world = static_cast<float>(state_.map.width * state_.map.cell_size);
+    const float map_height_world = static_cast<float>(state_.map.height * state_.map.cell_size);
+    const float fade_rect_min[2] = {dual_grid_offset, dual_grid_offset};
+    const float fade_rect_max[2] = {std::max(dual_grid_offset, map_width_world + dual_grid_offset),
+                                    std::max(dual_grid_offset, map_height_world + dual_grid_offset)};
+
+    SetShaderValue(map_bounds_fade_shader_, map_bounds_fade_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(map_bounds_fade_shader_, map_bounds_fade_camera_target_loc_, camera_target, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(map_bounds_fade_shader_, map_bounds_fade_camera_offset_loc_, camera_offset, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(map_bounds_fade_shader_, map_bounds_fade_camera_zoom_loc_, &camera_zoom, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(map_bounds_fade_shader_, map_bounds_fade_fade_rect_min_loc_, fade_rect_min, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(map_bounds_fade_shader_, map_bounds_fade_fade_rect_max_loc_, fade_rect_max, SHADER_UNIFORM_VEC2, 1);
+
+    BeginShaderMode(map_bounds_fade_shader_);
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), WHITE);
     EndShaderMode();
 }

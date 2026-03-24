@@ -216,6 +216,7 @@ constexpr const char* kWaterGradientShaderPath = "assets/shaders/water_gradient.
 constexpr const char* kZonePostProcessShaderPath = "assets/shaders/zone_desaturate.fs";
 constexpr const char* kZoneFillOverlayShaderPath = "assets/shaders/zone_fill_overlay.fs";
 constexpr const char* kZoneBorderOverlayShaderPath = "assets/shaders/zone_border_overlay.fs";
+constexpr const char* kMapBoundsFadeShaderPath = "assets/shaders/map_bounds_fade.fs";
 constexpr const char* kSfxFireballCreatedPath = "assets/sfx/ogg/SFX/Spells/Fireball 1.ogg";
 constexpr const char* kSfxMeleeAttackPath = "assets/sfx/ogg/SFX/Attacks/Sword Attacks Hits and Blocks/Sword Attack 1.ogg";
 constexpr const char* kSfxCreateRunePath = "assets/sfx/ogg/SFX/Torch/Light Torch 1.ogg";

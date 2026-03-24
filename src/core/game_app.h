@@ -162,6 +162,7 @@ class GameApp {
     void RenderRunePlacementOverlay();
     void RenderZoneFillOverlay();
     void RenderZoneBorderOverlay();
+    void RenderMapBoundsFadeOverlay();
     void RenderBottomHud();
     void RenderFpsCounter();
     void RenderNetworkDebugPanel();
@@ -252,6 +253,7 @@ class GameApp {
     std::string resolved_zone_post_process_shader_path_;
     std::string resolved_zone_fill_overlay_shader_path_;
     std::string resolved_zone_border_overlay_shader_path_;
+    std::string resolved_map_bounds_fade_shader_path_;
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;
     double connect_attempt_start_seconds_ = 0.0;
@@ -302,6 +304,8 @@ class GameApp {
     bool has_zone_fill_overlay_shader_ = false;
     Shader zone_border_overlay_shader_ = {};
     bool has_zone_border_overlay_shader_ = false;
+    Shader map_bounds_fade_shader_ = {};
+    bool has_map_bounds_fade_shader_ = false;
     int occluder_reveal_count_loc_ = -1;
     int occluder_reveal_data_loc_ = -1;
     int occluder_reveal_screen_height_loc_ = -1;
@@ -329,6 +333,12 @@ class GameApp {
     int zone_border_overlay_camera_zoom_loc_ = -1;
     int zone_border_overlay_zone_center_loc_ = -1;
     int zone_border_overlay_zone_radius_loc_ = -1;
+    int map_bounds_fade_screen_height_loc_ = -1;
+    int map_bounds_fade_camera_target_loc_ = -1;
+    int map_bounds_fade_camera_offset_loc_ = -1;
+    int map_bounds_fade_camera_zoom_loc_ = -1;
+    int map_bounds_fade_fade_rect_min_loc_ = -1;
+    int map_bounds_fade_fade_rect_max_loc_ = -1;
     float camera_shake_time_remaining_ = 0.0f;
     std::unordered_map<int, float> fire_storm_dummy_lightning_seconds_remaining_;
     std::unordered_map<int, float> fire_storm_dummy_lightning_cooldown_seconds_remaining_;
