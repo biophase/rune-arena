@@ -1468,7 +1468,15 @@ void GameApp::LoadAudioAssets() {
         has_bgm_forest_day_ = IsLoadedMusic(bgm_forest_day_);
         if (has_bgm_forest_day_) {
             SetMusicVolume(bgm_forest_day_, Constants::kBgmVolume);
-            PlayMusicStream(bgm_forest_day_);
+        }
+    }
+
+    const std::string outside_game_bgm_path = ResolveRuntimePath(Constants::kBgmOutsideGamePath);
+    if (FileExists(outside_game_bgm_path.c_str())) {
+        bgm_outside_game_ = LoadMusicStream(outside_game_bgm_path.c_str());
+        has_bgm_outside_game_ = IsLoadedMusic(bgm_outside_game_);
+        if (has_bgm_outside_game_) {
+            SetMusicVolume(bgm_outside_game_, Constants::kBgmVolume);
         }
     }
 }
@@ -1523,6 +1531,13 @@ void GameApp::UnloadAudioAssets() {
         UnloadMusicStream(bgm_forest_day_);
         has_bgm_forest_day_ = false;
     }
+    if (has_bgm_outside_game_) {
+        StopMusicStream(bgm_outside_game_);
+        UnloadMusicStream(bgm_outside_game_);
+        has_bgm_outside_game_ = false;
+    }
+    bgm_forest_day_active_last_frame_ = false;
+    bgm_outside_game_active_last_frame_ = false;
 }
 
 void GameApp::UpdateAudioFrame() {
@@ -1530,9 +1545,39 @@ void GameApp::UpdateAudioFrame() {
         return;
     }
     UpdateLocalFootstepAudio();
+    const bool should_play_outside_game_bgm = app_screen_ != AppScreen::InMatch;
+    const bool should_play_in_match_bgm = app_screen_ == AppScreen::InMatch;
+
     if (has_bgm_forest_day_) {
-        UpdateMusicStream(bgm_forest_day_);
+        if (should_play_in_match_bgm) {
+            if (!bgm_forest_day_active_last_frame_) {
+                SeekMusicStream(bgm_forest_day_, 0.0f);
+            }
+            if (!IsMusicStreamPlaying(bgm_forest_day_)) {
+                PlayMusicStream(bgm_forest_day_);
+            }
+            SetMusicVolume(bgm_forest_day_, Constants::kBgmVolume);
+            UpdateMusicStream(bgm_forest_day_);
+        } else if (IsMusicStreamPlaying(bgm_forest_day_)) {
+            StopMusicStream(bgm_forest_day_);
+        }
     }
+    if (has_bgm_outside_game_) {
+        if (should_play_outside_game_bgm) {
+            if (!bgm_outside_game_active_last_frame_) {
+                SeekMusicStream(bgm_outside_game_, 0.0f);
+            }
+            if (!IsMusicStreamPlaying(bgm_outside_game_)) {
+                PlayMusicStream(bgm_outside_game_);
+            }
+            SetMusicVolume(bgm_outside_game_, Constants::kBgmVolume);
+            UpdateMusicStream(bgm_outside_game_);
+        } else if (IsMusicStreamPlaying(bgm_outside_game_)) {
+            StopMusicStream(bgm_outside_game_);
+        }
+    }
+    bgm_forest_day_active_last_frame_ = should_play_in_match_bgm;
+    bgm_outside_game_active_last_frame_ = should_play_outside_game_bgm;
 
     if (!has_fire_storm_ambient_) {
         return;

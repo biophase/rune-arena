@@ -254,6 +254,7 @@ constexpr std::array<const char*, 5> kSfxFootstepDirtPaths = {
 };
 constexpr const char* kFireStormAmbientPath = "assets/sfx/EM_FIRE_HOLD_4s.ogg";
 constexpr const char* kBgmForestDayPath = "assets/sfx/ogg/BGS Loops/Forest Day/Forest Day.ogg";
+constexpr const char* kBgmOutsideGamePath = "assets/sfx/ogg/BGS Loops/Cave/Cave Storm.ogg";
 
 constexpr float kBgmVolume = 0.35f;
 constexpr float kSfxVolumeFireballCreated = 0.70f;

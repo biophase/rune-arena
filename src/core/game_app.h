@@ -443,6 +443,10 @@ class GameApp {
     std::array<LoadedSfx, 5> sfx_footstep_dirt_{};
     Music bgm_forest_day_ = {};
     bool has_bgm_forest_day_ = false;
+    Music bgm_outside_game_ = {};
+    bool has_bgm_outside_game_ = false;
+    bool bgm_forest_day_active_last_frame_ = false;
+    bool bgm_outside_game_active_last_frame_ = false;
     Music fire_storm_ambient_ = {};
     bool has_fire_storm_ambient_ = false;
     float fire_storm_ambient_gain_ = 0.0f;
