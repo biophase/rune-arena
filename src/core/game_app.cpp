@@ -107,13 +107,17 @@ std::vector<GridCoord> CollectConnectedActiveIceWallCells(const std::vector<IceW
     return component;
 }
 
-bool IntersectsTileComponent(const Vector2& center, float radius, int cell_size, const std::vector<GridCoord>& cells) {
+Rectangle MakeCenteredRect(Vector2 center, float width, float height) {
+    return Rectangle{center.x - width * 0.5f, center.y - height * 0.5f, width, height};
+}
+
+bool IntersectsTileComponent(const Rectangle& box, int cell_size, const std::vector<GridCoord>& cells) {
     for (const GridCoord& cell : cells) {
         const Rectangle aabb = {static_cast<float>(cell.x * cell_size), static_cast<float>(cell.y * cell_size),
                                 static_cast<float>(cell_size), static_cast<float>(cell_size)};
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (CollisionWorld::CircleVsAabb(center, radius, aabb, normal, penetration)) {
+        if (CollisionWorld::AabbVsAabb(box, aabb, normal, penetration)) {
             return true;
         }
     }
@@ -868,6 +872,9 @@ bool GameApp::Initialize() {
     resolved_sprite_metadata_tall_path_ = ResolveRuntimePath(Constants::kSpriteMetadataTallPath);
     resolved_sprite_metadata_96x96_path_ = ResolveRuntimePath(Constants::kSpriteMetadata96x96Path);
     resolved_sprite_metadata_128x128_path_ = ResolveRuntimePath(Constants::kSpriteMetadata128x128Path);
+    resolved_modular_player_main_path_ = ResolveRuntimePath(Constants::kModularPlayerMainMetadataPath);
+    resolved_modular_player_shadow_path_ = ResolveRuntimePath(Constants::kModularPlayerShadowMetadataPath);
+    const std::string resolved_modular_player_sword_path = ResolveRuntimePath(Constants::kModularPlayerSwordMetadataPath);
     resolved_spell_pattern_path_ = ResolveRuntimePath(Constants::kSpellPatternPath);
     resolved_menu_background_path_ = ResolveRuntimePath(Constants::kMenuBackgroundPath);
     resolved_occluder_reveal_shader_path_ = ResolveRuntimePath(Constants::kOccluderRevealShaderPath);
@@ -896,6 +903,9 @@ bool GameApp::Initialize() {
     sprite_metadata_tall_.LoadFromFile(resolved_sprite_metadata_tall_path_);
     sprite_metadata_96x96_.LoadFromFile(resolved_sprite_metadata_96x96_path_);
     sprite_metadata_128x128_.LoadFromFile(resolved_sprite_metadata_128x128_path_);
+    modular_player_asset_.LoadLayer("main", resolved_modular_player_main_path_);
+    modular_player_asset_.LoadLayer("shadow", resolved_modular_player_shadow_path_);
+    modular_player_asset_.LoadLayer("sword", resolved_modular_player_sword_path);
     spell_patterns_.LoadFromFile(resolved_spell_pattern_path_);
     if (FileExists(resolved_menu_background_path_.c_str())) {
         menu_background_texture_ = LoadTexture(resolved_menu_background_path_.c_str());
@@ -989,6 +999,7 @@ void GameApp::Shutdown() {
     sprite_metadata_tall_.Unload();
     sprite_metadata_96x96_.Unload();
     sprite_metadata_128x128_.Unload();
+    modular_player_asset_.Unload();
     if (has_menu_background_texture_) {
         UnloadTexture(menu_background_texture_);
         has_menu_background_texture_ = false;
@@ -2683,10 +2694,16 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         for (size_t i = 0; i < player.rune_charge_counts.size() && i < player_snapshot.rune_charge_counts.size(); ++i) {
             player.rune_charge_counts[i] = player_snapshot.rune_charge_counts[i];
         }
+        for (size_t i = 0; i < player.weapon_slots.size() && i < player_snapshot.weapon_slots.size(); ++i) {
+            player.weapon_slots[i] = player_snapshot.weapon_slots[i];
+        }
         if (has_previous_local_ui_state && player.id == state_.local_player_id) {
             player.rune_slots = previous_local_ui_state.rune_slots;
             player.selected_rune_slot = previous_local_ui_state.selected_rune_slot;
             player.inventory_mode = previous_local_ui_state.inventory_mode;
+            for (size_t i = 0; i < player.weapon_slots.size() && i < previous_local_ui_state.weapon_slots.size(); ++i) {
+                player.weapon_slots[i] = previous_local_ui_state.weapon_slots[i];
+            }
             player.ui_dragging_slot = previous_local_ui_state.ui_dragging_slot;
             player.ui_drag_source_family = previous_local_ui_state.ui_drag_source_family;
             player.ui_drag_source_index = previous_local_ui_state.ui_drag_source_index;
@@ -3321,6 +3338,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
                                                        player.rune_cooldown_remaining.end());
         player_snapshot.rune_cooldown_total.assign(player.rune_cooldown_total.begin(), player.rune_cooldown_total.end());
         player_snapshot.rune_charge_counts.assign(player.rune_charge_counts.begin(), player.rune_charge_counts.end());
+        player_snapshot.weapon_slots.assign(player.weapon_slots.begin(), player.weapon_slots.end());
         for (const auto& status : player.status_effects) {
             PlayerSnapshot::StatusEffectSnapshot status_snapshot;
             status_snapshot.type = static_cast<int>(status.type);
@@ -3696,7 +3714,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
             if (TryPlaceRune(player, Vector2{input.aim_x, input.aim_y})) {
                 player.action_state = PlayerActionState::RunePlacing;
             }
-        } else if (player.melee_cooldown_remaining <= 0.0f) {
+        } else if (PlayerHasEquippedWeapon(player, "sword_item") && player.melee_cooldown_remaining <= 0.0f) {
             player.melee_cooldown_remaining = Constants::kMeleeCooldownSeconds;
             player.melee_active_remaining = Constants::kMeleeActiveWindowSeconds;
             player.melee_hit_target_ids.clear();
@@ -4134,7 +4152,7 @@ void GameApp::ResolvePlayerVsMapObjects(Player& player) {
         const Rectangle aabb = GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id), state_.map.cell_size);
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+        if (!CollisionWorld::AabbVsAabb(GetPlayerCollisionRect(player), aabb, normal, penetration)) {
             continue;
         }
 
@@ -4229,6 +4247,17 @@ bool GameApp::TryConsumeObject(int object_instance_id, int player_id) {
         object->collision_enabled = false;
         object->alive = false;
         PlaySfxIfVisible(sfx_static_bolt_impact_.sound, sfx_static_bolt_impact_.loaded, CellToWorldCenter(object->cell));
+        return true;
+    }
+
+    if (object->prototype_id == "sword_item") {
+        if (PlayerHasEquippedWeapon(*player, "sword_item")) {
+            return false;
+        }
+        player->weapon_slots[0] = "sword_item";
+        object->collision_enabled = false;
+        object->alive = false;
+        PlaySfxIfVisible(sfx_item_pickup_.sound, sfx_item_pickup_.loaded, CellToWorldCenter(object->cell));
         return true;
     }
 
@@ -4564,7 +4593,7 @@ void GameApp::UpdateMapObjects(float dt) {
                 }
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;
-                if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+                if (!CollisionWorld::AabbVsAabb(GetPlayerCollisionRect(player), aabb, normal, penetration)) {
                     continue;
                 }
                 TryConsumeObject(object.id, player.id);
@@ -4693,8 +4722,10 @@ Vector2 GameApp::ComputeRespawnPosition(const Player& player) const {
 
     const float map_width = static_cast<float>(state_.map.width * state_.map.cell_size);
     const float map_height = static_cast<float>(state_.map.height * state_.map.cell_size);
-    respawn.x = std::clamp(respawn.x, player.radius, std::max(player.radius, map_width - player.radius));
-    respawn.y = std::clamp(respawn.y, player.radius, std::max(player.radius, map_height - player.radius));
+    const float half_width = Constants::kPlayerHitboxWidth * 0.5f;
+    const float half_height = Constants::kPlayerHitboxHeight * 0.5f;
+    respawn.x = std::clamp(respawn.x, half_width, std::max(half_width, map_width - half_width));
+    respawn.y = std::clamp(respawn.y, half_height, std::max(half_height, map_height - half_height));
     return respawn;
 }
 
@@ -5065,12 +5096,12 @@ void GameApp::ResolvePlayerVsIceWalls(Player& player) {
         for (const GridCoord& cell : component) {
             visited_components.insert(MakeGridKey(cell));
         }
-        if (!IntersectsTileComponent(player.pos, player.radius, cell_size, component)) {
+        if (!IntersectsTileComponent(GetPlayerCollisionRect(player), cell_size, component)) {
             continue;
         }
 
         Vector2 resolved = player.pos;
-        if (!CollisionWorld::FindClosestBoundaryExitForTileComponent(player.pos, player.radius, cell_size, component,
+        if (!CollisionWorld::FindClosestBoundaryExitForTileComponent(GetPlayerCollisionRect(player), cell_size, component,
                                                                      resolved)) {
             continue;
         }
@@ -5104,7 +5135,7 @@ void GameApp::ResolvePlayerVsIceWallsLocal(Player& player) {
                                 static_cast<float>(cell_size), static_cast<float>(cell_size)};
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (!CollisionWorld::CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+        if (!CollisionWorld::AabbVsAabb(GetPlayerCollisionRect(player), aabb, normal, penetration)) {
             continue;
         }
 
@@ -5128,12 +5159,12 @@ void GameApp::PushPlayersOutOfIceWall(const GridCoord& cell) {
             continue;
         }
 
-        if (!IntersectsTileComponent(player.pos, player.radius, cell_size, component)) {
+        if (!IntersectsTileComponent(GetPlayerCollisionRect(player), cell_size, component)) {
             continue;
         }
 
         Vector2 resolved = player.pos;
-        if (!CollisionWorld::FindClosestBoundaryExitForTileComponent(player.pos, player.radius, cell_size, component,
+        if (!CollisionWorld::FindClosestBoundaryExitForTileComponent(GetPlayerCollisionRect(player), cell_size, component,
                                                                      resolved)) {
             continue;
         }
@@ -5266,8 +5297,8 @@ void GameApp::UpdateProjectiles(float dt) {
 
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;
-                if (!CollisionWorld::CircleVsCircle(projectile.pos, projectile.radius, target.pos, target.radius,
-                                                    normal, penetration)) {
+                if (!CollisionWorld::CircleVsAabb(projectile.pos, projectile.radius, GetPlayerCollisionRect(target),
+                                                  normal, penetration)) {
                     continue;
                 }
 
@@ -5365,8 +5396,8 @@ void GameApp::UpdateExplosions(float dt) {
 
             Vector2 normal = {0.0f, 0.0f};
             float penetration = 0.0f;
-            if (!CollisionWorld::CircleVsCircle(explosion.pos, explosion.radius, target.pos, target.radius, normal,
-                                                penetration)) {
+            if (!CollisionWorld::CircleVsAabb(explosion.pos, explosion.radius, GetPlayerCollisionRect(target), normal,
+                                              penetration)) {
                 continue;
             }
 
@@ -5556,7 +5587,7 @@ bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world, bool p
                 hook.target_pos = sample;
                 hook.latch_point = sample;
                 hook.pull_destination =
-                    Vector2Subtract(sample, Vector2Scale(direction, player.radius * 0.5f));
+                    Vector2Subtract(sample, Vector2Scale(direction, GetPlayerCollisionSupportDistance(direction)));
                 hook.phase = GrapplingHookPhase::Firing;
                 hook.latch_target_type = GrapplingHookLatchTargetType::IceWall;
                 hook.latch_target_id = wall.id;
@@ -5580,7 +5611,7 @@ bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world, bool p
                 hook.target_pos = sample;
                 hook.latch_point = sample;
                 hook.pull_destination =
-                    Vector2Subtract(sample, Vector2Scale(direction, player.radius * 0.5f));
+                    Vector2Subtract(sample, Vector2Scale(direction, GetPlayerCollisionSupportDistance(direction)));
                 hook.phase = GrapplingHookPhase::Firing;
                 hook.latch_target_type = GrapplingHookLatchTargetType::MapObject;
                 hook.latch_target_id = object.id;
@@ -5940,7 +5971,7 @@ void GameApp::ResolvePlayerCollisions() {
 
             Vector2 normal = {0.0f, 0.0f};
             float penetration = 0.0f;
-            if (!CollisionWorld::CircleVsCircle(a.pos, a.radius, b.pos, b.radius, normal, penetration)) {
+            if (!CollisionWorld::AabbVsAabb(GetPlayerCollisionRect(a), GetPlayerCollisionRect(b), normal, penetration)) {
                 continue;
             }
 
@@ -5985,8 +6016,8 @@ void GameApp::HandleMeleeHit(Player& attacker) {
 
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (!CollisionWorld::CircleVsCircle(hit_center, Constants::kMeleeHitRadius, target.pos, target.radius, normal,
-                                            penetration)) {
+        if (!CollisionWorld::CircleVsAabb(hit_center, Constants::kMeleeHitRadius, GetPlayerCollisionRect(target), normal,
+                                          penetration)) {
             continue;
         }
 
@@ -6510,6 +6541,7 @@ void GameApp::RenderWorld() {
     BeginMode2D(camera_);
     RenderRunePlacementOverlay();
     RenderPlayerOverlays();
+    RenderDebugCollisionOverlay();
     EndMode2D();
 }
 
@@ -6594,12 +6626,20 @@ void GameApp::RenderGroundMapObjects() {
                 break;
         }
 
-        const float dst_w = static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
-        const float dst_h = static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+        const float base_dst_w =
+            static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
+        const float base_dst_h =
+            static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+        const float visual_scale =
+            proto->type == ObjectType::Consumable ? Constants::kDroppedItemVisualScale : 1.0f;
+        const float dst_w = base_dst_w * visual_scale;
+        const float dst_h = base_dst_h * visual_scale;
         Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
                          static_cast<float>(object.cell.y * state_.map.cell_size) -
-                             (dst_h - static_cast<float>(state_.map.cell_size)),
+                             (base_dst_h - static_cast<float>(state_.map.cell_size)),
                          dst_w, dst_h};
+        dst.x += (base_dst_w - dst_w) * 0.5f;
+        dst.y += (base_dst_h - dst_h) * 0.5f;
         dst = SnapRect(dst);
 
         std::string animation = proto->idle_animation;
@@ -6681,19 +6721,48 @@ void GameApp::UpdateObjectShadowLayer() {
                 break;
         }
 
-        const float dst_w = static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
-        const float dst_h = static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+        const float base_dst_w =
+            static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
+        const float base_dst_h =
+            static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+        const float visual_scale =
+            proto->type == ObjectType::Consumable ? Constants::kDroppedItemVisualScale : 1.0f;
+        const float dst_w = base_dst_w * visual_scale;
+        const float dst_h = base_dst_h * visual_scale;
         Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size) +
-                             (static_cast<float>(object_cell_width) - dst_w) * 0.5f,
+                             (static_cast<float>(object_cell_width) - base_dst_w) * 0.5f,
                          static_cast<float>(object.cell.y * state_.map.cell_size) -
-                             (dst_h - static_cast<float>(state_.map.cell_size)),
+                             (base_dst_h - static_cast<float>(state_.map.cell_size)),
                          dst_w, dst_h};
+        dst.x += (base_dst_w - dst_w) * 0.5f;
+        dst.y += (base_dst_h - dst_h) * 0.5f;
         dst = SnapRect(dst);
 
         const Rectangle src = InsetSourceRect(
             metadata->GetFrame(proto->shadow_animation, "default", render_time_seconds_),
             Constants::kAtlasSampleInsetPixels);
         DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+    }
+
+    if (modular_player_asset_.HasLayer("shadow")) {
+        const Texture2D* player_shadow_texture = modular_player_asset_.GetLayerTexture("shadow");
+        if (player_shadow_texture != nullptr) {
+            for (const auto& player : state_.players) {
+                if (!player.alive) {
+                    continue;
+                }
+                const std::string tag = ResolvePlayerModularTag(player);
+                if (!modular_player_asset_.HasTag("shadow", tag)) {
+                    continue;
+                }
+                const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+                const Rectangle dst = GetPlayerSpriteRect(draw_pos);
+                const Rectangle src =
+                    InsetSourceRect(modular_player_asset_.GetFrame("shadow", tag, render_time_seconds_),
+                                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(*player_shadow_texture, src, dst, {0, 0}, 0.0f, WHITE);
+            }
+        }
     }
 
     EndMode2D();
@@ -7324,12 +7393,20 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                         draw_texture = has_huge_texture ? &huge_texture : nullptr;
                         break;
                 }
-                const float dst_w = static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
-                const float dst_h = static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+                const float base_dst_w =
+                    static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
+                const float base_dst_h =
+                    static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
+                const float visual_scale =
+                    proto->type == ObjectType::Consumable ? Constants::kDroppedItemVisualScale : 1.0f;
+                const float dst_w = base_dst_w * visual_scale;
+                const float dst_h = base_dst_h * visual_scale;
                 Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
                                  static_cast<float>(object.cell.y * state_.map.cell_size) -
-                                     (dst_h - static_cast<float>(state_.map.cell_size)),
+                                     (base_dst_h - static_cast<float>(state_.map.cell_size)),
                                  dst_w, dst_h};
+                dst.x += (base_dst_w - dst_w) * 0.5f;
+                dst.y += (base_dst_h - dst_h) * 0.5f;
                 dst = SnapRect(dst);
 
                 std::string animation = proto->idle_animation;
@@ -7710,44 +7787,17 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 const Player& player = state_.players[item.index];
                 const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
                 if (!player.alive) {
-                    DrawCircleV(draw_pos, player.radius, Color{70, 70, 70, 180});
+                    DrawRectangleRec(GetPlayerCollisionRect(draw_pos), Color{70, 70, 70, 180});
                     break;
                 }
 
-                const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
-                const char* base_prefix = player.team == Constants::kTeamRed ? "wizard_red_" : "wizard_blue_";
-                const char* suffix = "idle";
-                if (player.action_state == PlayerActionState::Slashing) {
-                    suffix = "slash";
-                } else if (player.action_state == PlayerActionState::RunePlacing) {
-                    suffix = "create_rune";
-                } else if (is_moving) {
-                    suffix = "walking";
-                }
-                std::string animation = std::string(base_prefix) + suffix;
-                if (!sprite_metadata_.HasAnimation(animation)) {
-                    // Backward compatibility with legacy non-team animation keys.
-                    animation = std::string("wizard_") + suffix;
-                }
-
-                const char* facing = FacingToSpriteFacing(player.facing);
-                Rectangle dst = {draw_pos.x - 16.0f, draw_pos.y - 16.0f, 32.0f, 32.0f};
-                dst = SnapRect(dst);
+                const Rectangle dst = GetPlayerSpriteRect(draw_pos);
                 const Rectangle sprite_rect = dst;
 
-                if (has_texture && sprite_metadata_.HasAnimation(animation)) {
-                    const bool mirror = player.facing == FacingDirection::Left;
-                    Rectangle src = sprite_metadata_.GetFrame(animation, facing, render_time_seconds_);
-                    if (mirror) {
-                        src = sprite_metadata_.GetMirroredFrameRect(src);
-                    }
-                    src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
-
-                    const Texture2D draw_texture = sprite_metadata_.GetTexture(mirror);
-                    DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                if (modular_player_asset_.HasTag("main", ResolvePlayerModularTag(player))) {
+                    RenderPlayerModularLayers(player, draw_pos);
                 } else {
-                    const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
-                    DrawCircleV(draw_pos, player.radius, fallback);
+                    DrawRectangleRec(GetPlayerCollisionRect(draw_pos), BLUE);
                 }
 
                 const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
@@ -7757,7 +7807,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                                            static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
                                            static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
 
-                Rectangle health_bar = {sprite_rect.x, sprite_rect.y - Constants::kPlayerHealthBarOffsetY,
+                Rectangle health_bar = {draw_pos.x - Constants::kPlayerHealthBarWidth * 0.5f,
+                                        sprite_rect.y - Constants::kPlayerHealthBarOffsetY + 20.0f,
                                         Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
                 health_bar = SnapRect(health_bar);
                 DrawRectangleRec(health_bar, bar_missing);
@@ -8310,49 +8361,20 @@ void GameApp::RenderIceWalls() {
 }
 
 void GameApp::RenderPlayers() {
-    const bool has_texture = sprite_metadata_.IsLoaded();
-
     for (const auto& player : state_.players) {
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
 
         if (!player.alive) {
-            DrawCircleV(draw_pos, player.radius, Color{70, 70, 70, 180});
+            DrawRectangleRec(GetPlayerCollisionRect(draw_pos), Color{70, 70, 70, 180});
             continue;
         }
 
-        const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
-        const char* base_prefix = player.team == Constants::kTeamRed ? "wizard_red_" : "wizard_blue_";
-        const char* suffix = "idle";
-        if (player.action_state == PlayerActionState::Slashing) {
-            suffix = "slash";
-        } else if (player.action_state == PlayerActionState::RunePlacing) {
-            suffix = "create_rune";
-        } else if (is_moving) {
-            suffix = "walking";
-        }
-        std::string animation = std::string(base_prefix) + suffix;
-        if (!sprite_metadata_.HasAnimation(animation)) {
-            animation = std::string("wizard_") + suffix;
-        }
+        const Rectangle dst = GetPlayerSpriteRect(draw_pos);
 
-        const char* facing = FacingToSpriteFacing(player.facing);
-        Rectangle dst = {draw_pos.x - 16.0f, draw_pos.y - 16.0f, 32.0f, 32.0f};
-        dst = SnapRect(dst);
-        const Rectangle sprite_rect = dst;
-
-        if (has_texture && sprite_metadata_.HasAnimation(animation)) {
-            const bool mirror = player.facing == FacingDirection::Left;
-            Rectangle src = sprite_metadata_.GetFrame(animation, facing, render_time_seconds_);
-            if (mirror) {
-                src = sprite_metadata_.GetMirroredFrameRect(src);
-            }
-            src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
-
-            const Texture2D draw_texture = sprite_metadata_.GetTexture(mirror);
-            DrawTexturePro(draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+        if (modular_player_asset_.HasTag("main", ResolvePlayerModularTag(player))) {
+            RenderPlayerModularLayers(player, draw_pos);
         } else {
-            const Color fallback = (player.team == Constants::kTeamRed) ? RED : BLUE;
-            DrawCircleV(draw_pos, player.radius, fallback);
+            DrawRectangleRec(GetPlayerCollisionRect(draw_pos), BLUE);
         }
     }
 }
@@ -8387,10 +8409,10 @@ void GameApp::RenderPlayerOverlays() {
     for (const OverlayItem& overlay : overlays) {
         const Player& player = *overlay.player;
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
-        Rectangle sprite_rect = {draw_pos.x - 16.0f, draw_pos.y - 16.0f, 32.0f, 32.0f};
-        sprite_rect = SnapRect(sprite_rect);
+        const Rectangle sprite_rect = GetPlayerSpriteRect(draw_pos);
 
-        Rectangle health_bar = {sprite_rect.x, sprite_rect.y - Constants::kPlayerHealthBarOffsetY,
+        Rectangle health_bar = {draw_pos.x - Constants::kPlayerHealthBarWidth * 0.5f,
+                                sprite_rect.y - Constants::kPlayerHealthBarOffsetY + 20.0f,
                                 Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
         health_bar = SnapRect(health_bar);
         DrawRectangleRec(health_bar, bar_missing);
@@ -8411,6 +8433,96 @@ void GameApp::RenderPlayerOverlays() {
             const int name_x = static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(name_width)) * 0.5f);
             const int name_y = static_cast<int>(health_bar.y - static_cast<float>(name_font_size) - 2.0f);
             DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
+        }
+    }
+}
+
+void GameApp::RenderDebugCollisionOverlay() {
+    if (!show_network_debug_panel_) {
+        return;
+    }
+
+    const Color player_color = Color{80, 180, 255, 220};
+    const Color player_outline = Color{210, 240, 255, 220};
+    const Color object_color = Color{255, 190, 90, 220};
+    const Color wall_color = Color{140, 255, 170, 220};
+    const Color projectile_color = Color{255, 110, 110, 220};
+    const Color explosion_color = Color{255, 60, 60, 220};
+    const Color melee_color = Color{255, 120, 220, 220};
+    const Color grapple_color = Color{180, 255, 255, 220};
+
+    for (const auto& player : state_.players) {
+        if (!player.alive) {
+            continue;
+        }
+
+        DrawRectangleLinesEx(GetPlayerCollisionRect(player), 1.0f, player_color);
+        DrawCircleV(player.pos, 1.5f, player_outline);
+
+        if (player.melee_active_remaining > 0.0f) {
+            Vector2 aim_dir = player.aim_dir;
+            if (Vector2LengthSqr(aim_dir) <= 0.0001f) {
+                aim_dir = {1.0f, 0.0f};
+            } else {
+                aim_dir = Vector2Normalize(aim_dir);
+            }
+            const Vector2 melee_center =
+                Vector2Add(player.pos, Vector2Scale(aim_dir, Constants::kMeleeRange));
+            DrawCircleLinesV(melee_center, Constants::kMeleeHitRadius, melee_color);
+        }
+    }
+
+    for (const auto& object : state_.map_objects) {
+        if (!object.alive || !object.collision_enabled) {
+            continue;
+        }
+
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        const Rectangle aabb = GetMapObjectCollisionAabb(object, proto, state_.map.cell_size);
+        DrawRectangleLinesEx(aabb, 1.0f, object_color);
+    }
+
+    for (const auto& wall : state_.ice_walls) {
+        if (!wall.alive || wall.state == IceWallState::Dying) {
+            continue;
+        }
+
+        const Rectangle aabb = {static_cast<float>(wall.cell.x * state_.map.cell_size),
+                                static_cast<float>(wall.cell.y * state_.map.cell_size),
+                                static_cast<float>(state_.map.cell_size),
+                                static_cast<float>(state_.map.cell_size)};
+        DrawRectangleLinesEx(aabb, 1.0f, wall_color);
+    }
+
+    for (const auto& projectile : state_.projectiles) {
+        if (!projectile.alive) {
+            continue;
+        }
+
+        DrawCircleLinesV(projectile.pos, projectile.radius, projectile_color);
+        DrawCircleV(projectile.pos, 2.0f, projectile_color);
+        const Rectangle projectile_aabb = {projectile.pos.x - projectile.radius, projectile.pos.y - projectile.radius,
+                                           projectile.radius * 2.0f, projectile.radius * 2.0f};
+        DrawRectangleLinesEx(projectile_aabb, 1.0f, projectile_color);
+    }
+
+    for (const auto& explosion : state_.explosions) {
+        if (!explosion.alive) {
+            continue;
+        }
+
+        DrawCircleLinesV(explosion.pos, explosion.radius, explosion_color);
+    }
+
+    for (const auto& hook : state_.grappling_hooks) {
+        if (!hook.alive) {
+            continue;
+        }
+
+        DrawLineEx(hook.head_pos, hook.target_pos, 1.0f, grapple_color);
+        DrawCircleLinesV(hook.head_pos, 4.0f, grapple_color);
+        if (hook.latched) {
+            DrawCircleLinesV(hook.latch_point, 5.0f, grapple_color);
         }
     }
 }
@@ -9147,21 +9259,123 @@ std::string GameApp::GetClientLobbyStatusText() const {
 }
 
 FacingDirection GameApp::AimToFacing(Vector2 aim) {
-    if (std::fabs(aim.x) > std::fabs(aim.y)) {
-        return aim.x >= 0.0f ? FacingDirection::Right : FacingDirection::Left;
+    if (Vector2LengthSqr(aim) <= 0.0001f) {
+        return FacingDirection::Bottom;
     }
-    return aim.y >= 0.0f ? FacingDirection::Bottom : FacingDirection::Top;
+
+    const float angle = std::atan2(aim.y, aim.x);
+    const float octant = std::round(angle / (PI / 4.0f));
+    const int index = (static_cast<int>(octant) + 8) % 8;
+    switch (index) {
+        case 0:
+            return FacingDirection::Right;
+        case 1:
+            return FacingDirection::BottomRight;
+        case 2:
+            return FacingDirection::Bottom;
+        case 3:
+            return FacingDirection::BottomLeft;
+        case 4:
+            return FacingDirection::Left;
+        case 5:
+            return FacingDirection::TopLeft;
+        case 6:
+            return FacingDirection::Top;
+        case 7:
+        default:
+            return FacingDirection::TopRight;
+    }
 }
 
 const char* GameApp::FacingToSpriteFacing(FacingDirection facing) {
     switch (facing) {
         case FacingDirection::Top:
-            return "top";
-        case FacingDirection::Bottom:
-            return "bot";
-        case FacingDirection::Left:
+            return "n";
+        case FacingDirection::TopRight:
+            return "ne";
         case FacingDirection::Right:
+            return "e";
+        case FacingDirection::BottomRight:
+            return "se";
+        case FacingDirection::Bottom:
+            return "s";
+        case FacingDirection::BottomLeft:
+            return "sw";
+        case FacingDirection::Left:
+            return "w";
+        case FacingDirection::TopLeft:
+            return "nw";
         default:
-            return "side";
+            return "s";
+    }
+}
+
+bool GameApp::PlayerHasEquippedWeapon(const Player& player, const char* weapon_id) const {
+    if (weapon_id == nullptr || weapon_id[0] == '\0') {
+        return false;
+    }
+    return std::find(player.weapon_slots.begin(), player.weapon_slots.end(), weapon_id) != player.weapon_slots.end();
+}
+
+Rectangle GameApp::GetPlayerCollisionRect(const Player& player) const {
+    return GetPlayerCollisionRect(player.pos);
+}
+
+Rectangle GameApp::GetPlayerCollisionRect(Vector2 center) const {
+    return MakeCenteredRect(center, Constants::kPlayerHitboxWidth, Constants::kPlayerHitboxHeight);
+}
+
+float GameApp::GetPlayerCollisionSupportDistance(Vector2 direction) const {
+    if (Vector2LengthSqr(direction) <= 0.0001f) {
+        direction = {1.0f, 0.0f};
+    } else {
+        direction = Vector2Normalize(direction);
+    }
+    const float half_width = Constants::kPlayerHitboxWidth * 0.5f;
+    const float half_height = Constants::kPlayerHitboxHeight * 0.5f;
+    return std::fabs(direction.x) * half_width + std::fabs(direction.y) * half_height;
+}
+
+std::string GameApp::ResolvePlayerModularAnimationName(const Player& player) const {
+    const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
+    if (player.action_state == PlayerActionState::Slashing || player.action_state == PlayerActionState::RunePlacing) {
+        return is_moving ? "walk" : "idle";
+    }
+    return is_moving ? "walk" : "idle";
+}
+
+std::string GameApp::ResolvePlayerModularTag(const Player& player) const {
+    return ModularCharacterAsset::BuildTag(ResolvePlayerModularAnimationName(player).c_str(), player.facing);
+}
+
+Rectangle GameApp::GetPlayerSpriteRect(Vector2 draw_pos, const std::string& layer_name) const {
+    const float frame_width = static_cast<float>(modular_player_asset_.GetFrameWidth(layer_name));
+    const float frame_height = static_cast<float>(modular_player_asset_.GetFrameHeight(layer_name));
+    const float draw_width = (frame_width > 0.0f ? frame_width : 32.0f) * Constants::kPlayerVisualScale;
+    const float draw_height = (frame_height > 0.0f ? frame_height : 32.0f) * Constants::kPlayerVisualScale;
+    return SnapRect({draw_pos.x - draw_width * 0.5f, draw_pos.y - draw_height * 0.5f, draw_width, draw_height});
+}
+
+void GameApp::RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) const {
+    const std::string tag = ResolvePlayerModularTag(player);
+
+    const auto draw_layer = [&](const char* layer_name) {
+        if (!modular_player_asset_.HasTag(layer_name, tag)) {
+            return;
+        }
+        const Texture2D* texture = modular_player_asset_.GetLayerTexture(layer_name);
+        if (texture == nullptr) {
+            return;
+        }
+        const Rectangle src =
+            InsetSourceRect(modular_player_asset_.GetFrame(layer_name, tag, render_time_seconds_),
+                            Constants::kAtlasSampleInsetPixels);
+        const Rectangle dst = GetPlayerSpriteRect(draw_pos, layer_name);
+        DrawTexturePro(*texture, src, dst, {0, 0}, 0.0f, WHITE);
+    };
+
+    draw_layer("main");
+    if (PlayerHasEquippedWeapon(player, "sword_item")) {
+        draw_layer("sword");
     }
 }

@@ -90,6 +90,7 @@
         "hp": 5,
         "on_destroy": {
           "drops": [
+            { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
@@ -106,6 +107,7 @@
         "hp": 5,
         "on_destroy": {
           "drops": [
+            { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
@@ -122,6 +124,7 @@
         "hp": 5,
         "on_destroy": {
           "drops": [
+            { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
@@ -138,11 +141,19 @@
         "hp": 5,
         "on_destroy": {
           "drops": [
+            { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
         }
       }
+    },
+    "sword_item": {
+      "type": "Consumable",
+      "map_key": null,
+      "sprite": { "sheet": "base32", "idle": "sword_item" },
+      "walkable": true,
+      "stops_projectiles": false
     },
     "health_small": {
       "type": "Consumable",

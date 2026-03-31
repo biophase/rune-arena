@@ -69,19 +69,19 @@ heal effect
 - healing potion rework
 - lightning storm spell
 
+- altar mechanic for catalyst rune spawning
+- mana effect + potion pickup
+- mana potion item and drop rates
 ---
 
-- altar mechanic for catalyst rune spawning
 
 - water totem (or perhaps arcane rune)
 - fire totem (or perhaps arcane rune)
 
-- mana potion item and drop rates
 
 - volatile spell effect (visuals)
 - terrain variations and coast refinement
 
-- mana effect + potion pickup
 
 - UI enhacements for the hud edit mode
     - add hints when hovering outside edit mode (e.g. by hover over a rune show a "Press tab to edit" hint)

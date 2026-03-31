@@ -2,9 +2,13 @@
 
 enum class FacingDirection {
     Left,
+    TopLeft,
     Right,
+    TopRight,
     Top,
+    BottomRight,
     Bottom,
+    BottomLeft,
 };
 
 enum class PlayerActionState {

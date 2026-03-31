@@ -24,19 +24,41 @@ Rectangle CellAabb(const GridCoord& cell, int cell_size) {
                      static_cast<float>(cell_size), static_cast<float>(cell_size)};
 }
 
-bool IntersectsAnyOccupiedCell(const Vector2& center, float radius, int cell_size,
+float PlayerHitboxHalfWidth() {
+    return Constants::kPlayerHitboxWidth * 0.5f;
+}
+
+float PlayerHitboxHalfHeight() {
+    return Constants::kPlayerHitboxHeight * 0.5f;
+}
+
+Rectangle PlayerHitboxRect(const Vector2& center) {
+    return Rectangle{center.x - PlayerHitboxHalfWidth(), center.y - PlayerHitboxHalfHeight(),
+                     Constants::kPlayerHitboxWidth, Constants::kPlayerHitboxHeight};
+}
+
+float ClampCenterToSide(float value, float side_min, float side_max, float half_extent) {
+    const float min_center = side_min + half_extent;
+    const float max_center = side_max - half_extent;
+    if (min_center > max_center) {
+        return 0.5f * (side_min + side_max);
+    }
+    return ClampFloat(value, min_center, max_center);
+}
+
+bool IntersectsAnyOccupiedCell(const Rectangle& box, int cell_size,
                                const std::vector<GridCoord>& occupied_cells) {
     for (const GridCoord& cell : occupied_cells) {
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (CollisionWorld::CircleVsAabb(center, radius, CellAabb(cell, cell_size), normal, penetration)) {
+        if (CollisionWorld::AabbVsAabb(box, CellAabb(cell, cell_size), normal, penetration)) {
             return true;
         }
     }
     return false;
 }
 
-bool FindClosestBoundaryExitInternal(const Vector2& center, float radius, int cell_size,
+bool FindClosestBoundaryExitInternal(const Rectangle& box, int cell_size,
                                      const std::vector<GridCoord>& occupied_cells, Vector2& out_position) {
     if (occupied_cells.empty()) {
         return false;
@@ -51,10 +73,13 @@ bool FindClosestBoundaryExitInternal(const Vector2& center, float radius, int ce
     constexpr float kExitEpsilon = 0.01f;
     bool found = false;
     float best_distance_sq = std::numeric_limits<float>::max();
+    const Vector2 center = {box.x + box.width * 0.5f, box.y + box.height * 0.5f};
     Vector2 best_position = center;
 
     auto try_candidate = [&](Vector2 candidate) {
-        if (IntersectsAnyOccupiedCell(candidate, radius, cell_size, occupied_cells)) {
+        if (IntersectsAnyOccupiedCell(Rectangle{candidate.x - box.width * 0.5f, candidate.y - box.height * 0.5f,
+                                               box.width, box.height},
+                                     cell_size, occupied_cells)) {
             return;
         }
         const float dx = candidate.x - center.x;
@@ -74,16 +99,20 @@ bool FindClosestBoundaryExitInternal(const Vector2& center, float radius, int ce
         const float y1 = y0 + static_cast<float>(cell_size);
 
         if (!occupied_set.count(MakeCellKey({cell.x - 1, cell.y}))) {
-            try_candidate({x0 - radius - kExitEpsilon, ClampFloat(center.y, y0, y1)});
+            try_candidate(
+                {x0 - box.width * 0.5f - kExitEpsilon, ClampCenterToSide(center.y, y0, y1, box.height * 0.5f)});
         }
         if (!occupied_set.count(MakeCellKey({cell.x + 1, cell.y}))) {
-            try_candidate({x1 + radius + kExitEpsilon, ClampFloat(center.y, y0, y1)});
+            try_candidate(
+                {x1 + box.width * 0.5f + kExitEpsilon, ClampCenterToSide(center.y, y0, y1, box.height * 0.5f)});
         }
         if (!occupied_set.count(MakeCellKey({cell.x, cell.y - 1}))) {
-            try_candidate({ClampFloat(center.x, x0, x1), y0 - radius - kExitEpsilon});
+            try_candidate(
+                {ClampCenterToSide(center.x, x0, x1, box.width * 0.5f), y0 - box.height * 0.5f - kExitEpsilon});
         }
         if (!occupied_set.count(MakeCellKey({cell.x, cell.y + 1}))) {
-            try_candidate({ClampFloat(center.x, x0, x1), y1 + radius + kExitEpsilon});
+            try_candidate(
+                {ClampCenterToSide(center.x, x0, x1, box.width * 0.5f), y1 + box.height * 0.5f + kExitEpsilon});
         }
     }
 
@@ -130,6 +159,32 @@ bool CollisionWorld::CircleVsCircle(const Vector2& a_center, float a_radius, con
     return true;
 }
 
+bool CollisionWorld::AabbVsAabb(const Rectangle& a, const Rectangle& b, Vector2& out_normal, float& out_penetration) {
+    const float a_center_x = a.x + a.width * 0.5f;
+    const float a_center_y = a.y + a.height * 0.5f;
+    const float b_center_x = b.x + b.width * 0.5f;
+    const float b_center_y = b.y + b.height * 0.5f;
+
+    const float overlap_x = (a.width * 0.5f + b.width * 0.5f) - std::fabs(a_center_x - b_center_x);
+    if (overlap_x <= 0.0f) {
+        return false;
+    }
+
+    const float overlap_y = (a.height * 0.5f + b.height * 0.5f) - std::fabs(a_center_y - b_center_y);
+    if (overlap_y <= 0.0f) {
+        return false;
+    }
+
+    if (overlap_x < overlap_y) {
+        out_normal = {a_center_x < b_center_x ? -1.0f : 1.0f, 0.0f};
+        out_penetration = overlap_x;
+    } else {
+        out_normal = {0.0f, a_center_y < b_center_y ? -1.0f : 1.0f};
+        out_penetration = overlap_y;
+    }
+    return true;
+}
+
 bool CollisionWorld::CircleVsAabb(const Vector2& center, float radius, const Rectangle& box,
                                   Vector2& out_normal, float& out_penetration) {
     const Vector2 closest = {
@@ -173,19 +228,20 @@ bool CollisionWorld::CircleVsAabb(const Vector2& center, float radius, const Rec
     return true;
 }
 
-bool CollisionWorld::FindClosestBoundaryExitForTileComponent(const Vector2& center, float radius, int cell_size,
+bool CollisionWorld::FindClosestBoundaryExitForTileComponent(const Rectangle& player_box, int cell_size,
                                                              const std::vector<GridCoord>& occupied_cells,
                                                              Vector2& out_position) {
-    return FindClosestBoundaryExitInternal(center, radius, cell_size, occupied_cells, out_position);
+    return FindClosestBoundaryExitInternal(player_box, cell_size, occupied_cells, out_position);
 }
 
 void CollisionWorld::ResolvePlayerVsWorldLocal(const MapData& map, Player& player, bool collide_with_water) {
     const int cell_size = map.cell_size;
     if (collide_with_water) {
-        const GridCoord min_cell = {static_cast<int>((player.pos.x - player.radius) / cell_size),
-                                    static_cast<int>((player.pos.y - player.radius) / cell_size)};
-        const GridCoord max_cell = {static_cast<int>((player.pos.x + player.radius) / cell_size),
-                                    static_cast<int>((player.pos.y + player.radius) / cell_size)};
+        Rectangle player_box = PlayerHitboxRect(player.pos);
+        const GridCoord min_cell = {static_cast<int>(player_box.x / cell_size),
+                                    static_cast<int>(player_box.y / cell_size)};
+        const GridCoord max_cell = {static_cast<int>((player_box.x + player_box.width) / cell_size),
+                                    static_cast<int>((player_box.y + player_box.height) / cell_size)};
 
         for (int y = min_cell.y; y <= max_cell.y; ++y) {
             for (int x = min_cell.x; x <= max_cell.x; ++x) {
@@ -196,12 +252,13 @@ void CollisionWorld::ResolvePlayerVsWorldLocal(const MapData& map, Player& playe
 
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;
-                if (!CircleVsAabb(player.pos, player.radius, CellAabb(cell, cell_size), normal, penetration)) {
+                if (!AabbVsAabb(player_box, CellAabb(cell, cell_size), normal, penetration)) {
                     continue;
                 }
 
                 player.pos.x += normal.x * penetration;
                 player.pos.y += normal.y * penetration;
+                player_box = PlayerHitboxRect(player.pos);
 
                 const float velocity_dot = player.vel.x * normal.x + player.vel.y * normal.y;
                 if (velocity_dot < 0.0f) {
@@ -218,10 +275,10 @@ void CollisionWorld::ResolvePlayerVsWorldLocal(const MapData& map, Player& playe
 
     const float map_width = static_cast<float>(map.width * map.cell_size);
     const float map_height = static_cast<float>(map.height * map.cell_size);
-    const float min_x = player.radius;
-    const float min_y = player.radius;
-    const float max_x = std::max(min_x, map_width - player.radius);
-    const float max_y = std::max(min_y, map_height - player.radius);
+    const float min_x = PlayerHitboxHalfWidth();
+    const float min_y = PlayerHitboxHalfHeight();
+    const float max_x = std::max(min_x, map_width - PlayerHitboxHalfWidth());
+    const float max_y = std::max(min_y, map_height - PlayerHitboxHalfHeight());
 
     if (player.pos.x < min_x) {
         player.pos.x = min_x;
@@ -251,10 +308,11 @@ void CollisionWorld::ResolvePlayerVsWorldLocal(const MapData& map, Player& playe
 void CollisionWorld::ResolvePlayerVsWorld(const MapData& map, Player& player, bool collide_with_water) {
     const int cell_size = map.cell_size;
     if (collide_with_water) {
-        const GridCoord min_cell = {static_cast<int>((player.pos.x - player.radius) / cell_size),
-                                    static_cast<int>((player.pos.y - player.radius) / cell_size)};
-        const GridCoord max_cell = {static_cast<int>((player.pos.x + player.radius) / cell_size),
-                                    static_cast<int>((player.pos.y + player.radius) / cell_size)};
+        const Rectangle player_box = PlayerHitboxRect(player.pos);
+        const GridCoord min_cell = {static_cast<int>(player_box.x / cell_size),
+                                    static_cast<int>(player_box.y / cell_size)};
+        const GridCoord max_cell = {static_cast<int>((player_box.x + player_box.width) / cell_size),
+                                    static_cast<int>((player_box.y + player_box.height) / cell_size)};
 
         std::vector<GridCoord> overlap_seeds;
         overlap_seeds.reserve(8);
@@ -276,7 +334,7 @@ void CollisionWorld::ResolvePlayerVsWorld(const MapData& map, Player& player, bo
 
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;
-                if (!CircleVsAabb(player.pos, player.radius, aabb, normal, penetration)) {
+                if (!AabbVsAabb(player_box, aabb, normal, penetration)) {
                     continue;
                 }
                 overlap_seeds.push_back(cell);
@@ -318,12 +376,12 @@ void CollisionWorld::ResolvePlayerVsWorld(const MapData& map, Player& player, bo
                 }
             }
 
-            if (!IntersectsAnyOccupiedCell(player.pos, player.radius, cell_size, component)) {
+            if (!IntersectsAnyOccupiedCell(PlayerHitboxRect(player.pos), cell_size, component)) {
                 continue;
             }
 
             Vector2 resolved = player.pos;
-            if (!FindClosestBoundaryExitInternal(player.pos, player.radius, cell_size, component, resolved)) {
+            if (!FindClosestBoundaryExitInternal(PlayerHitboxRect(player.pos), cell_size, component, resolved)) {
                 continue;
             }
 
@@ -348,10 +406,10 @@ void CollisionWorld::ResolvePlayerVsWorld(const MapData& map, Player& player, bo
     const float map_width = static_cast<float>(map.width * map.cell_size);
     const float map_height = static_cast<float>(map.height * map.cell_size);
 
-    const float min_x = player.radius;
-    const float min_y = player.radius;
-    const float max_x = std::max(min_x, map_width - player.radius);
-    const float max_y = std::max(min_y, map_height - player.radius);
+    const float min_x = PlayerHitboxHalfWidth();
+    const float min_y = PlayerHitboxHalfHeight();
+    const float max_x = std::max(min_x, map_width - PlayerHitboxHalfWidth());
+    const float max_y = std::max(min_y, map_height - PlayerHitboxHalfHeight());
 
     if (player.pos.x < min_x) {
         player.pos.x = min_x;

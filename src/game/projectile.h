@@ -14,7 +14,7 @@ struct Projectile {
     Vector2 vel = {0.0f, 0.0f};
     Vector2 acc = {0.0f, 0.0f};
     float drag = 0.0f;
-    float radius = Constants::kProjectileRadius;
+    float radius = Constants::kFireBoltCollisionRadius;
     int damage = Constants::kProjectileDamage;
     std::string animation_key = "projectile_fire_bolt";
     float upgrade_pause_remaining = 0.0f;

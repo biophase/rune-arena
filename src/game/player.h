@@ -22,8 +22,6 @@ struct Player {
     FacingDirection facing = FacingDirection::Right;
     PlayerActionState action_state = PlayerActionState::Idle;
 
-    float radius = Constants::kPlayerRadius;
-
     int hp = Constants::kMaxHp;
     int kills = 0;
     bool alive = true;
@@ -44,7 +42,7 @@ struct Player {
     std::array<int, 4> item_slot_counts = {0, 0, 0, 0};
     std::array<float, 4> item_slot_cooldown_remaining = {0.0f, 0.0f, 0.0f, 0.0f};
     std::array<float, 4> item_slot_cooldown_total = {0.0f, 0.0f, 0.0f, 0.0f};
-    std::array<std::string, 2> weapon_slots = {"sword_item", "grappling_hook_item"};
+    std::array<std::string, 2> weapon_slots = {"", "grappling_hook_item"};
 
     bool inventory_mode = false;
     bool ui_dragging_slot = false;

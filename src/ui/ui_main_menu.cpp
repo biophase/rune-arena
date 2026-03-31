@@ -6,6 +6,8 @@
 #include <raylib.h>
 #include <raygui.h>
 
+#include "core/constants.h"
+
 namespace {
 
 enum class MainMenuPage {
@@ -74,20 +76,20 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
 
     if (page == MainMenuPage::Root) {
         const char* title = "Rune Arena";
-        const int title_font_size = 30;
+        const int title_font_size = Constants::kMainMenuTitleFontSize;
         const int title_width = MeasureText(title, title_font_size);
         DrawText(title, center_x - title_width / 2, panel_y + 16, title_font_size, RAYWHITE);
 
-        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 82), 220, 44}, "Play")) {
+        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 268), 220, 44}, "Play")) {
             page = MainMenuPage::Play;
         }
-        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 142), 220, 44}, "Settings")) {
+        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 336), 220, 44}, "Settings")) {
             page = MainMenuPage::Settings;
             draft_bindings = current_bindings;
             draft_show_network_debug_panel = show_network_debug_panel;
             rebinding_action = -1;
         }
-        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 202), 220, 44}, "Exit")) {
+        if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 404), 220, 44}, "Exit")) {
             result.request_exit_app = true;
         }
 

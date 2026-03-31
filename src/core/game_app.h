@@ -14,6 +14,7 @@
 
 #include "assets/map_loader.h"
 #include "assets/composite_effects_loader.h"
+#include "assets/modular_character_asset.h"
 #include "assets/objects_database.h"
 #include "assets/sprite_metadata.h"
 #include "config/config_manager.h"
@@ -194,6 +195,7 @@ class GameApp {
     void RenderParticles();
     void RenderDamagePopups();
     void RenderRunePlacementOverlay();
+    void RenderDebugCollisionOverlay();
     void RenderZoneFillOverlay();
     void RenderZoneBorderOverlay();
     void RenderMapBoundsFadeOverlay();
@@ -219,6 +221,14 @@ class GameApp {
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
+    bool PlayerHasEquippedWeapon(const Player& player, const char* weapon_id) const;
+    std::string ResolvePlayerModularAnimationName(const Player& player) const;
+    std::string ResolvePlayerModularTag(const Player& player) const;
+    Rectangle GetPlayerCollisionRect(const Player& player) const;
+    Rectangle GetPlayerCollisionRect(Vector2 center) const;
+    float GetPlayerCollisionSupportDistance(Vector2 direction) const;
+    Rectangle GetPlayerSpriteRect(Vector2 draw_pos, const std::string& layer_name = "main") const;
+    void RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) const;
     std::string GetClientLobbyStatusText() const;
 
     ConfigManager config_manager_;
@@ -232,6 +242,7 @@ class GameApp {
     SpriteMetadataLoader sprite_metadata_tall_;
     SpriteMetadataLoader sprite_metadata_96x96_;
     SpriteMetadataLoader sprite_metadata_128x128_;
+    ModularCharacterAsset modular_player_asset_;
     SpellPatternLoader spell_patterns_;
     SmokeEmitter smoke_emitter_;
 
@@ -280,6 +291,8 @@ class GameApp {
     std::string resolved_sprite_metadata_tall_path_;
     std::string resolved_sprite_metadata_96x96_path_;
     std::string resolved_sprite_metadata_128x128_path_;
+    std::string resolved_modular_player_main_path_;
+    std::string resolved_modular_player_shadow_path_;
     std::string resolved_spell_pattern_path_;
     std::string resolved_menu_background_path_;
     std::string resolved_occluder_reveal_shader_path_;

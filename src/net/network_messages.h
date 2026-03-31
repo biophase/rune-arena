@@ -99,6 +99,7 @@ struct PlayerSnapshot {
     std::vector<int> item_slot_counts;
     std::vector<float> item_slot_cooldown_remaining;
     std::vector<float> item_slot_cooldown_total;
+    std::vector<std::string> weapon_slots;
     bool awaiting_respawn = false;
     float respawn_remaining = 0.0f;
     int last_processed_move_seq = 0;

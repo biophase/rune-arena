@@ -273,6 +273,10 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         for (size_t j = 0; j < player.item_slot_cooldown_total.size() && j < 65535; ++j) {
             payload.WriteF32(player.item_slot_cooldown_total[j]);
         }
+        payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.weapon_slots.size(), 65535)));
+        for (size_t j = 0; j < player.weapon_slots.size() && j < 65535; ++j) {
+            payload.WriteString(player.weapon_slots[j]);
+        }
         payload.WriteBool(player.awaiting_respawn);
         payload.WriteF32(player.respawn_remaining);
         payload.WriteI32(player.last_processed_move_seq);
@@ -553,6 +557,13 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             float value = 0.0f;
             if (!reader.ReadF32(value)) return std::nullopt;
             player.item_slot_cooldown_total.push_back(value);
+        }
+        if (!reader.ReadU16(count)) return std::nullopt;
+        player.weapon_slots.reserve(count);
+        for (uint16_t j = 0; j < count; ++j) {
+            std::string value;
+            if (!reader.ReadString(value)) return std::nullopt;
+            player.weapon_slots.push_back(value);
         }
         if (!reader.ReadBool(player.awaiting_respawn) || !reader.ReadF32(player.respawn_remaining) ||
             !reader.ReadI32(player.last_processed_move_seq)) {

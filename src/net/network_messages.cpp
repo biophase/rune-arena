@@ -139,6 +139,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"item_slot_counts", player.item_slot_counts},
             {"item_slot_cooldown_remaining", player.item_slot_cooldown_remaining},
             {"item_slot_cooldown_total", player.item_slot_cooldown_total},
+            {"weapon_slots", player.weapon_slots},
             {"awaiting_respawn", player.awaiting_respawn},
             {"respawn_remaining", player.respawn_remaining},
             {"last_processed_move_seq", player.last_processed_move_seq},
@@ -392,6 +393,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.item_slot_cooldown_remaining =
                 item.value("item_slot_cooldown_remaining", std::vector<float>{});
             player.item_slot_cooldown_total = item.value("item_slot_cooldown_total", std::vector<float>{});
+            player.weapon_slots = item.value("weapon_slots", std::vector<std::string>{});
             player.awaiting_respawn = item.value("awaiting_respawn", false);
             player.respawn_remaining = item.value("respawn_remaining", 0.0f);
             player.last_processed_move_seq = item.value("last_processed_move_seq", 0);

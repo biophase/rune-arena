@@ -45,6 +45,7 @@ bool AreEqual(const PlayerSnapshot& a, const PlayerSnapshot& b) {
            a.item_slot_counts == b.item_slot_counts &&
            a.item_slot_cooldown_remaining == b.item_slot_cooldown_remaining &&
            a.item_slot_cooldown_total == b.item_slot_cooldown_total &&
+           a.weapon_slots == b.weapon_slots &&
            a.awaiting_respawn == b.awaiting_respawn && a.respawn_remaining == b.respawn_remaining &&
            a.last_processed_move_seq == b.last_processed_move_seq;
 }

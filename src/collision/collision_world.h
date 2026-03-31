@@ -10,10 +10,12 @@ class CollisionWorld {
     static bool CircleVsCircle(const Vector2& a_center, float a_radius, const Vector2& b_center,
                                float b_radius, Vector2& out_normal, float& out_penetration);
 
+    static bool AabbVsAabb(const Rectangle& a, const Rectangle& b, Vector2& out_normal, float& out_penetration);
+
     static bool CircleVsAabb(const Vector2& center, float radius, const Rectangle& box,
                              Vector2& out_normal, float& out_penetration);
 
-    static bool FindClosestBoundaryExitForTileComponent(const Vector2& center, float radius, int cell_size,
+    static bool FindClosestBoundaryExitForTileComponent(const Rectangle& player_box, int cell_size,
                                                         const std::vector<GridCoord>& occupied_cells,
                                                         Vector2& out_position);
 
