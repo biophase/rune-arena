@@ -20,7 +20,8 @@ int64_t MakeCellKey(const GridCoord& cell) {
 }
 
 Rectangle CellAabb(const GridCoord& cell, int cell_size) {
-    return Rectangle{static_cast<float>(cell.x * cell_size), static_cast<float>(cell.y * cell_size),
+    return Rectangle{static_cast<float>(cell.x * cell_size) + Constants::kTerrainCollisionOffsetX,
+                     static_cast<float>(cell.y * cell_size) + Constants::kTerrainCollisionOffsetY,
                      static_cast<float>(cell_size), static_cast<float>(cell_size)};
 }
 
@@ -93,10 +94,11 @@ bool FindClosestBoundaryExitInternal(const Rectangle& box, int cell_size,
     };
 
     for (const GridCoord& cell : occupied_cells) {
-        const float x0 = static_cast<float>(cell.x * cell_size);
-        const float y0 = static_cast<float>(cell.y * cell_size);
-        const float x1 = x0 + static_cast<float>(cell_size);
-        const float y1 = y0 + static_cast<float>(cell_size);
+        const Rectangle cell_aabb = CellAabb(cell, cell_size);
+        const float x0 = cell_aabb.x;
+        const float y0 = cell_aabb.y;
+        const float x1 = cell_aabb.x + cell_aabb.width;
+        const float y1 = cell_aabb.y + cell_aabb.height;
 
         if (!occupied_set.count(MakeCellKey({cell.x - 1, cell.y}))) {
             try_candidate(
@@ -238,10 +240,10 @@ void CollisionWorld::ResolvePlayerVsWorldLocal(const MapData& map, Player& playe
     const int cell_size = map.cell_size;
     if (collide_with_water) {
         Rectangle player_box = PlayerHitboxRect(player.pos);
-        const GridCoord min_cell = {static_cast<int>(player_box.x / cell_size),
-                                    static_cast<int>(player_box.y / cell_size)};
-        const GridCoord max_cell = {static_cast<int>((player_box.x + player_box.width) / cell_size),
-                                    static_cast<int>((player_box.y + player_box.height) / cell_size)};
+        const GridCoord min_cell = {static_cast<int>(player_box.x / cell_size) - 1,
+                                    static_cast<int>(player_box.y / cell_size) - 1};
+        const GridCoord max_cell = {static_cast<int>((player_box.x + player_box.width) / cell_size) + 1,
+                                    static_cast<int>((player_box.y + player_box.height) / cell_size) + 1};
 
         for (int y = min_cell.y; y <= max_cell.y; ++y) {
             for (int x = min_cell.x; x <= max_cell.x; ++x) {
@@ -309,10 +311,10 @@ void CollisionWorld::ResolvePlayerVsWorld(const MapData& map, Player& player, bo
     const int cell_size = map.cell_size;
     if (collide_with_water) {
         const Rectangle player_box = PlayerHitboxRect(player.pos);
-        const GridCoord min_cell = {static_cast<int>(player_box.x / cell_size),
-                                    static_cast<int>(player_box.y / cell_size)};
-        const GridCoord max_cell = {static_cast<int>((player_box.x + player_box.width) / cell_size),
-                                    static_cast<int>((player_box.y + player_box.height) / cell_size)};
+        const GridCoord min_cell = {static_cast<int>(player_box.x / cell_size) - 1,
+                                    static_cast<int>(player_box.y / cell_size) - 1};
+        const GridCoord max_cell = {static_cast<int>((player_box.x + player_box.width) / cell_size) + 1,
+                                    static_cast<int>((player_box.y + player_box.height) / cell_size) + 1};
 
         std::vector<GridCoord> overlap_seeds;
         overlap_seeds.reserve(8);
@@ -329,8 +331,7 @@ void CollisionWorld::ResolvePlayerVsWorld(const MapData& map, Player& player, bo
                     continue;
                 }
 
-                const Rectangle aabb = {static_cast<float>(x * cell_size), static_cast<float>(y * cell_size),
-                                        static_cast<float>(cell_size), static_cast<float>(cell_size)};
+                const Rectangle aabb = CellAabb(cell, cell_size);
 
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;

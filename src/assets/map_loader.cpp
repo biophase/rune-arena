@@ -43,7 +43,7 @@ bool MapLoader::Load(const std::string& image_path, const ObjectsDatabase* objec
                     if (proto->type == ObjectType::Terrain) {
                         tile = proto->terrain_tile;
                     } else {
-                        tile = TileType::Grass;
+                        tile = proto->has_terrain_tile_override ? proto->terrain_tile : TileType::Grass;
                         out_map.object_seeds.push_back(MapObjectSeed{proto->id, {x, y}});
                     }
                     if (proto->terrain_is_spawn_point || proto->terrain_tile == TileType::SpawnPoint) {

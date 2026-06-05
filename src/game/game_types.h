@@ -37,6 +37,12 @@ enum class SlotFamily {
     Item,
 };
 
+enum class EquipmentSlot {
+    PrimaryWeapon,
+    Mobility,
+    Inventory,
+};
+
 enum class TileType {
     Grass,
     Water,

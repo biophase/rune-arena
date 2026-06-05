@@ -308,6 +308,29 @@
         }
       }
     },
+    "terrain_foam":{
+      "dual_grid":{
+        "bit_order":"TL_TR_BR_BL",
+        "masks":{
+          "0":{"frames": [[89,2]], "fps":10},
+          "1":{"frames": [[89,3],[90,0],[90,1]], "fps":5},
+          "2":{"frames": [[90,2],[90,3],[91,0]], "fps":5},
+          "3":{"frames": [[91,1],[91,2],[91,3]], "fps":10},
+          "4":{"frames": [[92,0],[92,1],[92,2]], "fps":10},
+          "5":{"frames": [[92,3]], "fps":10},
+          "6":{"frames": [[93,0]], "fps":10},
+          "7":{"frames": [[93,1]], "fps":10},
+          "8":{"frames": [[93,2]], "fps":10},
+          "9":{"frames": [[93,3]], "fps":10},
+          "10":{"frames": [[94,0]], "fps":10},
+          "11":{"frames": [[94,1]], "fps":10},
+          "12":{"frames": [[94,2]], "fps":10},
+          "13":{"frames": [[94,3]], "fps":10},
+          "14":{"frames": [[95,0]], "fps":10},
+          "15":{"frames": [[95,1]], "fps":10}
+        }
+      }
+    },
     "tile_water":{
       "facings":{
         "default":{
@@ -743,6 +766,30 @@
         }
       }
     },
+    "sword_item_drop":{
+      "facings":{
+        "default":{
+          "frames": [[86,2]],
+          "fps": 8
+        }
+      }
+    },
+    "ghook_item_drop":{
+      "facings":{
+        "default":{
+          "frames": [[86,3]],
+          "fps": 8
+        }
+      }
+    },
+    "hammer_drop_item":{
+      "facings":{
+        "default":{
+          "frames": [[95,3]],
+          "fps": 8
+        }
+      }
+    },
     "earth_rune_idle":{
       "facings":{
         "default":{
@@ -828,6 +875,38 @@
         "default":{
           "frames": [[68,0],[68,1],[68,2],[68,3],[69,0]],
           "fps": 10
+        }
+      }
+    },
+    "shadow_general":{
+      "facings":{
+        "default":{
+          "frames": [[87,0]],
+          "fps": 1
+        }
+      }
+    },
+    "particle_hit_general":{
+      "facings":{
+        "default":{
+          "frames": [[87,1],[87,2],[87,3],[88,0],[88,1]],
+          "fps": 10
+        }
+      }
+    },
+    "training_dummy":{
+      "facings":{
+        "default":{
+          "frames": [[88,3]],
+          "fps": 1
+        }
+      }
+    },
+    "reeds":{
+      "facings":{
+        "default":{
+          "frames": [[89,1]],
+          "fps": 1
         }
       }
     }

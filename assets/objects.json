@@ -64,7 +64,25 @@
       "masked_occluder": true,
       "walkable": false,
       "stops_projectiles": true,
-      "collision_box": { "x": 48, "y": 96, "w": 32, "h": 32 }
+      "wind": {
+        "strength_pixels": 3.0,
+        "speed_multiplier": 1.0,
+        "gradient_start": 0.3
+      },
+      "collision_box": { "x": 53, "y": 101, "w": 22, "h": 22 }
+    },
+    "reeds": {
+      "type": "Decoration",
+      "map_key": [26, 150, 175],
+      "terrain_tile": "tile_water",
+      "sprite": { "sheet": "base32", "idle": "reeds" },
+      "walkable": true,
+      "stops_projectiles": false,
+      "wind": {
+        "strength_pixels": 2,
+        "speed_multiplier": 0.7,
+        "gradient_start": 0.2
+      }
     },
     "altar_rune_slot_generic": {
       "type": "Decoration",
@@ -87,10 +105,11 @@
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
-        "hp": 5,
+        "hp": 50,
         "on_destroy": {
           "drops": [
             { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
+            { "object_id": "hammer_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
@@ -104,10 +123,11 @@
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
-        "hp": 5,
+        "hp": 50,
         "on_destroy": {
           "drops": [
             { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
+            { "object_id": "hammer_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
@@ -121,10 +141,11 @@
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
-        "hp": 5,
+        "hp": 50,
         "on_destroy": {
           "drops": [
             { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
+            { "object_id": "hammer_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
@@ -138,27 +159,53 @@
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
-        "hp": 5,
+        "hp": 50,
         "on_destroy": {
           "drops": [
             { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
+            { "object_id": "hammer_item", "chance": 0.3, "min": 1, "max": 1 },
             { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
             { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
           ]
         }
       }
     },
+    "training_dummy": {
+      "type": "Unit",
+      "map_key": [135, 112, 49],
+      "sprite": { "sheet": "base32", "idle": "training_dummy", "shadow": "shadow_general" },
+      "walkable": false,
+      "stops_projectiles": true,
+      "collision_box": { "x": 8, "y": 8, "w": 16, "h": 16 },
+      "unit": {
+        "hp": 1000
+      }
+    },
     "sword_item": {
       "type": "Consumable",
       "map_key": null,
-      "sprite": { "sheet": "base32", "idle": "sword_item" },
+      "sprite": { "sheet": "base32", "idle": "sword_item_drop", "shadow": "shadow_general" },
+      "walkable": true,
+      "stops_projectiles": false
+    },
+    "hammer_item": {
+      "type": "Consumable",
+      "map_key": null,
+      "sprite": { "sheet": "base32", "idle": "hammer_drop_item", "shadow": "shadow_general" },
+      "walkable": true,
+      "stops_projectiles": false
+    },
+    "grappling_hook_item": {
+      "type": "Consumable",
+      "map_key": null,
+      "sprite": { "sheet": "base32", "idle": "ghook_item_drop", "shadow": "shadow_general" },
       "walkable": true,
       "stops_projectiles": false
     },
     "health_small": {
       "type": "Consumable",
       "map_key": null,
-      "sprite": { "sheet": "base32", "idle": "health_potion_small", "shadow": "potion_shadow" },
+      "sprite": { "sheet": "base32", "idle": "health_potion_small", "shadow": "shadow_general" },
       "walkable": true,
       "stops_projectiles": false,
       "consumable": {
@@ -170,7 +217,7 @@
     "mana_small": {
       "type": "Consumable",
       "map_key": null,
-      "sprite": { "sheet": "base32", "idle": "mana_potion", "shadow": "potion_shadow" },
+      "sprite": { "sheet": "base32", "idle": "mana_potion", "shadow": "shadow_general" },
       "walkable": true,
       "stops_projectiles": false,
       "consumable": {
@@ -182,7 +229,7 @@
     "catalyst_charge_pickup": {
       "type": "Consumable",
       "map_key": null,
-      "sprite": { "sheet": "base32", "idle": "catalist_rune_pickup" },
+      "sprite": { "sheet": "base32", "idle": "catalist_rune_pickup", "shadow": "shadow_general" },
       "walkable": true,
       "stops_projectiles": false
     }

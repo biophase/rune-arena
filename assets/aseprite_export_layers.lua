@@ -39,11 +39,20 @@ local function joinPath(left, right)
   return left .. "/" .. right
 end
 
+local function shouldSkipLayer(layer)
+  local name = layer and layer.name or ""
+  return name:sub(1, 1) == "_"
+end
+
 local allLayers = {}
 local exportLayers = {}
 
 local function collectLayers(layers, pathParts, parents)
   for _, layer in ipairs(layers) do
+    if shouldSkipLayer(layer) then
+      goto continue
+    end
+
     table.insert(allLayers, layer)
 
     local nextParents = {}
@@ -69,6 +78,8 @@ local function collectLayers(layers, pathParts, parents)
       table.insert(item.pathParts, sanitizeName(layer.name))
       table.insert(exportLayers, item)
     end
+
+    ::continue::
   end
 end
 

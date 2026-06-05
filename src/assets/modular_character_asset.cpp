@@ -1,5 +1,7 @@
 #include "assets/modular_character_asset.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +13,12 @@
 #include "game/game_types.h"
 
 namespace {
+
+struct ModularFrameEntry {
+    const nlohmann::json* frame_json = nullptr;
+    int frame_index = -1;
+    size_t source_order = 0;
+};
 
 const char* FacingToModularSuffix(FacingDirection facing) {
     switch (facing) {
@@ -34,6 +42,72 @@ const char* FacingToModularSuffix(FacingDirection facing) {
     return "s";
 }
 
+int ExtractFrameIndex(const std::string& filename) {
+    if (filename.empty()) {
+        return -1;
+    }
+
+    size_t end = filename.find_last_of('.');
+    if (end == std::string::npos) {
+        end = filename.size();
+    }
+
+    size_t begin = end;
+    while (begin > 0 && std::isdigit(static_cast<unsigned char>(filename[begin - 1])) != 0) {
+        --begin;
+    }
+    if (begin == end) {
+        return -1;
+    }
+
+    int value = 0;
+    for (size_t i = begin; i < end; ++i) {
+        value = value * 10 + (filename[i] - '0');
+    }
+    return value;
+}
+
+bool CollectFrameEntries(const nlohmann::json& frames_json, std::vector<ModularFrameEntry>& out_entries) {
+    out_entries.clear();
+
+    if (frames_json.is_array()) {
+        out_entries.reserve(frames_json.size());
+        size_t source_order = 0;
+        for (const auto& frame_json : frames_json) {
+            const std::string filename = frame_json.value("filename", std::string{});
+            out_entries.push_back(ModularFrameEntry{&frame_json, ExtractFrameIndex(filename), source_order++});
+        }
+        return !out_entries.empty();
+    }
+
+    if (frames_json.is_object()) {
+        out_entries.reserve(frames_json.size());
+        size_t source_order = 0;
+        for (const auto& item : frames_json.items()) {
+            const auto& frame_json = item.value();
+            const std::string filename = frame_json.value("filename", item.key());
+            out_entries.push_back(ModularFrameEntry{&frame_json, ExtractFrameIndex(filename), source_order++});
+        }
+
+        std::stable_sort(out_entries.begin(), out_entries.end(),
+                         [](const ModularFrameEntry& lhs, const ModularFrameEntry& rhs) {
+                             if (lhs.frame_index >= 0 && rhs.frame_index >= 0 && lhs.frame_index != rhs.frame_index) {
+                                 return lhs.frame_index < rhs.frame_index;
+                             }
+                             if (lhs.frame_index >= 0 && rhs.frame_index < 0) {
+                                 return true;
+                             }
+                             if (lhs.frame_index < 0 && rhs.frame_index >= 0) {
+                                 return false;
+                             }
+                             return lhs.source_order < rhs.source_order;
+                         });
+        return !out_entries.empty();
+    }
+
+    return false;
+}
+
 }  // namespace
 
 ModularCharacterAsset::~ModularCharacterAsset() { Unload(); }
@@ -50,7 +124,8 @@ bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::
 
     const auto frames_it = json.find("frames");
     const auto meta_it = json.find("meta");
-    if (frames_it == json.end() || !frames_it->is_array() || meta_it == json.end() || !meta_it->is_object()) {
+    if (frames_it == json.end() || (!frames_it->is_array() && !frames_it->is_object()) || meta_it == json.end() ||
+        !meta_it->is_object()) {
         TraceLog(LOG_ERROR, "Invalid modular character metadata: %s", json_path.c_str());
         return false;
     }
@@ -80,10 +155,18 @@ bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::
 
     std::vector<Rectangle> frame_rects;
     std::vector<float> frame_durations_seconds;
-    frame_rects.reserve(frames_it->size());
-    frame_durations_seconds.reserve(frames_it->size());
+    std::vector<ModularFrameEntry> frame_entries;
+    if (!CollectFrameEntries(*frames_it, frame_entries)) {
+        TraceLog(LOG_ERROR, "Invalid modular character frame list: %s", json_path.c_str());
+        UnloadTexture(layer_asset.texture);
+        return false;
+    }
 
-    for (const auto& frame_json : *frames_it) {
+    frame_rects.reserve(frame_entries.size());
+    frame_durations_seconds.reserve(frame_entries.size());
+
+    for (const ModularFrameEntry& frame_entry : frame_entries) {
+        const auto& frame_json = *frame_entry.frame_json;
         const auto frame_it = frame_json.find("frame");
         if (frame_it == frame_json.end() || !frame_it->is_object()) {
             continue;
@@ -211,6 +294,42 @@ Rectangle ModularCharacterAsset::GetFrame(const std::string& layer_name, const s
         local_time -= duration;
     }
     return range->frames.back();
+}
+
+float ModularCharacterAsset::GetTagDurationSeconds(const std::string& layer_name, const std::string& tag_name) const {
+    const ModularFrameRange* range = FindTag(layer_name, tag_name);
+    if (range == nullptr) {
+        return 0.0f;
+    }
+
+    float total_duration = 0.0f;
+    for (float duration : range->frame_durations_seconds) {
+        total_duration += duration;
+    }
+    return total_duration;
+}
+
+int ModularCharacterAsset::GetTagFrameCount(const std::string& layer_name, const std::string& tag_name) const {
+    const ModularFrameRange* range = FindTag(layer_name, tag_name);
+    if (range == nullptr) {
+        return 0;
+    }
+    return static_cast<int>(range->frames.size());
+}
+
+float ModularCharacterAsset::GetTagFrameStartSeconds(const std::string& layer_name, const std::string& tag_name,
+                                                     int frame_index) const {
+    const ModularFrameRange* range = FindTag(layer_name, tag_name);
+    if (range == nullptr || frame_index <= 0) {
+        return 0.0f;
+    }
+
+    float time_seconds = 0.0f;
+    const int clamped_frame_index = std::min(frame_index, static_cast<int>(range->frame_durations_seconds.size()));
+    for (int i = 0; i < clamped_frame_index; ++i) {
+        time_seconds += range->frame_durations_seconds[static_cast<size_t>(i)];
+    }
+    return time_seconds;
 }
 
 int ModularCharacterAsset::GetFrameWidth(const std::string& layer_name) const {

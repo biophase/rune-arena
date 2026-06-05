@@ -21,6 +21,10 @@
 #include "config/controls_manager.h"
 #include "emitters/smoke_emitter.h"
 #include "events/event_queue.h"
+#include "gameplay/equipment_registry.h"
+#include "gameplay/hit_shape_library.h"
+#include "gameplay/loot_tables.h"
+#include "gameplay/spell_runtime_registry.h"
 #include "modes/most_kills_mode.h"
 #include "net/lan_discovery.h"
 #include "net/network_manager.h"
@@ -117,12 +121,16 @@ class GameApp {
     void HandleEventsHost();
     void UpdateProjectileEmitters();
     void UpdateParticles(float dt);
+    void UpdateHammerImpactEffects(float dt);
+    void SpawnDamageHitParticles(Vector2 target_pos, std::optional<Vector2> damage_world_pos);
+    void SpawnHammerImpactEffect(Vector2 world_pos);
     void SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id);
     void SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds, bool volatile_variant = false);
     bool TryStartGrapplingHook(Player& player, Vector2 target_world, bool play_audio = true);
     void SpawnDamagePopup(Vector2 world_pos, int amount, bool is_heal = false);
     bool ApplyDamageToPlayer(Player& target, int attacker_player_id, int damage, const char* source,
-                             bool count_kill_for_attacker);
+                             bool count_kill_for_attacker,
+                             std::optional<Vector2> damage_world_pos = std::nullopt);
     void HandlePlayerDeath(Player& victim, int killer_player_id, bool count_kill_for_attacker);
     bool IsOutsideArena(Vector2 world_pos) const;
     Vector2 ClampToArenaWithBuffer(Vector2 world_pos, float buffer_tiles) const;
@@ -151,8 +159,15 @@ class GameApp {
     const MapObjectInstance* FindMapObjectById(int id) const;
     const ObjectPrototype* FindObjectPrototype(const std::string& prototype_id) const;
     void RebuildMapObjectsFromSeeds();
-    void SpawnObjectInstanceAtCell(const std::string& prototype_id, const GridCoord& cell);
-    bool ApplyObjectDamage(int object_instance_id, int amount, int source_player_id, const char* source);
+    int SpawnObjectInstanceAtCell(const std::string& prototype_id, const GridCoord& cell, int forced_id = -1);
+    int SpawnDroppedEquipmentItem(const std::string& prototype_id, const GridCoord& cell,
+                                  std::optional<int> blocked_player_id = std::nullopt);
+    void RegisterPickupBlockForDroppedObject(int object_instance_id, int blocked_player_id, Vector2 origin_world,
+                                             float unlock_radius);
+    bool CanPlayerPickUpObject(const Player& player, const MapObjectInstance& object) const;
+    void UpdateDroppedItemPickupBlocks();
+    bool ApplyObjectDamage(int object_instance_id, int amount, int source_player_id, const char* source,
+                           std::optional<Vector2> damage_world_pos = std::nullopt);
     bool TryConsumeObject(int object_instance_id, int player_id);
     bool TryActivateItemSlot(Player& player, int slot_index);
     bool TryActivateItemById(Player& player, const std::string& prototype_id);
@@ -207,6 +222,8 @@ class GameApp {
     Vector2 GetRenderPlayerPosition(int player_id) const;
     bool IsWorldPointInsideCameraView(Vector2 world_pos) const;
     float GetPlayerMovementSpeedMultiplier(const Player& player) const;
+    float GetPlayerBaseAcceleration(const Player& player) const;
+    float GetPlayerAccelerationMultiplier(const Player& player) const;
     void PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const;
     bool HasVisibleIdleFireStormDummy() const;
     void LoadAudioAssets();
@@ -216,17 +233,39 @@ class GameApp {
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
     void LoadRenderShaders();
     void UnloadRenderShaders();
+    void UpdateDamageFlashVisuals(float dt);
     bool DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y);
     void DrawWorldLayerWithZonePostProcess();
+    bool RenderModularTreeObject(const MapObjectInstance& object, const ObjectPrototype& proto, float sort_y);
+    bool RenderModularTreeShadow(const MapObjectInstance& object, const ObjectPrototype& proto);
+    bool DrawWindAnimatedMapObject(const MapObjectInstance& object, const ObjectPrototype& proto, const Texture2D& texture,
+                                   Rectangle src, Rectangle dst);
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
     bool PlayerHasEquippedWeapon(const Player& player, const char* weapon_id) const;
+    const AttackProfile* GetEquippedPrimaryAttack(const Player& player) const;
+    const MobilityProfile* GetEquippedMobility(const Player& player) const;
+    void UpdateActiveModularAttackVisuals(float dt);
+    std::vector<std::string> GetEquippedModularLayers(const Player& player) const;
+    std::string ResolveSwordAttackModularTag(const Player& player) const;
+    std::string ResolvePrimaryWeaponAttackModularTag(const Player& player) const;
+    Vector2 ResolveHammerImpactWorldPosition(const Player& player) const;
+    float GetModularTagFrameStartSeconds(const std::string& tag_name, int frame_index, std::string* out_layer_name = nullptr) const;
+    bool ShouldPlayImmediateMeleeSwingSfx(const Player& player) const;
     std::string ResolvePlayerModularAnimationName(const Player& player) const;
     std::string ResolvePlayerModularTag(const Player& player) const;
+    float ResolvePlayerModularTime(const Player& player) const;
+    float GetPlayerDamageFlashAmount(const Player& player) const;
+    float GetObjectDamageFlashAmount(const MapObjectInstance& object) const;
     Rectangle GetPlayerCollisionRect(const Player& player) const;
     Rectangle GetPlayerCollisionRect(Vector2 center) const;
     float GetPlayerCollisionSupportDistance(Vector2 direction) const;
+    Rectangle GetModularTreeSpriteRect(const MapObjectInstance& object, const char* layer_name = "trunk") const;
+    float GetMapObjectWindPhaseOffset(const MapObjectInstance& object) const;
+    bool TryEquipItem(Player& player, const std::string& item_id, const MapObjectInstance* source_object = nullptr);
+    void RegisterSpellRuntimes();
+    bool CastRuntimeSpell(const SpellRuntimeMatch& match);
     Rectangle GetPlayerSpriteRect(Vector2 draw_pos, const std::string& layer_name = "main") const;
     void RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) const;
     std::string GetClientLobbyStatusText() const;
@@ -243,7 +282,12 @@ class GameApp {
     SpriteMetadataLoader sprite_metadata_96x96_;
     SpriteMetadataLoader sprite_metadata_128x128_;
     ModularCharacterAsset modular_player_asset_;
+    ModularCharacterAsset modular_tree_asset_;
     SpellPatternLoader spell_patterns_;
+    EquipmentRegistry equipment_registry_;
+    HitShapeLibrary hit_shape_library_;
+    LootTableLibrary loot_table_library_;
+    SpellRuntimeRegistry spell_runtime_registry_;
     SmokeEmitter smoke_emitter_;
 
     struct LoadedSfx {
@@ -264,6 +308,28 @@ class GameApp {
     std::unordered_map<int, Vector2> render_player_positions_;
     std::unordered_map<int, Vector2> render_grappling_hook_head_positions_;
     std::unordered_map<int, std::string> known_player_names_;
+    struct ActiveModularAttackVisual {
+        std::string tag;
+        std::string weapon_item_id;
+        float elapsed_seconds = 0.0f;
+        float duration_seconds = 0.0f;
+        bool swing_event_played = false;
+        bool impact_event_played = false;
+    };
+    std::unordered_map<int, ActiveModularAttackVisual> active_modular_attack_visuals_;
+    struct HammerImpactEffect {
+        Vector2 world_pos = {0.0f, 0.0f};
+        float age_seconds = 0.0f;
+        float duration_seconds = 0.0f;
+        bool alive = true;
+    };
+    std::vector<HammerImpactEffect> hammer_impact_effects_;
+    std::unordered_map<int, PlayerActionState> previous_player_action_states_;
+    std::unordered_map<int, int> previous_player_hp_;
+    std::unordered_map<int, float> player_damage_flash_remaining_;
+    std::unordered_map<int, int> previous_object_hp_;
+    std::unordered_map<int, float> object_damage_flash_remaining_;
+    std::unordered_map<int, float> rooted_unit_damage_accumulators_;
 
     struct RemotePositionSample {
         double time_seconds = 0.0;
@@ -293,7 +359,15 @@ class GameApp {
     std::string resolved_sprite_metadata_128x128_path_;
     std::string resolved_modular_player_main_path_;
     std::string resolved_modular_player_shadow_path_;
+    std::string resolved_modular_tree_canopy_background_path_;
+    std::string resolved_modular_tree_trunk_path_;
+    std::string resolved_modular_tree_canopy_foreground_path_;
+    std::string resolved_modular_tree_shadow_path_;
+    std::string resolved_modular_tree_outline_mask_path_;
     std::string resolved_spell_pattern_path_;
+    std::string resolved_equipment_profiles_path_;
+    std::string resolved_hit_shapes_path_;
+    std::string resolved_loot_tables_path_;
     std::string resolved_menu_background_path_;
     std::string resolved_occluder_reveal_shader_path_;
     std::string resolved_water_gradient_shader_path_;
@@ -302,6 +376,9 @@ class GameApp {
     std::string resolved_zone_border_overlay_shader_path_;
     std::string resolved_map_bounds_fade_shader_path_;
     std::string resolved_influence_zone_overlay_shader_path_;
+    std::string resolved_damage_flash_shader_path_;
+    std::string resolved_tree_composite_shader_path_;
+    std::string resolved_tree_wind_shader_path_;
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;
     double connect_attempt_start_seconds_ = 0.0;
@@ -332,7 +409,21 @@ class GameApp {
     int pending_select_rune_slot_ = -1;
     int pending_activate_item_slot_ = -1;
     bool pending_toggle_inventory_mode_ = false;
-    std::vector<MapObjectSeed> pending_object_spawns_;
+    struct PendingObjectSpawn {
+        std::string prototype_id;
+        GridCoord cell;
+        std::optional<int> blocked_player_id = std::nullopt;
+        int reserved_object_id = -1;
+    };
+    std::vector<PendingObjectSpawn> pending_object_spawns_;
+    struct DroppedItemPickupBlock {
+        int object_instance_id = -1;
+        int blocked_player_id = -1;
+        Vector2 origin_world = {0.0f, 0.0f};
+        float unlock_radius = 0.0f;
+    };
+    std::unordered_map<int, DroppedItemPickupBlock> dropped_item_pickup_blocks_;
+    std::unordered_map<std::string, int> loot_quota_remaining_;
     int next_predicted_entity_id_ = -1;
     std::mt19937 rng_;
     std::mt19937 visual_rng_;
@@ -356,6 +447,12 @@ class GameApp {
     bool has_map_bounds_fade_shader_ = false;
     Shader influence_zone_overlay_shader_ = {};
     bool has_influence_zone_overlay_shader_ = false;
+    Shader damage_flash_shader_ = {};
+    bool has_damage_flash_shader_ = false;
+    Shader tree_composite_shader_ = {};
+    bool has_tree_composite_shader_ = false;
+    Shader tree_wind_shader_ = {};
+    bool has_tree_wind_shader_ = false;
     int occluder_reveal_count_loc_ = -1;
     int occluder_reveal_data_loc_ = -1;
     int occluder_reveal_screen_height_loc_ = -1;
@@ -400,6 +497,29 @@ class GameApp {
     int influence_zone_overlay_pattern_frame_loc_ = -1;
     int influence_zone_overlay_to_distance_texture_loc_ = -1;
     int influence_zone_overlay_blend_t_loc_ = -1;
+    int damage_flash_amount_loc_ = -1;
+    int tree_composite_trunk_texture_loc_ = -1;
+    int tree_composite_canopy_foreground_texture_loc_ = -1;
+    int tree_composite_mask_texture_loc_ = -1;
+    int tree_composite_canopy_background_rect_loc_ = -1;
+    int tree_composite_trunk_rect_loc_ = -1;
+    int tree_composite_canopy_foreground_rect_loc_ = -1;
+    int tree_composite_mask_rect_loc_ = -1;
+    int tree_composite_time_loc_ = -1;
+    int tree_composite_sway_strength_loc_ = -1;
+    int tree_composite_sway_speed_loc_ = -1;
+    int tree_composite_phase_offset_loc_ = -1;
+    int tree_composite_gradient_start_loc_ = -1;
+    int tree_composite_screen_height_loc_ = -1;
+    int tree_composite_inside_alpha_loc_ = -1;
+    int tree_composite_reveal_count_loc_ = -1;
+    int tree_composite_reveal_data_loc_ = -1;
+    int tree_wind_frame_rect_loc_ = -1;
+    int tree_wind_time_loc_ = -1;
+    int tree_wind_sway_strength_loc_ = -1;
+    int tree_wind_sway_speed_loc_ = -1;
+    int tree_wind_phase_offset_loc_ = -1;
+    int tree_wind_gradient_start_loc_ = -1;
     float camera_shake_time_remaining_ = 0.0f;
     Texture2D influence_zone_distance_red_from_texture_ = {};
     Texture2D influence_zone_distance_blue_from_texture_ = {};
@@ -452,6 +572,8 @@ class GameApp {
     LoadedSfx sfx_grappling_latch_;
     LoadedSfx sfx_earth_rune_launch_;
     LoadedSfx sfx_earth_rune_impact_;
+    std::array<LoadedSfx, 2> sfx_hammer_swing_{};
+    std::array<LoadedSfx, 3> sfx_hammer_impact_{};
     std::array<LoadedSfx, 3> sfx_zone_damage_{};
     std::array<LoadedSfx, 5> sfx_footstep_dirt_{};
     Music bgm_forest_day_ = {};

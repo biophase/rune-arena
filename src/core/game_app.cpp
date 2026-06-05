@@ -14,9 +14,12 @@
 
 #include <raygui.h>
 #include <raymath.h>
+#include <rlgl.h>
 
 #include "collision/collision_world.h"
 #include "core/constants.h"
+#include "gameplay/action_intent.h"
+#include "gameplay/snapshot_translation.h"
 #include "spells/fire_bolt_spell.h"
 #include "spells/ice_wall_spell.h"
 #include "ui/ui_lobby.h"
@@ -27,9 +30,20 @@ namespace {
 
 float ClampDt(float dt) { return std::min(dt, 0.1f); }
 
+float ComputeDamageFlashAmount(float remaining_seconds) {
+    if (remaining_seconds <= 0.0f) {
+        return 0.0f;
+    }
+    const float normalized = std::clamp(
+        remaining_seconds / std::max(0.0001f, Constants::kDamageFlashDurationSeconds), 0.0f, 1.0f);
+    return normalized * normalized;
+}
+
 bool IsOutsideZoneDamageSource(const char* source) {
     return source != nullptr && std::strcmp(source, "outside_zone") == 0;
 }
+
+bool IsModularTreePrototypeId(const std::string& prototype_id) { return prototype_id == "tree_1"; }
 
 int DetermineWinningTeam(const MatchState& match) {
     if (match.red_team_kills > match.blue_team_kills) {
@@ -729,6 +743,17 @@ Rectangle InsetSourceRect(Rectangle src, float inset_pixels) {
     return src;
 }
 
+float HashToUnitFloat(int x, int y) {
+    uint32_t value = static_cast<uint32_t>(x) * 0x1f123bb5u;
+    value ^= static_cast<uint32_t>(y) * 0x5f356495u;
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return static_cast<float>(value & 0x00ffffffu) / static_cast<float>(0x01000000u);
+}
+
 std::string ResolveRuntimePath(const char* relative_path) {
     namespace fs = std::filesystem;
     const fs::path direct(relative_path);
@@ -875,7 +900,20 @@ bool GameApp::Initialize() {
     resolved_modular_player_main_path_ = ResolveRuntimePath(Constants::kModularPlayerMainMetadataPath);
     resolved_modular_player_shadow_path_ = ResolveRuntimePath(Constants::kModularPlayerShadowMetadataPath);
     const std::string resolved_modular_player_sword_path = ResolveRuntimePath(Constants::kModularPlayerSwordMetadataPath);
+    const std::string resolved_modular_player_hammer_path = ResolveRuntimePath(Constants::kModularPlayerHammerMetadataPath);
+    const std::string resolved_modular_player_ghook_path = ResolveRuntimePath(Constants::kModularPlayerGhookMetadataPath);
+    const std::string resolved_modular_player_fx_path = ResolveRuntimePath(Constants::kModularPlayerFxMetadataPath);
+    resolved_modular_tree_canopy_background_path_ =
+        ResolveRuntimePath(Constants::kModularTreeCanopyBackgroundMetadataPath);
+    resolved_modular_tree_trunk_path_ = ResolveRuntimePath(Constants::kModularTreeTrunkMetadataPath);
+    resolved_modular_tree_canopy_foreground_path_ =
+        ResolveRuntimePath(Constants::kModularTreeCanopyForegroundMetadataPath);
+    resolved_modular_tree_shadow_path_ = ResolveRuntimePath(Constants::kModularTreeShadowMetadataPath);
+    resolved_modular_tree_outline_mask_path_ = ResolveRuntimePath(Constants::kModularTreeOutlineMaskMetadataPath);
     resolved_spell_pattern_path_ = ResolveRuntimePath(Constants::kSpellPatternPath);
+    resolved_equipment_profiles_path_ = ResolveRuntimePath(Constants::kEquipmentProfilesPath);
+    resolved_hit_shapes_path_ = ResolveRuntimePath(Constants::kHitShapesPath);
+    resolved_loot_tables_path_ = ResolveRuntimePath(Constants::kLootTablesPath);
     resolved_menu_background_path_ = ResolveRuntimePath(Constants::kMenuBackgroundPath);
     resolved_occluder_reveal_shader_path_ = ResolveRuntimePath(Constants::kOccluderRevealShaderPath);
     resolved_water_gradient_shader_path_ = ResolveRuntimePath(Constants::kWaterGradientShaderPath);
@@ -884,6 +922,9 @@ bool GameApp::Initialize() {
     resolved_zone_border_overlay_shader_path_ = ResolveRuntimePath(Constants::kZoneBorderOverlayShaderPath);
     resolved_map_bounds_fade_shader_path_ = ResolveRuntimePath(Constants::kMapBoundsFadeShaderPath);
     resolved_influence_zone_overlay_shader_path_ = ResolveRuntimePath(Constants::kInfluenceZoneOverlayShaderPath);
+    resolved_damage_flash_shader_path_ = ResolveRuntimePath(Constants::kDamageFlashShaderPath);
+    resolved_tree_composite_shader_path_ = ResolveRuntimePath(Constants::kTreeCompositeShaderPath);
+    resolved_tree_wind_shader_path_ = ResolveRuntimePath(Constants::kTreeWindShaderPath);
 
     objects_database_.LoadFromFile(resolved_objects_config_path_);
     composite_effects_loader_.LoadFromFile(resolved_composite_effects_path_);
@@ -906,7 +947,25 @@ bool GameApp::Initialize() {
     modular_player_asset_.LoadLayer("main", resolved_modular_player_main_path_);
     modular_player_asset_.LoadLayer("shadow", resolved_modular_player_shadow_path_);
     modular_player_asset_.LoadLayer("sword", resolved_modular_player_sword_path);
+    if (FileExists(resolved_modular_player_hammer_path.c_str())) {
+        modular_player_asset_.LoadLayer("hammer", resolved_modular_player_hammer_path);
+    }
+    modular_player_asset_.LoadLayer("ghook", resolved_modular_player_ghook_path);
+    if (FileExists(resolved_modular_player_fx_path.c_str())) {
+        modular_player_asset_.LoadLayer("fx", resolved_modular_player_fx_path);
+    }
+    modular_tree_asset_.LoadLayer("canopy_background", resolved_modular_tree_canopy_background_path_);
+    modular_tree_asset_.LoadLayer("trunk", resolved_modular_tree_trunk_path_);
+    modular_tree_asset_.LoadLayer("canopy_foreground", resolved_modular_tree_canopy_foreground_path_);
+    modular_tree_asset_.LoadLayer("shadow", resolved_modular_tree_shadow_path_);
+    if (FileExists(resolved_modular_tree_outline_mask_path_.c_str())) {
+        modular_tree_asset_.LoadLayer("outline_mask", resolved_modular_tree_outline_mask_path_);
+    }
     spell_patterns_.LoadFromFile(resolved_spell_pattern_path_);
+    equipment_registry_.LoadFromFile(resolved_equipment_profiles_path_);
+    hit_shape_library_.LoadFromFile(resolved_hit_shapes_path_);
+    loot_table_library_.LoadFromFile(resolved_loot_tables_path_);
+    RegisterSpellRuntimes();
     if (FileExists(resolved_menu_background_path_.c_str())) {
         menu_background_texture_ = LoadTexture(resolved_menu_background_path_.c_str());
         has_menu_background_texture_ = (menu_background_texture_.id != 0);
@@ -1000,6 +1059,7 @@ void GameApp::Shutdown() {
     sprite_metadata_96x96_.Unload();
     sprite_metadata_128x128_.Unload();
     modular_player_asset_.Unload();
+    modular_tree_asset_.Unload();
     if (has_menu_background_texture_) {
         UnloadTexture(menu_background_texture_);
         has_menu_background_texture_ = false;
@@ -1137,6 +1197,54 @@ void GameApp::LoadRenderShaders() {
             influence_zone_overlay_blend_t_loc_ = GetShaderLocation(influence_zone_overlay_shader_, "uBlendT");
         }
     }
+
+    if (FileExists(resolved_damage_flash_shader_path_.c_str())) {
+        damage_flash_shader_ = LoadShader(nullptr, resolved_damage_flash_shader_path_.c_str());
+        has_damage_flash_shader_ = (damage_flash_shader_.id != 0);
+        if (has_damage_flash_shader_) {
+            damage_flash_amount_loc_ = GetShaderLocation(damage_flash_shader_, "uFlashAmount");
+        }
+    }
+
+    if (FileExists(resolved_tree_composite_shader_path_.c_str())) {
+        tree_composite_shader_ = LoadShader(nullptr, resolved_tree_composite_shader_path_.c_str());
+        has_tree_composite_shader_ = (tree_composite_shader_.id != 0);
+        if (has_tree_composite_shader_) {
+            tree_composite_trunk_texture_loc_ = GetShaderLocation(tree_composite_shader_, "uTrunkTexture");
+            tree_composite_canopy_foreground_texture_loc_ =
+                GetShaderLocation(tree_composite_shader_, "uCanopyForegroundTexture");
+            tree_composite_mask_texture_loc_ = GetShaderLocation(tree_composite_shader_, "uMaskTexture");
+            tree_composite_canopy_background_rect_loc_ =
+                GetShaderLocation(tree_composite_shader_, "uCanopyBackgroundRectPx");
+            tree_composite_trunk_rect_loc_ = GetShaderLocation(tree_composite_shader_, "uTrunkRectPx");
+            tree_composite_canopy_foreground_rect_loc_ =
+                GetShaderLocation(tree_composite_shader_, "uCanopyForegroundRectPx");
+            tree_composite_mask_rect_loc_ = GetShaderLocation(tree_composite_shader_, "uMaskRectPx");
+            tree_composite_time_loc_ = GetShaderLocation(tree_composite_shader_, "uTime");
+            tree_composite_sway_strength_loc_ = GetShaderLocation(tree_composite_shader_, "uSwayStrengthPixels");
+            tree_composite_sway_speed_loc_ = GetShaderLocation(tree_composite_shader_, "uSwaySpeed");
+            tree_composite_phase_offset_loc_ = GetShaderLocation(tree_composite_shader_, "uPhaseOffset");
+            tree_composite_gradient_start_loc_ = GetShaderLocation(tree_composite_shader_, "uGradientStart");
+            tree_composite_screen_height_loc_ = GetShaderLocation(tree_composite_shader_, "uScreenHeight");
+            tree_composite_inside_alpha_loc_ = GetShaderLocation(tree_composite_shader_, "uInsideAlpha");
+            tree_composite_reveal_count_loc_ = GetShaderLocation(tree_composite_shader_, "uRevealCount");
+            tree_composite_reveal_data_loc_ = GetShaderLocation(tree_composite_shader_, "uRevealData");
+        }
+    }
+
+    if (FileExists(resolved_tree_wind_shader_path_.c_str())) {
+        tree_wind_shader_ = LoadShader(nullptr, resolved_tree_wind_shader_path_.c_str());
+        has_tree_wind_shader_ = (tree_wind_shader_.id != 0);
+        if (has_tree_wind_shader_) {
+            tree_wind_frame_rect_loc_ = GetShaderLocation(tree_wind_shader_, "uFrameRectPx");
+            tree_wind_time_loc_ = GetShaderLocation(tree_wind_shader_, "uTime");
+            tree_wind_sway_strength_loc_ = GetShaderLocation(tree_wind_shader_, "uSwayStrengthPixels");
+            tree_wind_sway_speed_loc_ = GetShaderLocation(tree_wind_shader_, "uSwaySpeed");
+            tree_wind_phase_offset_loc_ = GetShaderLocation(tree_wind_shader_, "uPhaseOffset");
+            tree_wind_gradient_start_loc_ = GetShaderLocation(tree_wind_shader_, "uGradientStart");
+        }
+    }
+
 }
 
 void GameApp::UnloadRenderShaders() {
@@ -1175,6 +1283,21 @@ void GameApp::UnloadRenderShaders() {
     }
     influence_zone_overlay_shader_ = {};
     has_influence_zone_overlay_shader_ = false;
+    if (has_damage_flash_shader_) {
+        UnloadShader(damage_flash_shader_);
+    }
+    damage_flash_shader_ = {};
+    has_damage_flash_shader_ = false;
+    if (has_tree_composite_shader_) {
+        UnloadShader(tree_composite_shader_);
+    }
+    tree_composite_shader_ = {};
+    has_tree_composite_shader_ = false;
+    if (has_tree_wind_shader_) {
+        UnloadShader(tree_wind_shader_);
+    }
+    tree_wind_shader_ = {};
+    has_tree_wind_shader_ = false;
     occluder_reveal_count_loc_ = -1;
     occluder_reveal_data_loc_ = -1;
     occluder_reveal_screen_height_loc_ = -1;
@@ -1219,6 +1342,29 @@ void GameApp::UnloadRenderShaders() {
     influence_zone_overlay_pattern_frame_loc_ = -1;
     influence_zone_overlay_to_distance_texture_loc_ = -1;
     influence_zone_overlay_blend_t_loc_ = -1;
+    damage_flash_amount_loc_ = -1;
+    tree_composite_trunk_texture_loc_ = -1;
+    tree_composite_canopy_foreground_texture_loc_ = -1;
+    tree_composite_mask_texture_loc_ = -1;
+    tree_composite_canopy_background_rect_loc_ = -1;
+    tree_composite_trunk_rect_loc_ = -1;
+    tree_composite_canopy_foreground_rect_loc_ = -1;
+    tree_composite_mask_rect_loc_ = -1;
+    tree_composite_time_loc_ = -1;
+    tree_composite_sway_strength_loc_ = -1;
+    tree_composite_sway_speed_loc_ = -1;
+    tree_composite_phase_offset_loc_ = -1;
+    tree_composite_gradient_start_loc_ = -1;
+    tree_composite_screen_height_loc_ = -1;
+    tree_composite_inside_alpha_loc_ = -1;
+    tree_composite_reveal_count_loc_ = -1;
+    tree_composite_reveal_data_loc_ = -1;
+    tree_wind_frame_rect_loc_ = -1;
+    tree_wind_time_loc_ = -1;
+    tree_wind_sway_strength_loc_ = -1;
+    tree_wind_sway_speed_loc_ = -1;
+    tree_wind_phase_offset_loc_ = -1;
+    tree_wind_gradient_start_loc_ = -1;
 }
 
 bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& texture, const Rectangle& src, float sort_y) {
@@ -1288,6 +1434,214 @@ bool GameApp::DrawMaskedOccluder(const Rectangle& world_dst, const Texture2D& te
 
     BeginShaderMode(occluder_reveal_shader_);
     DrawTexturePro(texture, src, world_dst, {0, 0}, 0.0f, WHITE);
+    EndShaderMode();
+    return true;
+}
+
+Rectangle GameApp::GetModularTreeSpriteRect(const MapObjectInstance& object, const char* layer_name) const {
+    const int frame_width = std::max(modular_tree_asset_.GetFrameWidth(layer_name), state_.map.cell_size);
+    const int frame_height = std::max(modular_tree_asset_.GetFrameHeight(layer_name), state_.map.cell_size);
+    return SnapRect({static_cast<float>(object.cell.x * state_.map.cell_size),
+                     static_cast<float>(object.cell.y * state_.map.cell_size) -
+                         (static_cast<float>(frame_height) - static_cast<float>(state_.map.cell_size)),
+                     static_cast<float>(frame_width), static_cast<float>(frame_height)});
+}
+
+float GameApp::GetMapObjectWindPhaseOffset(const MapObjectInstance& object) const {
+    return HashToUnitFloat(object.cell.x, object.cell.y) * 2.0f * PI;
+}
+
+bool GameApp::DrawWindAnimatedMapObject(const MapObjectInstance& object, const ObjectPrototype& proto, const Texture2D& texture,
+                                        Rectangle src, Rectangle dst) {
+    if (proto.wind_strength_pixels <= 0.0f || !has_tree_wind_shader_) {
+        DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+        return true;
+    }
+
+    const float frame_rect[4] = {src.x, src.y, src.width, src.height};
+    const float time_seconds = render_time_seconds_;
+    const float sway_strength = proto.wind_strength_pixels;
+    const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
+    const float phase_offset = GetMapObjectWindPhaseOffset(object);
+    const float gradient_start = proto.wind_gradient_start;
+    SetShaderValueV(tree_wind_shader_, tree_wind_frame_rect_loc_, frame_rect, SHADER_UNIFORM_VEC4, 1);
+    SetShaderValue(tree_wind_shader_, tree_wind_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_phase_offset_loc_, &phase_offset, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
+
+    BeginShaderMode(tree_wind_shader_);
+    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+    EndShaderMode();
+    return true;
+}
+
+bool GameApp::RenderModularTreeShadow(const MapObjectInstance& object, const ObjectPrototype& proto) {
+    if (!IsModularTreePrototypeId(proto.id) || !modular_tree_asset_.HasLayer("shadow")) {
+        return false;
+    }
+
+    const Texture2D* shadow_texture = modular_tree_asset_.GetLayerTexture("shadow");
+    if (shadow_texture == nullptr) {
+        return false;
+    }
+
+    std::string shadow_tag;
+    if (modular_tree_asset_.HasTag("shadow", "tree")) {
+        shadow_tag = "tree";
+    } else if (modular_tree_asset_.HasTag("shadow", "tree_shadow")) {
+        shadow_tag = "tree_shadow";
+    } else {
+        return false;
+    }
+
+    const Rectangle src = modular_tree_asset_.GetFrame("shadow", shadow_tag, render_time_seconds_);
+    if (src.width <= 0.0f || src.height <= 0.0f) {
+        return false;
+    }
+
+    const Rectangle dst = GetModularTreeSpriteRect(object, "shadow");
+    if (!has_tree_wind_shader_) {
+        DrawTexturePro(*shadow_texture, src, dst, {0, 0}, 0.0f, WHITE);
+        return true;
+    }
+
+    const float frame_rect[4] = {src.x, src.y, src.width, src.height};
+    const float time_seconds = render_time_seconds_;
+    const float sway_strength = proto.wind_strength_pixels > 0.0f ? proto.wind_strength_pixels : Constants::kTreeWindSwayStrengthPixels;
+    const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
+    const float phase_offset = GetMapObjectWindPhaseOffset(object);
+    const float gradient_start = proto.wind_gradient_start;
+    SetShaderValueV(tree_wind_shader_, tree_wind_frame_rect_loc_, frame_rect, SHADER_UNIFORM_VEC4, 1);
+    SetShaderValue(tree_wind_shader_, tree_wind_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_phase_offset_loc_, &phase_offset, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_wind_shader_, tree_wind_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
+
+    BeginShaderMode(tree_wind_shader_);
+    DrawTexturePro(*shadow_texture, src, dst, {0, 0}, 0.0f, WHITE);
+    EndShaderMode();
+    return true;
+}
+
+bool GameApp::RenderModularTreeObject(const MapObjectInstance& object, const ObjectPrototype& proto, float sort_y) {
+    if (!IsModularTreePrototypeId(proto.id) || !modular_tree_asset_.HasTag("canopy_background", "tree") ||
+        !modular_tree_asset_.HasTag("trunk", "tree") || !modular_tree_asset_.HasTag("canopy_foreground", "tree")) {
+        return false;
+    }
+
+    const Texture2D* canopy_background_texture = modular_tree_asset_.GetLayerTexture("canopy_background");
+    const Texture2D* trunk_texture = modular_tree_asset_.GetLayerTexture("trunk");
+    const Texture2D* canopy_foreground_texture = modular_tree_asset_.GetLayerTexture("canopy_foreground");
+    const Texture2D* outline_mask_texture =
+        modular_tree_asset_.HasTag("outline_mask", "tree") ? modular_tree_asset_.GetLayerTexture("outline_mask") : nullptr;
+    if (canopy_background_texture == nullptr || trunk_texture == nullptr || canopy_foreground_texture == nullptr) {
+        return false;
+    }
+
+    const Rectangle canopy_background_src =
+        modular_tree_asset_.GetFrame("canopy_background", "tree", render_time_seconds_);
+    const Rectangle trunk_src = modular_tree_asset_.GetFrame("trunk", "tree", render_time_seconds_);
+    const Rectangle canopy_foreground_src =
+        modular_tree_asset_.GetFrame("canopy_foreground", "tree", render_time_seconds_);
+    const Rectangle outline_mask_src =
+        outline_mask_texture != nullptr ? modular_tree_asset_.GetFrame("outline_mask", "tree", render_time_seconds_) : Rectangle{};
+    const Rectangle dst = GetModularTreeSpriteRect(object, "trunk");
+
+    if (!has_tree_composite_shader_) {
+        DrawTexturePro(*canopy_background_texture, canopy_background_src, dst, {0, 0}, 0.0f, WHITE);
+        DrawTexturePro(*trunk_texture, trunk_src, dst, {0, 0}, 0.0f, WHITE);
+        DrawTexturePro(*canopy_foreground_texture, canopy_foreground_src, dst, {0, 0}, 0.0f, WHITE);
+        return true;
+    }
+
+    SetShaderValueTexture(tree_composite_shader_, tree_composite_trunk_texture_loc_, *trunk_texture);
+    SetShaderValueTexture(tree_composite_shader_, tree_composite_canopy_foreground_texture_loc_,
+                          *canopy_foreground_texture);
+    SetShaderValueTexture(tree_composite_shader_, tree_composite_mask_texture_loc_,
+                          outline_mask_texture != nullptr ? *outline_mask_texture : *canopy_background_texture);
+
+    const float canopy_background_rect[4] = {canopy_background_src.x, canopy_background_src.y,
+                                             canopy_background_src.width, canopy_background_src.height};
+    const float trunk_rect[4] = {trunk_src.x, trunk_src.y, trunk_src.width, trunk_src.height};
+    const float canopy_foreground_rect[4] = {canopy_foreground_src.x, canopy_foreground_src.y,
+                                             canopy_foreground_src.width, canopy_foreground_src.height};
+    const float mask_rect[4] = {outline_mask_src.x, outline_mask_src.y, outline_mask_src.width, outline_mask_src.height};
+    const float time_seconds = render_time_seconds_;
+    const float sway_strength = proto.wind_strength_pixels > 0.0f ? proto.wind_strength_pixels : Constants::kTreeWindSwayStrengthPixels;
+    const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
+    const float phase_offset = GetMapObjectWindPhaseOffset(object);
+    const float gradient_start = proto.wind_gradient_start;
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float inside_alpha = Constants::kOccluderRevealInsideAlpha;
+
+    std::array<float, Constants::kOccluderRevealMaxCircles * 4> reveal_data = {};
+    int circle_count = 0;
+    if (proto.masked_occluder) {
+        const auto try_add_circle = [&](Vector2 world_center, float radius_world, float target_sort_y) {
+            if (circle_count >= Constants::kOccluderRevealMaxCircles || target_sort_y >= sort_y - 0.01f ||
+                !ContainsWorldPointExpanded(dst, world_center, radius_world)) {
+                return;
+            }
+
+            const Vector2 screen_center = GetWorldToScreen2D(world_center, camera_);
+            const float radius_px = radius_world * camera_.zoom;
+            const float falloff_px = Constants::kOccluderRevealFalloffWorld * camera_.zoom;
+            const size_t base = static_cast<size_t>(circle_count++) * 4;
+            reveal_data[base + 0] = screen_center.x;
+            reveal_data[base + 1] = screen_center.y;
+            reveal_data[base + 2] = radius_px;
+            reveal_data[base + 3] = radius_px + falloff_px;
+        };
+
+        for (const Player& player : state_.players) {
+            if (!player.alive) {
+                continue;
+            }
+            const Vector2 world_center = GetRenderPlayerPosition(player.id);
+            try_add_circle(world_center, Constants::kOccluderRevealPlayerRadiusWorld, world_center.y + 16.0f);
+        }
+
+        for (const MapObjectInstance& other : state_.map_objects) {
+            if (!other.alive || other.type != ObjectType::Consumable) {
+                continue;
+            }
+            const Vector2 world_center = CellToWorldCenter(other.cell);
+            try_add_circle(world_center, Constants::kOccluderRevealItemRadiusWorld, world_center.y);
+        }
+
+        for (const Rune& rune : state_.runes) {
+            if (!rune.active && rune.activation_remaining_seconds <= 0.0f) {
+                continue;
+            }
+            const Vector2 world_center = CellToWorldCenter(rune.cell);
+            try_add_circle(world_center, Constants::kOccluderRevealItemRadiusWorld, world_center.y);
+        }
+    }
+
+    SetShaderValueV(tree_composite_shader_, tree_composite_canopy_background_rect_loc_, canopy_background_rect,
+                    SHADER_UNIFORM_VEC4, 1);
+    SetShaderValueV(tree_composite_shader_, tree_composite_trunk_rect_loc_, trunk_rect, SHADER_UNIFORM_VEC4, 1);
+    SetShaderValueV(tree_composite_shader_, tree_composite_canopy_foreground_rect_loc_, canopy_foreground_rect,
+                    SHADER_UNIFORM_VEC4, 1);
+    SetShaderValueV(tree_composite_shader_, tree_composite_mask_rect_loc_, mask_rect, SHADER_UNIFORM_VEC4, 1);
+    SetShaderValue(tree_composite_shader_, tree_composite_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_composite_shader_, tree_composite_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_composite_shader_, tree_composite_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_composite_shader_, tree_composite_phase_offset_loc_, &phase_offset, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_composite_shader_, tree_composite_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_composite_shader_, tree_composite_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_composite_shader_, tree_composite_inside_alpha_loc_, &inside_alpha, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(tree_composite_shader_, tree_composite_reveal_count_loc_, &circle_count, SHADER_UNIFORM_INT);
+    if (circle_count > 0) {
+        SetShaderValueV(tree_composite_shader_, tree_composite_reveal_data_loc_, reveal_data.data(),
+                        SHADER_UNIFORM_VEC4, circle_count);
+    }
+
+    BeginShaderMode(tree_composite_shader_);
+    DrawTexturePro(*canopy_background_texture, canopy_background_src, dst, {0, 0}, 0.0f, WHITE);
     EndShaderMode();
     return true;
 }
@@ -1447,6 +1801,12 @@ void GameApp::LoadAudioAssets() {
     load_sfx(sfx_grappling_latch_, Constants::kSfxGrapplingLatchPath, Constants::kSfxVolumeGrapplingLatch);
     load_sfx(sfx_earth_rune_launch_, Constants::kSfxEarthRuneLaunchPath, Constants::kSfxVolumeEarthRuneLaunch);
     load_sfx(sfx_earth_rune_impact_, Constants::kSfxEarthRuneImpactPath, Constants::kSfxVolumeEarthRuneImpact);
+    for (size_t i = 0; i < sfx_hammer_swing_.size(); ++i) {
+        load_sfx(sfx_hammer_swing_[i], Constants::kSfxHammerSwingPaths[i], Constants::kSfxVolumeHammerSwing);
+    }
+    for (size_t i = 0; i < sfx_hammer_impact_.size(); ++i) {
+        load_sfx(sfx_hammer_impact_[i], Constants::kSfxHammerImpactPaths[i], Constants::kSfxVolumeHammerImpact);
+    }
     for (size_t i = 0; i < sfx_zone_damage_.size(); ++i) {
         load_sfx(sfx_zone_damage_[i], Constants::kSfxZoneDamagePaths[i], Constants::kSfxVolumeZoneDamage);
     }
@@ -1524,6 +1884,12 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_grappling_latch_);
     unload_sfx(sfx_earth_rune_launch_);
     unload_sfx(sfx_earth_rune_impact_);
+    for (auto& clip : sfx_hammer_swing_) {
+        unload_sfx(clip);
+    }
+    for (auto& clip : sfx_hammer_impact_) {
+        unload_sfx(clip);
+    }
     for (auto& clip : sfx_zone_damage_) {
         unload_sfx(clip);
     }
@@ -1707,6 +2073,12 @@ void GameApp::PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_po
         return;
     }
     PlaySound(sound);
+}
+
+bool GameApp::ShouldPlayImmediateMeleeSwingSfx(const Player& player) const {
+    const EquipmentItemDefinition* item =
+        equipment_registry_.ResolveEquippedItem(player, EquipmentSlot::PrimaryWeapon);
+    return item == nullptr || item->id != "hammer_item";
 }
 
 bool GameApp::HasVisibleIdleFireStormDummy() const {
@@ -1905,8 +2277,11 @@ void GameApp::UpdateMatch(float dt) {
         UpdateDamagePopups(dt);
     }
 
+    UpdateActiveModularAttackVisuals(dt);
+    UpdateDamageFlashVisuals(dt);
     UpdateProjectileEmitters();
     UpdateParticles(dt);
+    UpdateHammerImpactEffects(dt);
     UpdateLightningEffects(dt);
     UpdateCompositeEffects(dt);
     UpdateFireStormCasts(dt);
@@ -2000,6 +2375,70 @@ void GameApp::UpdateClientVisualSmoothing(float dt) {
     render_grappling_hook_head_positions_.swap(updated_hook_positions);
 }
 
+void GameApp::UpdateDamageFlashVisuals(float dt) {
+    const float max_flash = Constants::kDamageFlashDurationSeconds;
+    for (auto& [id, remaining] : player_damage_flash_remaining_) {
+        remaining = std::max(0.0f, remaining - dt);
+    }
+    for (auto& [id, remaining] : object_damage_flash_remaining_) {
+        remaining = std::max(0.0f, remaining - dt);
+    }
+
+    std::unordered_set<int> seen_player_ids;
+    seen_player_ids.reserve(state_.players.size());
+    for (const Player& player : state_.players) {
+        seen_player_ids.insert(player.id);
+        auto previous_it = previous_player_hp_.find(player.id);
+        if (previous_it != previous_player_hp_.end() && player.hp < previous_it->second) {
+            player_damage_flash_remaining_[player.id] = max_flash;
+        }
+        previous_player_hp_[player.id] = player.hp;
+    }
+    for (auto it = previous_player_hp_.begin(); it != previous_player_hp_.end();) {
+        if (seen_player_ids.count(it->first) == 0) {
+            it = previous_player_hp_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = player_damage_flash_remaining_.begin(); it != player_damage_flash_remaining_.end();) {
+        if (seen_player_ids.count(it->first) == 0 || it->second <= 0.0f) {
+            it = player_damage_flash_remaining_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    std::unordered_set<int> seen_object_ids;
+    seen_object_ids.reserve(state_.map_objects.size());
+    for (const MapObjectInstance& object : state_.map_objects) {
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        if (proto == nullptr || (proto->type != ObjectType::Destructible && proto->type != ObjectType::Unit)) {
+            continue;
+        }
+        seen_object_ids.insert(object.id);
+        auto previous_it = previous_object_hp_.find(object.id);
+        if (previous_it != previous_object_hp_.end() && object.hp < previous_it->second) {
+            object_damage_flash_remaining_[object.id] = max_flash;
+        }
+        previous_object_hp_[object.id] = object.hp;
+    }
+    for (auto it = previous_object_hp_.begin(); it != previous_object_hp_.end();) {
+        if (seen_object_ids.count(it->first) == 0) {
+            it = previous_object_hp_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = object_damage_flash_remaining_.begin(); it != object_damage_flash_remaining_.end();) {
+        if (seen_object_ids.count(it->first) == 0 || it->second <= 0.0f) {
+            it = object_damage_flash_remaining_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, float dt) {
     if (network_manager_.IsHost()) {
         return;
@@ -2012,6 +2451,7 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
     if (!local_player || !local_player->alive) {
         return;
     }
+    const ActionIntent intent = BuildActionIntent(input);
     const bool is_stunned = HasStatusEffect(*local_player, StatusEffectType::Stunned);
     const bool is_pulled = IsPlayerBeingPulled(local_player->id);
     bool inventory_editing = local_player->inventory_mode;
@@ -2023,15 +2463,15 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
         local_player->rune_cooldown_remaining[i] = std::max(0.0f, local_player->rune_cooldown_remaining[i] - dt);
     }
 
-    if (!is_stunned && !is_pulled && input.toggle_inventory_mode) {
+    if (!is_stunned && !is_pulled && intent.toggle_inventory_mode) {
         local_player->inventory_mode = !local_player->inventory_mode;
         if (!local_player->inventory_mode) {
             CancelInventoryDrag(*local_player);
         }
         inventory_editing = local_player->inventory_mode;
     }
-    if (!is_stunned && !is_pulled && !inventory_editing && input.request_rune_type != static_cast<int>(RuneType::None)) {
-        const RuneType rune_type = static_cast<RuneType>(input.request_rune_type);
+    if (!is_stunned && !is_pulled && !inventory_editing && intent.request_rune_type != static_cast<int>(RuneType::None)) {
+        const RuneType rune_type = static_cast<RuneType>(intent.request_rune_type);
         const float mana_cost = GetRuneManaCost(rune_type);
         for (size_t i = 0; i < local_player->rune_slots.size(); ++i) {
             if (local_player->rune_slots[i] == rune_type) {
@@ -2045,30 +2485,35 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
                                           (local_player->mana >= mana_cost);
     }
 
-    Vector2 aim_vector = {input.aim_x - local_player->pos.x, input.aim_y - local_player->pos.y};
+    Vector2 aim_vector = {intent.aim_world.x - local_player->pos.x, intent.aim_world.y - local_player->pos.y};
     if (local_player->melee_active_remaining <= 0.0f && Vector2LengthSqr(aim_vector) > 0.0001f) {
         local_player->aim_dir = Vector2Normalize(aim_vector);
         local_player->facing = AimToFacing(local_player->aim_dir);
     }
 
-    if (!is_stunned && !is_pulled && !inventory_editing && input.primary_pressed && local_player->rune_placing_mode) {
+    if (!is_stunned && !is_pulled && !inventory_editing && intent.primary_pressed && local_player->rune_placing_mode) {
         local_player->rune_placing_mode = false;
     }
-    if (!is_stunned && !is_pulled && !inventory_editing && input.grappling_pressed && !local_player->rune_placing_mode &&
+    const MobilityProfile* mobility_profile = GetEquippedMobility(*local_player);
+    if (!is_stunned && !is_pulled && !inventory_editing && intent.mobility_pressed && !local_player->rune_placing_mode &&
+        mobility_profile != nullptr && mobility_profile->kind == EquipmentActionKind::GrapplingHook &&
         local_player->grappling_cooldown_remaining <= 0.0f) {
-        TryStartGrapplingHook(*local_player, Vector2{input.aim_x, input.aim_y}, false);
+        TryStartGrapplingHook(*local_player, intent.aim_world, false);
     }
 
     // Movement/facing prediction for client feel; authoritative state is reconciled on snapshots.
-    Vector2 movement = {input.move_x, input.move_y};
+    Vector2 movement = intent.move;
     if (Vector2LengthSqr(movement) > 0.0001f) {
         movement = Vector2Normalize(movement);
     }
 
     const float movement_multiplier = GetPlayerMovementSpeedMultiplier(*local_player);
+    const float base_acceleration = GetPlayerBaseAcceleration(*local_player);
+    const float acceleration_multiplier = GetPlayerAccelerationMultiplier(*local_player);
     const Vector2 acceleration = (is_stunned || is_pulled || inventory_editing)
                                      ? Vector2{0.0f, 0.0f}
-                                     : Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
+                                     : Vector2Scale(movement, base_acceleration * movement_multiplier *
+                                                                  acceleration_multiplier);
     local_player->vel = Vector2Add(local_player->vel, Vector2Scale(acceleration, dt));
     const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * dt);
     local_player->vel = Vector2Scale(local_player->vel, damping);
@@ -2377,6 +2822,8 @@ void GameApp::ReturnToMainMenu() {
     pending_activate_item_slot_ = -1;
     pending_toggle_inventory_mode_ = false;
     pending_object_spawns_.clear();
+    dropped_item_pickup_blocks_.clear();
+    loot_quota_remaining_.clear();
     altars_.clear();
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
@@ -2437,6 +2884,7 @@ void GameApp::StartMatchAsHost() {
     pending_activate_item_slot_ = -1;
     pending_toggle_inventory_mode_ = false;
     pending_object_spawns_.clear();
+    dropped_item_pickup_blocks_.clear();
 
     Player host_player;
     host_player.id = 0;
@@ -2474,6 +2922,9 @@ void GameApp::StartMatchAsHost() {
         }
         render_player_positions_[state_.players[i].id] = state_.players[i].pos;
     }
+
+    loot_quota_remaining_ =
+        loot_table_library_.BuildMatchQuotaPlan(static_cast<int>(state_.players.size())).guaranteed_counts;
 
     RebuildMapObjectsFromSeeds();
 
@@ -2626,77 +3077,10 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     state_.players.clear();
     for (const auto& player_snapshot : snapshot.players) {
         Player player;
-        player.id = player_snapshot.id;
-        auto known_name_it = known_player_names_.find(player.id);
-        player.name = known_name_it != known_player_names_.end() ? known_name_it->second
-                                                                 : TextFormat("Player%d", player.id);
-        player.team = player_snapshot.team;
-        player.pos = {player_snapshot.pos_x, player_snapshot.pos_y};
-        player.vel = {player_snapshot.vel_x, player_snapshot.vel_y};
-        player.aim_dir = {player_snapshot.aim_dir_x, player_snapshot.aim_dir_y};
-        player.hp = player_snapshot.hp;
-        player.kills = player_snapshot.kills;
-        player.alive = player_snapshot.alive;
-        player.facing = static_cast<FacingDirection>(player_snapshot.facing);
-        player.action_state = static_cast<PlayerActionState>(player_snapshot.action_state);
-        player.melee_active_remaining = player_snapshot.melee_active_remaining;
-        player.rune_placing_mode = player_snapshot.rune_placing_mode;
-        player.selected_rune_type = static_cast<RuneType>(player_snapshot.selected_rune_type);
-        player.mana = player_snapshot.mana;
-        player.max_mana = player_snapshot.max_mana;
-        player.grappling_cooldown_remaining = player_snapshot.grappling_cooldown_remaining;
-        player.grappling_cooldown_total = player_snapshot.grappling_cooldown_total;
-        player.status_effects.clear();
-        for (const auto& status_snapshot : player_snapshot.status_effects) {
-            StatusEffectInstance status;
-            status.type = static_cast<StatusEffectType>(status_snapshot.type);
-            status.remaining_seconds = status_snapshot.remaining_seconds;
-            status.total_seconds = status_snapshot.total_seconds;
-            status.magnitude_per_second = status_snapshot.magnitude_per_second;
-            status.visible = status_snapshot.visible;
-            status.is_buff = status_snapshot.is_buff;
-            status.source_id = status_snapshot.source_id;
-            status.progress = status_snapshot.progress;
-            status.source_elapsed_seconds = status_snapshot.source_elapsed_seconds;
-            status.burn_duration_seconds = status_snapshot.burn_duration_seconds;
-            status.movement_speed_multiplier = status_snapshot.movement_speed_multiplier;
-            status.source_active = status_snapshot.source_active;
-            status.composite_effect_id = status_snapshot.composite_effect_id;
-            status.accumulated_magnitude = 0.0f;
-            player.status_effects.push_back(status);
-        }
-        for (size_t i = 0; i < player.item_slots.size() && i < player_snapshot.item_slots.size(); ++i) {
-            player.item_slots[i] = player_snapshot.item_slots[i];
-        }
-        for (size_t i = 0; i < player.item_slot_counts.size() && i < player_snapshot.item_slot_counts.size(); ++i) {
-            player.item_slot_counts[i] = player_snapshot.item_slot_counts[i];
-        }
-        for (size_t i = 0; i < player.item_slot_cooldown_remaining.size() &&
-                           i < player_snapshot.item_slot_cooldown_remaining.size();
-             ++i) {
-            player.item_slot_cooldown_remaining[i] = player_snapshot.item_slot_cooldown_remaining[i];
-        }
-        for (size_t i = 0; i < player.item_slot_cooldown_total.size() &&
-                           i < player_snapshot.item_slot_cooldown_total.size();
-             ++i) {
-            player.item_slot_cooldown_total[i] = player_snapshot.item_slot_cooldown_total[i];
-        }
-        player.awaiting_respawn = player_snapshot.awaiting_respawn;
-        player.respawn_remaining = player_snapshot.respawn_remaining;
-        player.last_processed_move_seq = player_snapshot.last_processed_move_seq;
-        for (size_t i = 0; i < player.rune_cooldown_remaining.size() && i < player_snapshot.rune_cooldown_remaining.size();
-             ++i) {
-            player.rune_cooldown_remaining[i] = player_snapshot.rune_cooldown_remaining[i];
-        }
-        for (size_t i = 0; i < player.rune_cooldown_total.size() && i < player_snapshot.rune_cooldown_total.size(); ++i) {
-            player.rune_cooldown_total[i] = player_snapshot.rune_cooldown_total[i];
-        }
-        for (size_t i = 0; i < player.rune_charge_counts.size() && i < player_snapshot.rune_charge_counts.size(); ++i) {
-            player.rune_charge_counts[i] = player_snapshot.rune_charge_counts[i];
-        }
-        for (size_t i = 0; i < player.weapon_slots.size() && i < player_snapshot.weapon_slots.size(); ++i) {
-            player.weapon_slots[i] = player_snapshot.weapon_slots[i];
-        }
+        auto known_name_it = known_player_names_.find(player_snapshot.id);
+        const std::string resolved_name =
+            known_name_it != known_player_names_.end() ? known_name_it->second : TextFormat("Player%d", player_snapshot.id);
+        SnapshotTranslation::ApplyPlayerSnapshot(&player, player_snapshot, resolved_name);
         if (has_previous_local_ui_state && player.id == state_.local_player_id) {
             player.rune_slots = previous_local_ui_state.rune_slots;
             player.selected_rune_slot = previous_local_ui_state.selected_rune_slot;
@@ -2836,6 +3220,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 upgrade_vfx.vel = {0.0f, 0.0f};
                 upgrade_vfx.acc = {0.0f, 0.0f};
                 upgrade_vfx.drag = 0.0f;
+                upgrade_vfx.size = 48.0f;
                 upgrade_vfx.animation_key = "static_upgrade";
                 upgrade_vfx.facing = "default";
                 upgrade_vfx.age_seconds = 0.0f;
@@ -2857,6 +3242,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             explosion_vfx.vel = {0.0f, 0.0f};
             explosion_vfx.acc = {0.0f, 0.0f};
             explosion_vfx.drag = 0.0f;
+            explosion_vfx.size = 32.0f;
+            explosion_vfx.alpha = 255;
             explosion_vfx.animation_key = "explosion";
             explosion_vfx.facing = "default";
             explosion_vfx.age_seconds = 0.0f;
@@ -3152,7 +3539,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                     PlaySfxIfVisible(sfx_player_death_.sound, sfx_player_death_.loaded, player.pos);
                 }
                 if (previous_state_it->second.action_state != PlayerActionState::Slashing &&
-                    player.action_state == PlayerActionState::Slashing) {
+                    player.action_state == PlayerActionState::Slashing && ShouldPlayImmediateMeleeSwingSfx(player)) {
                     PlaySfxIfVisible(sfx_melee_attack_.sound, sfx_melee_attack_.loaded, player.pos);
                 }
             }
@@ -3204,7 +3591,10 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 const float step_dt = pending_input.local_dt > 0.0f ? pending_input.local_dt
                                                                     : static_cast<float>(Constants::kFixedDt);
                 const float movement_multiplier = GetPlayerMovementSpeedMultiplier(replay);
-                const Vector2 acceleration = Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
+                const float base_acceleration = GetPlayerBaseAcceleration(replay);
+                const float acceleration_multiplier = GetPlayerAccelerationMultiplier(replay);
+                const Vector2 acceleration =
+                    Vector2Scale(movement, base_acceleration * movement_multiplier * acceleration_multiplier);
                 replay.vel = Vector2Add(replay.vel, Vector2Scale(acceleration, step_dt));
                 const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * step_dt);
                 replay.vel = Vector2Scale(replay.vel, damping);
@@ -3313,197 +3703,36 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
     snapshot.blue_team_kills = state_.match.blue_team_kills;
 
     for (const auto& player : state_.players) {
-        PlayerSnapshot player_snapshot;
-        player_snapshot.id = player.id;
-        player_snapshot.team = player.team;
-        player_snapshot.pos_x = player.pos.x;
-        player_snapshot.pos_y = player.pos.y;
-        player_snapshot.vel_x = player.vel.x;
-        player_snapshot.vel_y = player.vel.y;
-        player_snapshot.aim_dir_x = player.aim_dir.x;
-        player_snapshot.aim_dir_y = player.aim_dir.y;
-        player_snapshot.hp = player.hp;
-        player_snapshot.kills = player.kills;
-        player_snapshot.alive = player.alive;
-        player_snapshot.facing = static_cast<int>(player.facing);
-        player_snapshot.action_state = static_cast<int>(player.action_state);
-        player_snapshot.melee_active_remaining = player.melee_active_remaining;
-        player_snapshot.rune_placing_mode = player.rune_placing_mode;
-        player_snapshot.selected_rune_type = static_cast<int>(player.selected_rune_type);
-        player_snapshot.mana = player.mana;
-        player_snapshot.max_mana = player.max_mana;
-        player_snapshot.grappling_cooldown_remaining = player.grappling_cooldown_remaining;
-        player_snapshot.grappling_cooldown_total = player.grappling_cooldown_total;
-        player_snapshot.rune_cooldown_remaining.assign(player.rune_cooldown_remaining.begin(),
-                                                       player.rune_cooldown_remaining.end());
-        player_snapshot.rune_cooldown_total.assign(player.rune_cooldown_total.begin(), player.rune_cooldown_total.end());
-        player_snapshot.rune_charge_counts.assign(player.rune_charge_counts.begin(), player.rune_charge_counts.end());
-        player_snapshot.weapon_slots.assign(player.weapon_slots.begin(), player.weapon_slots.end());
-        for (const auto& status : player.status_effects) {
-            PlayerSnapshot::StatusEffectSnapshot status_snapshot;
-            status_snapshot.type = static_cast<int>(status.type);
-            status_snapshot.remaining_seconds = status.remaining_seconds;
-            status_snapshot.total_seconds = status.total_seconds;
-            status_snapshot.magnitude_per_second = status.magnitude_per_second;
-            status_snapshot.visible = status.visible;
-            status_snapshot.is_buff = status.is_buff;
-            status_snapshot.source_id = status.source_id;
-            status_snapshot.progress = status.progress;
-            status_snapshot.source_elapsed_seconds = status.source_elapsed_seconds;
-            status_snapshot.burn_duration_seconds = status.burn_duration_seconds;
-            status_snapshot.movement_speed_multiplier = status.movement_speed_multiplier;
-            status_snapshot.source_active = status.source_active;
-            status_snapshot.composite_effect_id = status.composite_effect_id;
-            player_snapshot.status_effects.push_back(status_snapshot);
-        }
-        player_snapshot.item_slots.assign(player.item_slots.begin(), player.item_slots.end());
-        player_snapshot.item_slot_counts.assign(player.item_slot_counts.begin(), player.item_slot_counts.end());
-        player_snapshot.item_slot_cooldown_remaining.assign(player.item_slot_cooldown_remaining.begin(),
-                                                            player.item_slot_cooldown_remaining.end());
-        player_snapshot.item_slot_cooldown_total.assign(player.item_slot_cooldown_total.begin(),
-                                                        player.item_slot_cooldown_total.end());
-        player_snapshot.awaiting_respawn = player.awaiting_respawn;
-        player_snapshot.respawn_remaining = player.respawn_remaining;
-        player_snapshot.last_processed_move_seq = player.last_processed_move_seq;
-        snapshot.players.push_back(player_snapshot);
+        snapshot.players.push_back(SnapshotTranslation::BuildPlayerSnapshot(player));
     }
 
     for (const auto& rune : state_.runes) {
-        RuneSnapshot rune_snapshot;
-        rune_snapshot.id = rune.id;
-        rune_snapshot.owner_player_id = rune.owner_player_id;
-        rune_snapshot.owner_team = rune.owner_team;
-        rune_snapshot.x = rune.cell.x;
-        rune_snapshot.y = rune.cell.y;
-        rune_snapshot.rune_type = static_cast<int>(rune.rune_type);
-        rune_snapshot.placement_order = rune.placement_order;
-        rune_snapshot.active = rune.active;
-        rune_snapshot.volatile_cast = rune.volatile_cast;
-        rune_snapshot.activation_total_seconds = rune.activation_total_seconds;
-        rune_snapshot.activation_remaining_seconds = rune.activation_remaining_seconds;
-        rune_snapshot.creates_influence_zone = rune.creates_influence_zone;
-        rune_snapshot.earth_trap_state = static_cast<int>(rune.earth_trap_state);
-        rune_snapshot.earth_state_time = rune.earth_state_time;
-        rune_snapshot.earth_state_duration = rune.earth_state_duration;
-        rune_snapshot.earth_roots_spawned = rune.earth_roots_spawned;
-        rune_snapshot.earth_roots_group_id = rune.earth_roots_group_id;
-        snapshot.runes.push_back(rune_snapshot);
+        snapshot.runes.push_back(SnapshotTranslation::BuildRuneSnapshot(rune));
     }
 
     for (const auto& projectile : state_.projectiles) {
-        ProjectileSnapshot projectile_snapshot;
-        projectile_snapshot.id = projectile.id;
-        projectile_snapshot.owner_player_id = projectile.owner_player_id;
-        projectile_snapshot.owner_team = projectile.owner_team;
-        projectile_snapshot.pos_x = projectile.pos.x;
-        projectile_snapshot.pos_y = projectile.pos.y;
-        projectile_snapshot.vel_x = projectile.vel.x;
-        projectile_snapshot.vel_y = projectile.vel.y;
-        projectile_snapshot.radius = projectile.radius;
-        projectile_snapshot.damage = projectile.damage;
-        projectile_snapshot.animation_key = projectile.animation_key;
-        projectile_snapshot.emitter_enabled = projectile.emitter_enabled;
-        projectile_snapshot.emitter_emit_every_frames = projectile.emitter_emit_every_frames;
-        projectile_snapshot.emitter_frame_counter = projectile.emitter_frame_counter;
-        projectile_snapshot.alive = projectile.alive;
-        snapshot.projectiles.push_back(projectile_snapshot);
+        snapshot.projectiles.push_back(SnapshotTranslation::BuildProjectileSnapshot(projectile));
     }
 
     for (const auto& wall : state_.ice_walls) {
-        IceWallSnapshot wall_snapshot;
-        wall_snapshot.id = wall.id;
-        wall_snapshot.owner_player_id = wall.owner_player_id;
-        wall_snapshot.owner_team = wall.owner_team;
-        wall_snapshot.cell_x = wall.cell.x;
-        wall_snapshot.cell_y = wall.cell.y;
-        wall_snapshot.state = static_cast<int>(wall.state);
-        wall_snapshot.state_time = wall.state_time;
-        wall_snapshot.hp = wall.hp;
-        wall_snapshot.alive = wall.alive;
-        snapshot.ice_walls.push_back(wall_snapshot);
+        snapshot.ice_walls.push_back(SnapshotTranslation::BuildIceWallSnapshot(wall));
     }
 
     for (const auto& object : state_.map_objects) {
-        MapObjectSnapshot object_snapshot;
-        object_snapshot.id = object.id;
-        object_snapshot.prototype_id = object.prototype_id;
-        object_snapshot.cell_x = object.cell.x;
-        object_snapshot.cell_y = object.cell.y;
-        object_snapshot.object_type = static_cast<int>(object.type);
-        object_snapshot.hp = object.hp;
-        object_snapshot.state = static_cast<int>(object.state);
-        object_snapshot.state_time = object.state_time;
-        object_snapshot.death_duration = object.death_duration;
-        object_snapshot.collision_enabled = object.collision_enabled;
-        object_snapshot.alive = object.alive;
-        snapshot.map_objects.push_back(object_snapshot);
+        snapshot.map_objects.push_back(SnapshotTranslation::BuildMapObjectSnapshot(object));
     }
 
     for (const auto& dummy : state_.fire_storm_dummies) {
-        FireStormDummySnapshot dummy_snapshot;
-        dummy_snapshot.id = dummy.id;
-        dummy_snapshot.owner_player_id = dummy.owner_player_id;
-        dummy_snapshot.owner_team = dummy.owner_team;
-        dummy_snapshot.cell_x = dummy.cell.x;
-        dummy_snapshot.cell_y = dummy.cell.y;
-        dummy_snapshot.state = static_cast<int>(dummy.state);
-        dummy_snapshot.state_time = dummy.state_time;
-        dummy_snapshot.state_duration = dummy.state_duration;
-        dummy_snapshot.idle_lifetime_remaining_seconds = dummy.idle_lifetime_remaining_seconds;
-        dummy_snapshot.alive = dummy.alive;
-        snapshot.fire_storm_dummies.push_back(dummy_snapshot);
+        snapshot.fire_storm_dummies.push_back(SnapshotTranslation::BuildFireStormDummySnapshot(dummy));
     }
     for (const auto& cast : state_.fire_storm_casts) {
-        FireStormCastSnapshot cast_snapshot;
-        cast_snapshot.id = cast.id;
-        cast_snapshot.owner_player_id = cast.owner_player_id;
-        cast_snapshot.owner_team = cast.owner_team;
-        cast_snapshot.center_cell_x = cast.center_cell.x;
-        cast_snapshot.center_cell_y = cast.center_cell.y;
-        cast_snapshot.elapsed_seconds = cast.elapsed_seconds;
-        cast_snapshot.duration_seconds = cast.duration_seconds;
-        cast_snapshot.alive = cast.alive;
-        snapshot.fire_storm_casts.push_back(cast_snapshot);
+        snapshot.fire_storm_casts.push_back(SnapshotTranslation::BuildFireStormCastSnapshot(cast));
     }
     for (const auto& group : state_.earth_roots_groups) {
-        EarthRootsGroupSnapshot roots_snapshot;
-        roots_snapshot.id = group.id;
-        roots_snapshot.owner_player_id = group.owner_player_id;
-        roots_snapshot.owner_team = group.owner_team;
-        roots_snapshot.center_cell_x = group.center_cell.x;
-        roots_snapshot.center_cell_y = group.center_cell.y;
-        roots_snapshot.state = static_cast<int>(group.state);
-        roots_snapshot.state_time = group.state_time;
-        roots_snapshot.state_duration = group.state_duration;
-        roots_snapshot.idle_lifetime_remaining_seconds = group.idle_lifetime_remaining_seconds;
-        roots_snapshot.active_for_gameplay = group.active_for_gameplay;
-        roots_snapshot.alive = group.alive;
-        snapshot.earth_roots_groups.push_back(roots_snapshot);
+        snapshot.earth_roots_groups.push_back(SnapshotTranslation::BuildEarthRootsGroupSnapshot(group));
     }
     for (const auto& hook : state_.grappling_hooks) {
-        GrapplingHookSnapshot hook_snapshot;
-        hook_snapshot.id = hook.id;
-        hook_snapshot.owner_player_id = hook.owner_player_id;
-        hook_snapshot.owner_team = hook.owner_team;
-        hook_snapshot.head_pos_x = hook.head_pos.x;
-        hook_snapshot.head_pos_y = hook.head_pos.y;
-        hook_snapshot.target_pos_x = hook.target_pos.x;
-        hook_snapshot.target_pos_y = hook.target_pos.y;
-        hook_snapshot.latch_point_x = hook.latch_point.x;
-        hook_snapshot.latch_point_y = hook.latch_point.y;
-        hook_snapshot.pull_destination_x = hook.pull_destination.x;
-        hook_snapshot.pull_destination_y = hook.pull_destination.y;
-        hook_snapshot.phase = static_cast<int>(hook.phase);
-        hook_snapshot.latch_target_type = static_cast<int>(hook.latch_target_type);
-        hook_snapshot.latch_target_id = hook.latch_target_id;
-        hook_snapshot.latch_cell_x = hook.latch_cell.x;
-        hook_snapshot.latch_cell_y = hook.latch_cell.y;
-        hook_snapshot.latched = hook.latched;
-        hook_snapshot.animation_time = hook.animation_time;
-        hook_snapshot.pull_elapsed_seconds = hook.pull_elapsed_seconds;
-        hook_snapshot.max_pull_duration_seconds = hook.max_pull_duration_seconds;
-        hook_snapshot.alive = hook.alive;
-        snapshot.grappling_hooks.push_back(hook_snapshot);
+        snapshot.grappling_hooks.push_back(SnapshotTranslation::BuildGrapplingHookSnapshot(hook));
     }
 
     return snapshot;
@@ -3652,7 +3881,8 @@ void GameApp::SimulateHostGameplay(float dt) {
 }
 
 void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& input, float dt) {
-    player.last_processed_move_seq = input.seq;
+    const ActionIntent intent = BuildActionIntent(input);
+    player.last_processed_move_seq = intent.seq;
 
     if (!player.alive) {
         player.vel = {0.0f, 0.0f};
@@ -3661,20 +3891,20 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         return;
     }
 
-    player.last_input_tick = input.tick;
+    player.last_input_tick = intent.tick;
     const bool is_stunned = HasStatusEffect(player, StatusEffectType::Stunned);
     const bool is_pulled = IsPlayerBeingPulled(player.id);
     bool inventory_editing = player.inventory_mode;
 
-    if (!is_stunned && !is_pulled && input.toggle_inventory_mode) {
+    if (!is_stunned && !is_pulled && intent.toggle_inventory_mode) {
         player.inventory_mode = !player.inventory_mode;
         if (!player.inventory_mode) {
             CancelInventoryDrag(player);
         }
         inventory_editing = player.inventory_mode;
     }
-    if (!is_stunned && !is_pulled && !inventory_editing && input.request_rune_type != static_cast<int>(RuneType::None)) {
-        const RuneType rune_type = static_cast<RuneType>(input.request_rune_type);
+    if (!is_stunned && !is_pulled && !inventory_editing && intent.request_rune_type != static_cast<int>(RuneType::None)) {
+        const RuneType rune_type = static_cast<RuneType>(intent.request_rune_type);
         const float mana_cost = GetRuneManaCost(rune_type);
         for (size_t i = 0; i < player.rune_slots.size(); ++i) {
             if (player.rune_slots[i] == rune_type) {
@@ -3687,7 +3917,7 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
                                    (GetPlayerRuneCooldownRemaining(player, rune_type) <= 0.0f) &&
                                    (player.mana >= mana_cost);
     }
-    Vector2 aim_vector = {input.aim_x - player.pos.x, input.aim_y - player.pos.y};
+    Vector2 aim_vector = {intent.aim_world.x - player.pos.x, intent.aim_world.y - player.pos.y};
     if (player.melee_active_remaining <= 0.0f && Vector2LengthSqr(aim_vector) > 0.0001f) {
         player.aim_dir = Vector2Normalize(aim_vector);
         player.facing = AimToFacing(player.aim_dir);
@@ -3705,39 +3935,48 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         player.item_slot_cooldown_remaining[i] = std::max(0.0f, player.item_slot_cooldown_remaining[i] - dt);
     }
 
-    if (!is_stunned && !is_pulled && !inventory_editing && !input.request_item_id.empty()) {
-        TryActivateItemById(player, input.request_item_id);
+    if (!is_stunned && !is_pulled && !inventory_editing && !intent.request_item_id.empty()) {
+        TryActivateItemById(player, intent.request_item_id);
     }
 
-    if (!is_stunned && !is_pulled && !inventory_editing && input.primary_pressed) {
+    const AttackProfile* attack_profile = GetEquippedPrimaryAttack(player);
+    if (!is_stunned && !is_pulled && !inventory_editing && intent.primary_pressed) {
         if (player.rune_placing_mode) {
-            if (TryPlaceRune(player, Vector2{input.aim_x, input.aim_y})) {
+            if (TryPlaceRune(player, intent.aim_world)) {
                 player.action_state = PlayerActionState::RunePlacing;
             }
-        } else if (PlayerHasEquippedWeapon(player, "sword_item") && player.melee_cooldown_remaining <= 0.0f) {
-            player.melee_cooldown_remaining = Constants::kMeleeCooldownSeconds;
-            player.melee_active_remaining = Constants::kMeleeActiveWindowSeconds;
+        } else if (attack_profile != nullptr && attack_profile->kind == EquipmentActionKind::Melee &&
+                   player.melee_cooldown_remaining <= 0.0f) {
+            player.melee_cooldown_remaining = attack_profile->cooldown_seconds;
+            player.melee_active_remaining = attack_profile->active_window_seconds;
             player.melee_hit_target_ids.clear();
             player.melee_hit_object_ids.clear();
-            player.action_state = PlayerActionState::Slashing;
-            PlaySfxIfVisible(sfx_melee_attack_.sound, sfx_melee_attack_.loaded, player.pos);
+            player.action_state = attack_profile->action_state;
+            if (ShouldPlayImmediateMeleeSwingSfx(player)) {
+                PlaySfxIfVisible(sfx_melee_attack_.sound, sfx_melee_attack_.loaded, player.pos);
+            }
         }
     }
 
-    if (!is_stunned && !is_pulled && !inventory_editing && input.grappling_pressed && !player.rune_placing_mode &&
+    const MobilityProfile* mobility_profile = GetEquippedMobility(player);
+    if (!is_stunned && !is_pulled && !inventory_editing && intent.mobility_pressed && !player.rune_placing_mode &&
+        mobility_profile != nullptr && mobility_profile->kind == EquipmentActionKind::GrapplingHook &&
         player.grappling_cooldown_remaining <= 0.0f) {
-        TryStartGrapplingHook(player, Vector2{input.aim_x, input.aim_y});
+        TryStartGrapplingHook(player, intent.aim_world);
     }
 
-    Vector2 movement = {input.move_x, input.move_y};
+    Vector2 movement = intent.move;
     if (Vector2LengthSqr(movement) > 0.0001f) {
         movement = Vector2Normalize(movement);
     }
 
     const float movement_multiplier = GetPlayerMovementSpeedMultiplier(player);
+    const float base_acceleration = GetPlayerBaseAcceleration(player);
+    const float acceleration_multiplier = GetPlayerAccelerationMultiplier(player);
     Vector2 acceleration = (is_stunned || is_pulled || inventory_editing)
                                ? Vector2{0.0f, 0.0f}
-                               : Vector2Scale(movement, Constants::kPlayerAcceleration * movement_multiplier);
+                               : Vector2Scale(movement, base_acceleration * movement_multiplier *
+                                                            acceleration_multiplier);
     player.vel = Vector2Add(player.vel, Vector2Scale(acceleration, dt));
 
     const float damping = std::max(0.0f, 1.0f - Constants::kPlayerFriction * dt);
@@ -3926,6 +4165,39 @@ float GameApp::GetPlayerMovementSpeedMultiplier(const Player& player) const {
     return multiplier;
 }
 
+float GameApp::GetPlayerBaseAcceleration(const Player& player) const {
+    float acceleration = Constants::kPlayerAcceleration;
+    const EquipmentItemDefinition* item =
+        equipment_registry_.ResolveEquippedItem(player, EquipmentSlot::PrimaryWeapon);
+    if (item != nullptr && item->id == "hammer_item") {
+        acceleration = std::max(0.0f, acceleration - Constants::kHammerAccelerationPenalty);
+    }
+    return acceleration;
+}
+
+float GameApp::GetPlayerAccelerationMultiplier(const Player& player) const {
+    const AttackProfile* attack_profile = GetEquippedPrimaryAttack(player);
+    const EquipmentItemDefinition* item =
+        equipment_registry_.ResolveEquippedItem(player, EquipmentSlot::PrimaryWeapon);
+    if (attack_profile == nullptr || attack_profile->kind != EquipmentActionKind::Melee || item == nullptr ||
+        item->id != "hammer_item" || player.melee_active_remaining <= 0.0f) {
+        return 1.0f;
+    }
+
+    const float attack_elapsed = attack_profile->active_window_seconds - player.melee_active_remaining;
+    float impact_time_seconds = attack_profile->hit_start_seconds;
+    const std::string attack_tag = ResolvePrimaryWeaponAttackModularTag(player);
+    if (!attack_tag.empty()) {
+        const float modular_impact_time =
+            GetModularTagFrameStartSeconds(attack_tag, Constants::kHammerImpactEventFrame - 1);
+        if (modular_impact_time > 0.0f) {
+            impact_time_seconds = std::min(attack_profile->active_window_seconds, modular_impact_time);
+        }
+    }
+
+    return attack_elapsed < impact_time_seconds ? Constants::kHammerAnticipationAccelerationMultiplier : 1.0f;
+}
+
 void GameApp::UpdateDamagePopups(float dt) {
     for (auto& popup : state_.damage_popups) {
         if (!popup.alive) {
@@ -3960,33 +4232,87 @@ const ObjectPrototype* GameApp::FindObjectPrototype(const std::string& prototype
     return objects_database_.FindById(prototype_id);
 }
 
-void GameApp::SpawnObjectInstanceAtCell(const std::string& prototype_id, const GridCoord& cell) {
+int GameApp::SpawnObjectInstanceAtCell(const std::string& prototype_id, const GridCoord& cell, int forced_id) {
     const ObjectPrototype* proto = FindObjectPrototype(prototype_id);
     if (proto == nullptr || proto->type == ObjectType::Terrain) {
-        return;
+        return -1;
     }
     if (!state_.map.IsInside(cell)) {
-        return;
+        return -1;
     }
 
     MapObjectInstance object;
-    object.id = state_.next_entity_id++;
+    object.id = forced_id > 0 ? forced_id : state_.next_entity_id++;
+    if (forced_id > 0) {
+        state_.next_entity_id = std::max(state_.next_entity_id, forced_id + 1);
+    }
     object.prototype_id = prototype_id;
     object.cell = cell;
     object.type = proto->type;
     object.walkable = proto->walkable;
     object.stops_projectiles = proto->stops_projectiles;
     object.collision_enabled = (!proto->walkable || proto->stops_projectiles);
-    object.hp = proto->destructible_hp;
+    if (proto->type == ObjectType::Destructible) {
+        object.hp = proto->destructible_hp;
+    } else if (proto->type == ObjectType::Unit) {
+        object.hp = proto->unit_hp;
+    } else {
+        object.hp = 0;
+    }
     object.state = MapObjectState::Active;
     object.state_time = 0.0f;
     object.death_duration = 0.0f;
     object.alive = true;
     state_.map_objects.push_back(object);
+    return object.id;
+}
+
+int GameApp::SpawnDroppedEquipmentItem(const std::string& prototype_id, const GridCoord& cell,
+                                       std::optional<int> blocked_player_id) {
+    const int reserved_object_id = state_.next_entity_id++;
+    pending_object_spawns_.push_back({prototype_id, cell, blocked_player_id, reserved_object_id});
+    return reserved_object_id;
+}
+
+void GameApp::RegisterPickupBlockForDroppedObject(int object_instance_id, int blocked_player_id, Vector2 origin_world,
+                                                  float unlock_radius) {
+    if (object_instance_id < 0 || blocked_player_id < 0) {
+        return;
+    }
+    dropped_item_pickup_blocks_[object_instance_id] =
+        DroppedItemPickupBlock{object_instance_id, blocked_player_id, origin_world, unlock_radius};
+}
+
+bool GameApp::CanPlayerPickUpObject(const Player& player, const MapObjectInstance& object) const {
+    if (const auto block_it = dropped_item_pickup_blocks_.find(object.id); block_it != dropped_item_pickup_blocks_.end()) {
+        if (block_it->second.blocked_player_id == player.id) {
+            return false;
+        }
+    }
+
+    const EquipmentItemDefinition* equipment_item = equipment_registry_.FindItem(object.prototype_id);
+    if (equipment_item != nullptr && equipment_item->slot != EquipmentSlot::Inventory) {
+        return Vector2Distance(player.pos, CellToWorldCenter(object.cell)) <= Constants::kDroppedEquipmentPickupRadius;
+    }
+    return true;
+}
+
+void GameApp::UpdateDroppedItemPickupBlocks() {
+    for (auto it = dropped_item_pickup_blocks_.begin(); it != dropped_item_pickup_blocks_.end();) {
+        const MapObjectInstance* object = FindMapObjectById(it->second.object_instance_id);
+        const Player* player = FindPlayerById(it->second.blocked_player_id);
+        if (object == nullptr || !object->alive || player == nullptr || !player->alive ||
+            Vector2Distance(player->pos, it->second.origin_world) > it->second.unlock_radius) {
+            it = dropped_item_pickup_blocks_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void GameApp::RebuildMapObjectsFromSeeds() {
     state_.map_objects.clear();
+    dropped_item_pickup_blocks_.clear();
     for (const auto& seed : state_.map.object_seeds) {
         SpawnObjectInstanceAtCell(seed.prototype_id, seed.cell);
     }
@@ -4164,38 +4490,44 @@ void GameApp::ResolvePlayerVsMapObjects(Player& player) {
     }
 }
 
-bool GameApp::ApplyObjectDamage(int object_instance_id, int amount, int /*source_player_id*/, const char* /*source*/) {
+bool GameApp::ApplyObjectDamage(int object_instance_id, int amount, int /*source_player_id*/, const char* source,
+                                std::optional<Vector2> damage_world_pos) {
     MapObjectInstance* object = FindMapObjectById(object_instance_id);
     if (object == nullptr || !object->alive || amount <= 0 || object->hp <= 0) {
         return false;
     }
 
     const ObjectPrototype* proto = FindObjectPrototype(object->prototype_id);
-    if (proto == nullptr || proto->type != ObjectType::Destructible) {
+    if (proto == nullptr || (proto->type != ObjectType::Destructible && proto->type != ObjectType::Unit)) {
         return false;
     }
 
     object->hp = std::max(0, object->hp - amount);
-    SpawnDamagePopup(CellToWorldCenter(object->cell), amount, false);
+    const Vector2 object_world_pos = CellToWorldCenter(object->cell);
+    SpawnDamagePopup(object_world_pos, amount, false);
+    SpawnDamageHitParticles(object_world_pos, damage_world_pos);
 
+    const bool is_melee_hit = (source != nullptr && std::strcmp(source, "melee") == 0);
     if (object->hp > 0) {
+        const LoadedSfx& hit_sfx = is_melee_hit ? sfx_player_damaged_ : sfx_static_bolt_impact_;
+        PlaySfxIfVisible(hit_sfx.sound, hit_sfx.loaded, object_world_pos);
         return true;
     }
 
-    PlaySfxIfVisible(sfx_vase_breaking_.sound, sfx_vase_breaking_.loaded, CellToWorldCenter(object->cell));
+    if (proto->type == ObjectType::Unit) {
+        object->collision_enabled = false;
+        object->alive = false;
+        return true;
+    }
+
+    PlaySfxIfVisible(sfx_vase_breaking_.sound, sfx_vase_breaking_.loaded, object_world_pos);
 
     object->collision_enabled = false;
 
-    for (const DropEntry& drop : proto->on_destroy_drops) {
-        std::uniform_real_distribution<float> chance_dist(0.0f, 1.0f);
-        if (chance_dist(rng_) > drop.chance) {
-            continue;
-        }
-        const int min_count = std::max(1, drop.min_count);
-        const int max_count = std::max(min_count, drop.max_count);
-        std::uniform_int_distribution<int> count_dist(min_count, max_count);
-        const int count = count_dist(rng_);
-        for (int i = 0; i < count; ++i) {
+    const std::vector<LootSpawn> resolved_drops =
+        loot_table_library_.ResolveDrops(object->prototype_id, proto->on_destroy_drops, &loot_quota_remaining_, rng_);
+    for (const LootSpawn& drop : resolved_drops) {
+        for (int i = 0; i < std::max(1, drop.count); ++i) {
             pending_object_spawns_.push_back({drop.object_id, object->cell});
         }
     }
@@ -4250,11 +4582,11 @@ bool GameApp::TryConsumeObject(int object_instance_id, int player_id) {
         return true;
     }
 
-    if (object->prototype_id == "sword_item") {
-        if (PlayerHasEquippedWeapon(*player, "sword_item")) {
+    if (const EquipmentItemDefinition* equipment_item = equipment_registry_.FindItem(object->prototype_id);
+        equipment_item != nullptr && equipment_item->slot != EquipmentSlot::Inventory) {
+        if (!TryEquipItem(*player, object->prototype_id, object)) {
             return false;
         }
-        player->weapon_slots[0] = "sword_item";
         object->collision_enabled = false;
         object->alive = false;
         PlaySfxIfVisible(sfx_item_pickup_.sound, sfx_item_pickup_.loaded, CellToWorldCenter(object->cell));
@@ -4572,6 +4904,8 @@ void GameApp::RefreshOrAddRootedStatus(Player& player, int source_id) {
 }
 
 void GameApp::UpdateMapObjects(float dt) {
+    UpdateDroppedItemPickupBlocks();
+
     for (auto& object : state_.map_objects) {
         if (!object.alive) {
             continue;
@@ -4596,6 +4930,9 @@ void GameApp::UpdateMapObjects(float dt) {
                 if (!CollisionWorld::AabbVsAabb(GetPlayerCollisionRect(player), aabb, normal, penetration)) {
                     continue;
                 }
+                if (!CanPlayerPickUpObject(player, object)) {
+                    continue;
+                }
                 TryConsumeObject(object.id, player.id);
                 break;
             }
@@ -4603,7 +4940,12 @@ void GameApp::UpdateMapObjects(float dt) {
     }
 
     for (const auto& pending : pending_object_spawns_) {
-        SpawnObjectInstanceAtCell(pending.prototype_id, pending.cell);
+        const int object_id = SpawnObjectInstanceAtCell(pending.prototype_id, pending.cell, pending.reserved_object_id);
+        if (object_id >= 0 && pending.blocked_player_id.has_value()) {
+            RegisterPickupBlockForDroppedObject(
+                object_id, *pending.blocked_player_id, CellToWorldCenter(pending.cell),
+                Constants::kDroppedEquipmentPickupRadius * Constants::kDroppedEquipmentPickupUnlockRadiusMultiplier);
+        }
     }
     pending_object_spawns_.clear();
 
@@ -4629,7 +4971,7 @@ void GameApp::SpawnDamagePopup(Vector2 world_pos, int amount, bool is_heal) {
 }
 
 bool GameApp::ApplyDamageToPlayer(Player& target, int attacker_player_id, int damage, const char* source,
-                                  bool count_kill_for_attacker) {
+                                  bool count_kill_for_attacker, std::optional<Vector2> damage_world_pos) {
     if (!target.alive || damage <= 0) {
         return false;
     }
@@ -4638,6 +4980,7 @@ bool GameApp::ApplyDamageToPlayer(Player& target, int attacker_player_id, int da
     target.hp = std::max(0, target.hp - damage);
     event_queue_.Push(PlayerHitEvent{attacker_player_id, target.id, damage, source != nullptr ? source : "unknown"});
     SpawnDamagePopup(target.pos, damage, false);
+    SpawnDamageHitParticles(target.pos, damage_world_pos);
     if (IsOutsideZoneDamageSource(source)) {
         std::vector<size_t> loaded_indices;
         loaded_indices.reserve(sfx_zone_damage_.size());
@@ -4813,6 +5156,17 @@ void GameApp::UpdateRunes(float dt) {
                     }
                 }
                 if (!enemy_in_range) {
+                    for (const auto& object : state_.map_objects) {
+                        if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit) {
+                            continue;
+                        }
+                        if (Vector2Distance(CellToWorldCenter(object.cell), rune_center) <= trigger_radius) {
+                            enemy_in_range = true;
+                            break;
+                        }
+                    }
+                }
+                if (!enemy_in_range) {
                     break;
                 }
                 rune.earth_trap_state = EarthRuneTrapState::Slamming;
@@ -4938,6 +5292,23 @@ void GameApp::UpdateEarthRootsGroups(float dt) {
                     RefreshOrAddRootedStatus(player, group.id);
                 }
             }
+
+            for (auto& object : state_.map_objects) {
+                if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit) {
+                    continue;
+                }
+                if (std::abs(object.cell.x - group.center_cell.x) <= 1 &&
+                    std::abs(object.cell.y - group.center_cell.y) <= 1) {
+                    float& accumulated_damage = rooted_unit_damage_accumulators_[object.id];
+                    accumulated_damage += Constants::kEarthRootedDamagePerSecond * dt;
+                    const int whole_damage = static_cast<int>(std::floor(accumulated_damage + 0.0001f));
+                    if (whole_damage > 0) {
+                        accumulated_damage -= static_cast<float>(whole_damage);
+                        ApplyObjectDamage(object.id, whole_damage, group.owner_player_id, "earth_roots",
+                                          CellToWorldCenter(group.center_cell));
+                    }
+                }
+            }
         }
 
         group.state_time += dt;
@@ -5011,6 +5382,15 @@ void GameApp::UpdateEarthRootsGroups(float dt) {
         std::remove_if(state_.earth_roots_groups.begin(), state_.earth_roots_groups.end(),
                        [](const EarthRootsGroup& group) { return !group.alive; }),
         state_.earth_roots_groups.end());
+
+    for (auto it = rooted_unit_damage_accumulators_.begin(); it != rooted_unit_damage_accumulators_.end();) {
+        const MapObjectInstance* object = FindMapObjectById(it->first);
+        if (object == nullptr || !object->alive || object->type != ObjectType::Unit || object->hp <= 0) {
+            it = rooted_unit_damage_accumulators_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void GameApp::RebuildInfluenceZones() {
@@ -5225,6 +5605,7 @@ void GameApp::UpdateProjectiles(float dt) {
                     upgrade_vfx.vel = {0.0f, 0.0f};
                     upgrade_vfx.acc = {0.0f, 0.0f};
                     upgrade_vfx.drag = 0.0f;
+                    upgrade_vfx.size = 48.0f;
                     upgrade_vfx.animation_key = "static_upgrade";
                     upgrade_vfx.facing = "default";
                     upgrade_vfx.age_seconds = 0.0f;
@@ -5259,7 +5640,7 @@ void GameApp::UpdateProjectiles(float dt) {
                     continue;
                 }
 
-                ApplyObjectDamage(object.id, projectile.damage, projectile.owner_player_id, "projectile");
+                ApplyObjectDamage(object.id, projectile.damage, projectile.owner_player_id, "projectile", projectile.pos);
                 destroy_projectile = true;
                 break;
             }
@@ -5290,6 +5671,9 @@ void GameApp::UpdateProjectiles(float dt) {
         }
 
         if (!destroy_projectile) {
+            HitShapeDefinition projectile_hit_shape;
+            projectile_hit_shape.type = HitShapeType::Circle;
+            projectile_hit_shape.radius = projectile.radius;
             for (auto& target : state_.players) {
                 if (!target.alive || target.team == projectile.owner_team || target.id == projectile.owner_player_id) {
                     continue;
@@ -5297,14 +5681,15 @@ void GameApp::UpdateProjectiles(float dt) {
 
                 Vector2 normal = {0.0f, 0.0f};
                 float penetration = 0.0f;
-                if (!CollisionWorld::CircleVsAabb(projectile.pos, projectile.radius, GetPlayerCollisionRect(target),
-                                                  normal, penetration)) {
+                if (!HitShapeLibrary::OverlapsAabb(projectile_hit_shape, projectile.pos, 0.0f, GetPlayerCollisionRect(target),
+                                                   &normal, &penetration)) {
                     continue;
                 }
 
                 destroy_projectile = true;
                 excluded_target_id = target.id;
-                ApplyDamageToPlayer(target, projectile.owner_player_id, projectile.damage, "fire_bolt", true);
+                ApplyDamageToPlayer(target, projectile.owner_player_id, projectile.damage, "fire_bolt", true,
+                                    projectile.pos);
                 if (IsStaticFireBolt(projectile)) {
                     AddStunnedStatus(target, Constants::kStaticFireBoltStunSeconds);
                 }
@@ -5365,6 +5750,8 @@ void GameApp::SpawnProjectileExplosion(const Projectile& projectile, std::option
     explosion_vfx.vel = {0.0f, 0.0f};
     explosion_vfx.acc = {0.0f, 0.0f};
     explosion_vfx.drag = 0.0f;
+    explosion_vfx.size = 32.0f;
+    explosion_vfx.alpha = 255;
     explosion_vfx.animation_key = "explosion";
     explosion_vfx.facing = "default";
     explosion_vfx.age_seconds = 0.0f;
@@ -5384,6 +5771,9 @@ void GameApp::UpdateExplosions(float dt) {
         }
 
         explosion.age_seconds += dt;
+        HitShapeDefinition explosion_hit_shape;
+        explosion_hit_shape.type = HitShapeType::Circle;
+        explosion_hit_shape.radius = explosion.radius;
 
         for (auto& target : state_.players) {
             if (!target.alive || target.team == explosion.owner_team || target.id == explosion.owner_player_id) {
@@ -5396,13 +5786,14 @@ void GameApp::UpdateExplosions(float dt) {
 
             Vector2 normal = {0.0f, 0.0f};
             float penetration = 0.0f;
-            if (!CollisionWorld::CircleVsAabb(explosion.pos, explosion.radius, GetPlayerCollisionRect(target), normal,
-                                              penetration)) {
+            if (!HitShapeLibrary::OverlapsAabb(explosion_hit_shape, explosion.pos, 0.0f, GetPlayerCollisionRect(target),
+                                               &normal, &penetration)) {
                 continue;
             }
 
             explosion.already_hit_target_ids.push_back(target.id);
-            ApplyDamageToPlayer(target, explosion.owner_player_id, explosion.damage, "fire_bolt_explosion", true);
+            ApplyDamageToPlayer(target, explosion.owner_player_id, explosion.damage, "fire_bolt_explosion", true,
+                                explosion.pos);
         }
 
         if (explosion.age_seconds >= explosion.duration_seconds) {
@@ -5535,7 +5926,9 @@ bool GameApp::IsPlayerBeingPulled(int player_id) const {
 }
 
 bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world, bool play_audio) {
-    if (!player.alive || player.grappling_cooldown_remaining > 0.0f || IsPlayerBeingPulled(player.id)) {
+    const MobilityProfile* mobility_profile = GetEquippedMobility(player);
+    if (!player.alive || player.grappling_cooldown_remaining > 0.0f || IsPlayerBeingPulled(player.id) ||
+        mobility_profile == nullptr || mobility_profile->kind != EquipmentActionKind::GrapplingHook) {
         return false;
     }
 
@@ -5544,7 +5937,7 @@ bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world, bool p
         delta = {1.0f, 0.0f};
     }
     const Vector2 direction = Vector2Normalize(delta);
-    const float max_distance = Constants::kGrapplingHookRangeTiles * static_cast<float>(state_.map.cell_size);
+    const float max_distance = mobility_profile->range_tiles * static_cast<float>(state_.map.cell_size);
     const Vector2 clamped_target = Vector2Add(player.pos, Vector2Scale(direction, max_distance));
     const Vector2 collision_offset = {0.0f, -0.5f * static_cast<float>(state_.map.cell_size)};
 
@@ -5627,8 +6020,8 @@ bool GameApp::TryStartGrapplingHook(Player& player, Vector2 target_world, bool p
         }
     }
 
-    player.grappling_cooldown_remaining = Constants::kGrapplingHookCooldownSeconds;
-    player.grappling_cooldown_total = Constants::kGrapplingHookCooldownSeconds;
+    player.grappling_cooldown_remaining = mobility_profile->cooldown_seconds;
+    player.grappling_cooldown_total = mobility_profile->cooldown_seconds;
     player.rune_placing_mode = false;
     player.inventory_mode = false;
     state_.grappling_hooks.push_back(hook);
@@ -5931,6 +6324,50 @@ void GameApp::UpdateProjectileEmitters() {
     }
 }
 
+void GameApp::SpawnDamageHitParticles(Vector2 target_pos, std::optional<Vector2> damage_world_pos) {
+    Vector2 damage_dir = {0.0f, -1.0f};
+    if (damage_world_pos.has_value()) {
+        Vector2 delta = Vector2Subtract(target_pos, *damage_world_pos);
+        if (Vector2LengthSqr(delta) > 0.0001f) {
+            damage_dir = Vector2Normalize(delta);
+        }
+    }
+
+    std::uniform_real_distribution<float> spread_dist(-Constants::kDamageHitParticleSpreadRadians,
+                                                      Constants::kDamageHitParticleSpreadRadians);
+    std::uniform_real_distribution<float> speed_dist(Constants::kDamageHitParticleBaseSpeed -
+                                                         Constants::kDamageHitParticleSpeedJitter,
+                                                     Constants::kDamageHitParticleBaseSpeed +
+                                                         Constants::kDamageHitParticleSpeedJitter);
+    std::uniform_real_distribution<float> size_dist(Constants::kDamageHitParticleBaseSize -
+                                                        Constants::kDamageHitParticleSizeJitter,
+                                                    Constants::kDamageHitParticleBaseSize +
+                                                        Constants::kDamageHitParticleSizeJitter);
+    std::uniform_real_distribution<float> pos_jitter_dist(-4.0f, 4.0f);
+
+    const float base_angle = std::atan2(damage_dir.y, damage_dir.x);
+    for (int i = 0; i < Constants::kDamageHitParticlesPerBurst; ++i) {
+        const float angle = base_angle + spread_dist(visual_rng_);
+        const float speed = std::max(0.0f, speed_dist(visual_rng_));
+        Particle particle;
+        particle.pos = {target_pos.x + pos_jitter_dist(visual_rng_), target_pos.y + pos_jitter_dist(visual_rng_)};
+        particle.vel = {std::cos(angle) * speed, std::sin(angle) * speed};
+        particle.acc = {0.0f, 0.0f};
+        particle.drag = 0.0f;
+        particle.velocity_decay = Constants::kDamageHitParticleVelocityDecay;
+        particle.size = std::max(6.0f, size_dist(visual_rng_));
+        particle.size_decay = Constants::kDamageHitParticleSizeDecay;
+        particle.lifetime_seconds = Constants::kDamageHitParticleLifetimeSeconds;
+        particle.alpha = 255;
+        particle.animation_key = "particle_hit_general";
+        particle.facing = "default";
+        particle.age_seconds = 0.0f;
+        particle.max_cycles = 1;
+        particle.alive = true;
+        state_.particles.push_back(particle);
+    }
+}
+
 void GameApp::UpdateParticles(float dt) {
     for (auto& particle : state_.particles) {
         if (!particle.alive) {
@@ -5938,15 +6375,24 @@ void GameApp::UpdateParticles(float dt) {
         }
 
         particle.vel = Vector2Add(particle.vel, Vector2Scale(particle.acc, dt));
+        if (particle.velocity_decay > 0.0f) {
+            particle.vel = Vector2Scale(particle.vel, std::exp(-particle.velocity_decay * dt));
+        }
         const float drag_factor = std::max(0.0f, 1.0f - particle.drag * dt);
         particle.vel = Vector2Scale(particle.vel, drag_factor);
         particle.pos = Vector2Add(particle.pos, Vector2Scale(particle.vel, dt));
+        if (particle.size_decay > 0.0f) {
+            particle.size = std::max(0.0f, particle.size * std::exp(-particle.size_decay * dt));
+        }
         particle.age_seconds += dt;
 
         int frame_count = 0;
         float fps = 1.0f;
-        float lifetime_seconds = 0.33f * static_cast<float>(std::max(1, particle.max_cycles));
-        if (sprite_metadata_.GetAnimationStats(particle.animation_key, particle.facing, frame_count, fps)) {
+        float lifetime_seconds = particle.lifetime_seconds > 0.0f
+                                     ? particle.lifetime_seconds
+                                     : (0.33f * static_cast<float>(std::max(1, particle.max_cycles)));
+        if (particle.lifetime_seconds <= 0.0f &&
+            sprite_metadata_.GetAnimationStats(particle.animation_key, particle.facing, frame_count, fps)) {
             const float cycle_seconds = static_cast<float>(frame_count) / std::max(0.001f, fps);
             lifetime_seconds = cycle_seconds * static_cast<float>(std::max(1, particle.max_cycles));
         }
@@ -5958,6 +6404,40 @@ void GameApp::UpdateParticles(float dt) {
     state_.particles.erase(std::remove_if(state_.particles.begin(), state_.particles.end(),
                                           [](const Particle& particle) { return !particle.alive; }),
                            state_.particles.end());
+}
+
+void GameApp::UpdateHammerImpactEffects(float dt) {
+    for (auto& effect : hammer_impact_effects_) {
+        if (!effect.alive) {
+            continue;
+        }
+        effect.age_seconds += dt;
+        if (effect.age_seconds >= effect.duration_seconds) {
+            effect.alive = false;
+        }
+    }
+
+    hammer_impact_effects_.erase(
+        std::remove_if(hammer_impact_effects_.begin(), hammer_impact_effects_.end(),
+                       [](const HammerImpactEffect& effect) { return !effect.alive; }),
+        hammer_impact_effects_.end());
+}
+
+void GameApp::SpawnHammerImpactEffect(Vector2 world_pos) {
+    if (!sprite_metadata_128x128_.IsLoaded() || !sprite_metadata_128x128_.HasAnimation("hammer_impact")) {
+        return;
+    }
+
+    int frame_count = 0;
+    float fps = 1.0f;
+    if (!sprite_metadata_128x128_.GetAnimationStats("hammer_impact", "default", frame_count, fps) || frame_count <= 0) {
+        return;
+    }
+
+    HammerImpactEffect effect;
+    effect.world_pos = world_pos;
+    effect.duration_seconds = static_cast<float>(frame_count) / std::max(0.001f, fps);
+    hammer_impact_effects_.push_back(effect);
 }
 
 void GameApp::ResolvePlayerCollisions() {
@@ -5998,12 +6478,21 @@ void GameApp::ResolvePlayerCollisions() {
 }
 
 void GameApp::HandleMeleeHit(Player& attacker) {
-    const float attack_elapsed = Constants::kMeleeActiveWindowSeconds - attacker.melee_active_remaining;
-    if (attack_elapsed < Constants::kMeleeHitStartSeconds || attack_elapsed > Constants::kMeleeHitEndSeconds) {
+    const AttackProfile* attack_profile = GetEquippedPrimaryAttack(attacker);
+    if (attack_profile == nullptr || attack_profile->kind != EquipmentActionKind::Melee) {
         return;
     }
 
-    const Vector2 hit_center = Vector2Add(attacker.pos, Vector2Scale(attacker.aim_dir, Constants::kMeleeRange));
+    const float attack_elapsed = attack_profile->active_window_seconds - attacker.melee_active_remaining;
+    if (attack_elapsed < attack_profile->hit_start_seconds || attack_elapsed > attack_profile->hit_end_seconds) {
+        return;
+    }
+
+    const HitShapeDefinition* hit_shape = hit_shape_library_.FindById(attack_profile->hit_shape_id);
+    if (hit_shape == nullptr) {
+        return;
+    }
+    const float rotation = std::atan2(attacker.aim_dir.y, attacker.aim_dir.x);
 
     for (auto& target : state_.players) {
         if (!target.alive || target.team == attacker.team || target.id == attacker.id) {
@@ -6016,12 +6505,12 @@ void GameApp::HandleMeleeHit(Player& attacker) {
 
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (!CollisionWorld::CircleVsAabb(hit_center, Constants::kMeleeHitRadius, GetPlayerCollisionRect(target), normal,
-                                          penetration)) {
+        if (!HitShapeLibrary::OverlapsAabb(*hit_shape, attacker.pos, rotation, GetPlayerCollisionRect(target), &normal,
+                                           &penetration)) {
             continue;
         }
 
-        ApplyDamageToPlayer(target, attacker.id, Constants::kMeleeDamage, "melee", true);
+        ApplyDamageToPlayer(target, attacker.id, attack_profile->damage, "melee", true, attacker.pos);
         attacker.melee_hit_target_ids.push_back(target.id);
     }
 
@@ -6037,11 +6526,11 @@ void GameApp::HandleMeleeHit(Player& attacker) {
         const Rectangle aabb = GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id), state_.map.cell_size);
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (!CollisionWorld::CircleVsAabb(hit_center, Constants::kMeleeHitRadius, aabb, normal, penetration)) {
+        if (!HitShapeLibrary::OverlapsAabb(*hit_shape, attacker.pos, rotation, aabb, &normal, &penetration)) {
             continue;
         }
 
-        if (ApplyObjectDamage(object.id, Constants::kMeleeDamage, attacker.id, "melee")) {
+        if (ApplyObjectDamage(object.id, attack_profile->damage, attacker.id, "melee", attacker.pos)) {
             attacker.melee_hit_object_ids.push_back(object.id);
         }
     }
@@ -6055,7 +6544,7 @@ void GameApp::HandleMeleeHit(Player& attacker) {
                                 static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)};
         Vector2 normal = {0.0f, 0.0f};
         float penetration = 0.0f;
-        if (!CollisionWorld::CircleVsAabb(hit_center, Constants::kMeleeHitRadius, aabb, normal, penetration)) {
+        if (!HitShapeLibrary::OverlapsAabb(*hit_shape, attacker.pos, rotation, aabb, &normal, &penetration)) {
             continue;
         }
 
@@ -6382,28 +6871,21 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
     for (const auto& match : pending_matches) {
         event_queue_.Push(RunePatternCompletedEvent{match.spell_name, match.direction, match.cast_origin, match.matched_cells});
 
-        if (match.spell_name == "fire_bolt") {
-            FireBoltSpell spell(CellToWorldCenter(match.cast_origin), event.player_id, match.direction,
-                                match.static_fire_bolt);
-            spell.Cast(state_, event_queue_);
+        const SpellRuntimeMatch runtime_match = {
+            match.spell_name,
+            event.player_id,
+            event.team,
+            match.direction,
+            match.cast_origin,
+            match.static_fire_bolt,
+        };
+
+        const bool cast_succeeded = CastRuntimeSpell(runtime_match);
+        if (cast_succeeded && match.spell_name == "fire_bolt") {
             PlaySfxIfVisible(sfx_fireball_created_.sound, sfx_fireball_created_.loaded, CellToWorldCenter(match.cast_origin));
-        } else if (match.spell_name == "ice_wall") {
-            IceWallSpell spell(match.cast_origin, event.player_id, match.direction);
-            spell.Cast(state_, event_queue_);
+        } else if (cast_succeeded && match.spell_name == "ice_wall") {
             PlaySfxIfVisible(sfx_ice_wall_freeze_.sound, sfx_ice_wall_freeze_.loaded, CellToWorldCenter(match.cast_origin));
-        } else if (match.spell_name == "fire_storm") {
-            FireStormCast cast;
-            cast.id = state_.next_entity_id++;
-            cast.owner_player_id = event.player_id;
-            cast.owner_team = event.team;
-            cast.center_cell = match.cast_origin;
-            cast.elapsed_seconds = 0.0f;
-            cast.duration_seconds = GetCompositeEffectDurationSeconds("fire_storm_cast");
-            if (cast.duration_seconds <= 0.0f) {
-                cast.duration_seconds = 1.0f;
-            }
-            cast.alive = true;
-            state_.fire_storm_casts.push_back(cast);
+        } else if (cast_succeeded && match.spell_name == "fire_storm") {
             PlaySfxIfVisible(sfx_fire_storm_cast_.sound, sfx_fire_storm_cast_.loaded, CellToWorldCenter(match.cast_origin));
         }
 
@@ -6652,7 +7134,16 @@ void GameApp::RenderGroundMapObjects() {
         if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
             const Rectangle src =
                 InsetSourceRect(metadata->GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
-            DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+            const float flash_amount = GetObjectDamageFlashAmount(object);
+            const bool use_damage_flash = flash_amount > 0.0f && has_damage_flash_shader_;
+            if (use_damage_flash) {
+                SetShaderValue(damage_flash_shader_, damage_flash_amount_loc_, &flash_amount, SHADER_UNIFORM_FLOAT);
+                BeginShaderMode(damage_flash_shader_);
+            }
+            DrawWindAnimatedMapObject(object, *proto, *draw_texture, src, dst);
+            if (use_damage_flash) {
+                EndShaderMode();
+            }
         } else {
             DrawRectangleRec(dst, Color{180, 120, 80, 220});
             DrawRectangleLinesEx(dst, 1.0f, Color{30, 20, 12, 255});
@@ -6683,6 +7174,9 @@ void GameApp::UpdateObjectShadowLayer() {
         }
         const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
         if (proto == nullptr || proto->shadow_animation.empty()) {
+            continue;
+        }
+        if (RenderModularTreeShadow(object, *proto)) {
             continue;
         }
 
@@ -6757,8 +7251,9 @@ void GameApp::UpdateObjectShadowLayer() {
                 }
                 const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
                 const Rectangle dst = GetPlayerSpriteRect(draw_pos);
+                const float modular_time = ResolvePlayerModularTime(player);
                 const Rectangle src =
-                    InsetSourceRect(modular_player_asset_.GetFrame("shadow", tag, render_time_seconds_),
+                    InsetSourceRect(modular_player_asset_.GetFrame("shadow", tag, modular_time),
                                     Constants::kAtlasSampleInsetPixels);
                 DrawTexturePro(*player_shadow_texture, src, dst, {0, 0}, 0.0f, WHITE);
             }
@@ -6776,7 +7271,8 @@ void GameApp::DrawObjectShadowLayer() {
     const Rectangle src = {0.0f, 0.0f, static_cast<float>(shadow_layer_target_.texture.width),
                            -static_cast<float>(shadow_layer_target_.texture.height)};
     const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
-    DrawTexturePro(shadow_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, Color{255, 255, 255, 85});
+    DrawTexturePro(shadow_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f,
+                   Color{255, 255, 255, Constants::kGlobalShadowAlpha});
 }
 
 void GameApp::DrawWorldLayerWithZonePostProcess() {
@@ -7007,6 +7503,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         GrapplingHookSegment,
         Projectile,
         Particle,
+        HammerImpact,
         Player,
     };
 
@@ -7044,20 +7541,22 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 return 10;
             case RenderKind::Particle:
                 return 11;
+            case RenderKind::HammerImpact:
+                return 12;
             case RenderKind::Player:
             default:
-                return 12;
+                return 13;
         }
     };
 
-    const auto pass_matches = [&](RenderKind kind) {
+    const auto pass_matches = [&](const RenderItem& item) {
         switch (pass) {
             case DepthSortedRenderPass::UnderInfluenceOverlay:
-                return kind == RenderKind::CompositeEffectPart || kind == RenderKind::FireStormDummyPart ||
-                       kind == RenderKind::EarthRootsPart || kind == RenderKind::Rune || kind == RenderKind::IceWall;
+                return item.kind == RenderKind::CompositeEffectPart || item.kind == RenderKind::FireStormDummyPart ||
+                       item.kind == RenderKind::Rune || item.kind == RenderKind::IceWall;
             case DepthSortedRenderPass::OverInfluenceOverlay:
-                return !(kind == RenderKind::CompositeEffectPart || kind == RenderKind::FireStormDummyPart ||
-                         kind == RenderKind::EarthRootsPart || kind == RenderKind::Rune || kind == RenderKind::IceWall);
+                return !(item.kind == RenderKind::CompositeEffectPart || item.kind == RenderKind::FireStormDummyPart ||
+                         item.kind == RenderKind::Rune || item.kind == RenderKind::IceWall);
         }
         return true;
     };
@@ -7091,7 +7590,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             distance / std::max(1.0f, static_cast<float>(state_.map.cell_size))))));
     }
     items.reserve(state_.players.size() + state_.runes.size() + state_.projectiles.size() + state_.particles.size() +
-                  state_.ice_walls.size() + state_.map.decorations.size() + state_.map_objects.size() +
+                  hammer_impact_effects_.size() + state_.ice_walls.size() + state_.map.decorations.size() +
+                  state_.map_objects.size() +
                   lightning_segment_total + grappling_segment_total + state_.earth_roots_groups.size() * 17);
 
     for (size_t i = 0; i < state_.map.decorations.size(); ++i) {
@@ -7109,7 +7609,11 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         if (!object.alive || IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
             continue;
         }
-        const float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
+        float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
+        if (object.prototype_id == "vase_1" || object.prototype_id == "vase_2" || object.prototype_id == "vase_3" ||
+            object.prototype_id == "vase_4") {
+            sort_y -= 4.0f;
+        }
         items.push_back({RenderKind::MapObject, sort_y, i});
     }
 
@@ -7185,7 +7689,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 const size_t tile_index = static_cast<size_t>((dy + 1) * 3 + (dx + 1));
                 const GridCoord cell = {group.center_cell.x + dx, group.center_cell.y + dy};
                 const Vector2 center = CellToWorldCenter(cell);
-                items.push_back({RenderKind::EarthRootsPart, center.y, i, tile_index, 0});
+                items.push_back({RenderKind::EarthRootsPart, center.y - 4.0f, i, tile_index, 0});
                 if (!(dx == 0 && dy == 0)) {
                     items.push_back({RenderKind::EarthRootsPart, center.y + 8.0f, i, tile_index, 1});
                 }
@@ -7294,6 +7798,13 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         items.push_back({RenderKind::Particle, state_.particles[i].pos.y, i});
     }
 
+    for (size_t i = 0; i < hammer_impact_effects_.size(); ++i) {
+        if (!hammer_impact_effects_[i].alive) {
+            continue;
+        }
+        items.push_back({RenderKind::HammerImpact, hammer_impact_effects_[i].world_pos.y, i});
+    }
+
     for (size_t i = 0; i < state_.players.size(); ++i) {
         const Player& player = state_.players[i];
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
@@ -7341,7 +7852,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
     };
 
     for (const RenderItem& item : items) {
-        if (!pass_matches(item.kind)) {
+        if (!pass_matches(item)) {
             continue;
         }
         switch (item.kind) {
@@ -7374,6 +7885,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 const MapObjectInstance& object = state_.map_objects[item.index];
                 const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
                 if (proto == nullptr) {
+                    break;
+                }
+                if (RenderModularTreeObject(object, *proto, item.sort_y)) {
                     break;
                 }
 
@@ -7420,8 +7934,19 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
                     const Rectangle src =
                         InsetSourceRect(metadata->GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
+                    const float flash_amount = GetObjectDamageFlashAmount(object);
+                    const bool use_damage_flash =
+                        flash_amount > 0.0f && has_damage_flash_shader_ && !proto->masked_occluder;
                     if (!proto->masked_occluder || !DrawMaskedOccluder(dst, *draw_texture, src, item.sort_y)) {
-                        DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+                        if (use_damage_flash) {
+                            SetShaderValue(damage_flash_shader_, damage_flash_amount_loc_, &flash_amount,
+                                           SHADER_UNIFORM_FLOAT);
+                            BeginShaderMode(damage_flash_shader_);
+                        }
+                        DrawWindAnimatedMapObject(object, *proto, *draw_texture, src, dst);
+                        if (use_damage_flash) {
+                            EndShaderMode();
+                        }
                     }
                 } else {
                     DrawRectangleRec(dst, Color{180, 120, 80, 220});
@@ -7771,16 +8296,34 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                     const Rectangle src =
                         InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
                                         Constants::kAtlasSampleInsetPixels);
-                    const float particle_scale = particle.animation_key == "static_upgrade" ? 1.5f : 1.0f;
-                    const float particle_size = 32.0f * particle_scale;
+                    const float particle_size = particle.size > 0.0f
+                                                    ? particle.size
+                                                    : (particle.animation_key == "static_upgrade" ? 48.0f : 32.0f);
                     Rectangle dst = {particle.pos.x - particle_size * 0.5f, particle.pos.y - particle_size * 0.5f,
                                      particle_size, particle_size};
                     dst = SnapRect(dst);
-                    const unsigned char alpha = particle.animation_key == "explosion" ? 255 : 200;
-                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, alpha});
+                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, particle.alpha});
                 } else {
                     DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
                 }
+                break;
+            }
+            case RenderKind::HammerImpact: {
+                if (item.index >= hammer_impact_effects_.size() || !has_huge_texture ||
+                    !sprite_metadata_128x128_.HasAnimation("hammer_impact")) {
+                    break;
+                }
+                const HammerImpactEffect& effect = hammer_impact_effects_[item.index];
+                if (!effect.alive) {
+                    break;
+                }
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_128x128_.GetFrame("hammer_impact", "default", effect.age_seconds),
+                                    Constants::kAtlasSampleInsetPixels);
+                const float dst_w = static_cast<float>(sprite_metadata_128x128_.GetCellWidth());
+                const float dst_h = static_cast<float>(sprite_metadata_128x128_.GetCellHeight());
+                Rectangle dst = {effect.world_pos.x - dst_w * 0.5f, effect.world_pos.y - dst_h * 0.5f, dst_w, dst_h};
+                DrawTexturePro(huge_texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
                 break;
             }
             case RenderKind::Player: {
@@ -8023,6 +8566,7 @@ void GameApp::RenderMapForeground() {
         return nullptr;
     };
     const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
+    const bool has_terrain_foam_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("terrain_foam");
     const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
     const auto is_grass_family = [](TileType tile) {
         return tile == TileType::Grass || tile == TileType::SpawnPoint;
@@ -8151,11 +8695,45 @@ void GameApp::RenderMapForeground() {
                     if (tile == TileType::SpawnPoint) {
                         DrawCircleV({dst.x + dst.width * 0.5f, dst.y + dst.height * 0.5f}, 3.0f,
                                     Color{240, 240, 240, 180});
-                    }
                 }
             }
         }
     }
+
+    if (has_texture && has_grass_dual_grid && has_terrain_foam_dual_grid) {
+        // The foam is drawn into an intermediate world render target. Preserve the destination alpha
+        // while doing standard source-over RGB blending, otherwise the partially transparent foam
+        // leaves the world RT semi-transparent and the final RT->screen composite darkens against black.
+        rlSetBlendFactorsSeparate(RL_SRC_ALPHA, RL_ONE_MINUS_SRC_ALPHA, RL_ONE, RL_ONE_MINUS_SRC_ALPHA,
+                                  RL_FUNC_ADD, RL_FUNC_ADD);
+        BeginBlendMode(BLEND_CUSTOM_SEPARATE);
+
+        for (int y = 0; y < state_.map.height; ++y) {
+            for (int x = 0; x < state_.map.width; ++x) {
+                const Rectangle dst = SnapRect(
+                    {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
+                     static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
+                const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
+                const Rectangle terrain_dst =
+                    SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
+                const int mask = compute_grass_dual_grid_mask(x, y);
+                if (mask <= 0 || mask >= 15) {
+                    continue;
+                }
+
+                Rectangle src = {};
+                if (!sprite_metadata_.GetDualGridFrame("terrain_foam", mask, render_time_seconds_, SpriteFrameLayer::Single,
+                                                       src)) {
+                    continue;
+                }
+                DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
+                               0.0f, Color{255, 255, 255, 10}
+);
+            }
+        }
+        EndBlendMode();
+    }
+}
 
     for (const auto& effect : state_.composite_effects) {
         if (!effect.alive) {
@@ -8459,16 +9037,23 @@ void GameApp::RenderDebugCollisionOverlay() {
         DrawRectangleLinesEx(GetPlayerCollisionRect(player), 1.0f, player_color);
         DrawCircleV(player.pos, 1.5f, player_outline);
 
-        if (player.melee_active_remaining > 0.0f) {
-            Vector2 aim_dir = player.aim_dir;
-            if (Vector2LengthSqr(aim_dir) <= 0.0001f) {
-                aim_dir = {1.0f, 0.0f};
+        const AttackProfile* attack_profile = GetEquippedPrimaryAttack(player);
+        const HitShapeDefinition* hit_shape =
+            attack_profile != nullptr ? hit_shape_library_.FindById(attack_profile->hit_shape_id) : nullptr;
+        if (player.melee_active_remaining > 0.0f && attack_profile != nullptr && hit_shape != nullptr) {
+            const float rotation = std::atan2(player.aim_dir.y, player.aim_dir.x);
+            if (hit_shape->type == HitShapeType::Circle) {
+                const Vector2 center =
+                    Vector2Add(player.pos, Vector2Rotate(hit_shape->center, rotation));
+                DrawCircleLinesV(center, hit_shape->radius, melee_color);
             } else {
-                aim_dir = Vector2Normalize(aim_dir);
+                const std::vector<Vector2> points = HitShapeLibrary::BuildWorldPoints(*hit_shape, player.pos, rotation);
+                for (size_t i = 0; i < points.size(); ++i) {
+                    const Vector2 a = points[i];
+                    const Vector2 b = points[(i + 1) % points.size()];
+                    DrawLineV(a, b, melee_color);
+                }
             }
-            const Vector2 melee_center =
-                Vector2Add(player.pos, Vector2Scale(aim_dir, Constants::kMeleeRange));
-            DrawCircleLinesV(melee_center, Constants::kMeleeHitRadius, melee_color);
         }
     }
 
@@ -8528,7 +9113,7 @@ void GameApp::RenderDebugCollisionOverlay() {
 }
 
 void GameApp::RenderMeleeAttacks() {
-    if (!sprite_metadata_.IsLoaded() || !sprite_metadata_.HasAnimation("melee_attack")) {
+    if (!sprite_metadata_.IsLoaded()) {
         return;
     }
 
@@ -8538,12 +9123,21 @@ void GameApp::RenderMeleeAttacks() {
             continue;
         }
 
-        const float attack_elapsed = Constants::kMeleeActiveWindowSeconds - player.melee_active_remaining;
+        const AttackProfile* attack_profile = GetEquippedPrimaryAttack(player);
+        if (attack_profile == nullptr || attack_profile->kind != EquipmentActionKind::Melee ||
+            !sprite_metadata_.HasAnimation(attack_profile->attack_animation)) {
+            continue;
+        }
+        if (!ResolvePrimaryWeaponAttackModularTag(player).empty()) {
+            continue;
+        }
+
+        const float attack_elapsed = attack_profile->active_window_seconds - player.melee_active_remaining;
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
         const float rotation = AimToDegrees(player.aim_dir);
 
         const Rectangle src =
-            InsetSourceRect(sprite_metadata_.GetFrame("melee_attack", "default", attack_elapsed),
+            InsetSourceRect(sprite_metadata_.GetFrame(attack_profile->attack_animation, "default", attack_elapsed),
                             Constants::kAtlasSampleInsetPixels);
 
         const float visual_size = 32.0f * Constants::kMeleeAttackVisualScale;
@@ -8551,7 +9145,7 @@ void GameApp::RenderMeleeAttacks() {
         dst = SnapRect(dst);
 
         // Rotate around player centroid and keep slash offset one cell to the east at 0 degrees.
-        const Vector2 origin = {visual_size * 0.5f - Constants::kMeleeRange, visual_size * 0.5f};
+        const Vector2 origin = {visual_size * 0.5f - attack_profile->range, visual_size * 0.5f};
         DrawTexturePro(texture, src, dst, origin, rotation, WHITE);
     }
 }
@@ -8617,13 +9211,12 @@ void GameApp::RenderParticles() {
             const Rectangle src =
                 InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
                                 Constants::kAtlasSampleInsetPixels);
-            const float particle_scale = particle.animation_key == "static_upgrade" ? 1.5f : 1.0f;
-            const float particle_size = 32.0f * particle_scale;
+            const float particle_size =
+                particle.size > 0.0f ? particle.size : (particle.animation_key == "static_upgrade" ? 48.0f : 32.0f);
             Rectangle dst = {particle.pos.x - particle_size * 0.5f, particle.pos.y - particle_size * 0.5f,
                              particle_size, particle_size};
             dst = SnapRect(dst);
-            const unsigned char alpha = particle.animation_key == "explosion" ? 255 : 200;
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, alpha});
+            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, particle.alpha});
         } else {
             DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
         }
@@ -8978,7 +9571,14 @@ void GameApp::RenderBottomHud() {
                                  -90.0f + 360.0f * ratio, 32, Color{0, 0, 0, 150});
             }
         } else if (is_weapon_slot) {
-            const std::string& animation = local_player->weapon_slots[slot_index];
+            const EquipmentSlot equipment_slot =
+                slot_index == 0 ? EquipmentSlot::PrimaryWeapon : EquipmentSlot::Mobility;
+            const EquipmentItemDefinition* equipped_item =
+                equipment_registry_.ResolveEquippedItem(*local_player, equipment_slot);
+            const std::string animation =
+                equipped_item != nullptr && !equipped_item->hud_icon_animation.empty()
+                    ? equipped_item->hud_icon_animation
+                    : (equipped_item != nullptr ? equipped_item->id : std::string{});
             if (!animation.empty() && sprite_metadata_.IsLoaded() && sprite_metadata_.HasAnimation(animation)) {
                 const Rectangle src =
                     InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
@@ -8990,10 +9590,13 @@ void GameApp::RenderBottomHud() {
                                       icon_size};
                 DrawTexturePro(sprite_metadata_.GetTexture(), src, SnapRect(icon_dst), {0, 0}, 0.0f, WHITE);
             }
+            const AttackProfile* attack_profile = GetEquippedPrimaryAttack(*local_player);
             const float remaining = slot_index == 0 ? local_player->melee_cooldown_remaining
                                                     : local_player->grappling_cooldown_remaining;
-            const float total = std::max(0.001f, slot_index == 0 ? Constants::kMeleeCooldownSeconds
-                                                                 : local_player->grappling_cooldown_total);
+            const float total = std::max(0.001f, slot_index == 0
+                                                      ? (attack_profile != nullptr ? attack_profile->cooldown_seconds
+                                                                                   : Constants::kMeleeCooldownSeconds)
+                                                      : local_player->grappling_cooldown_total);
             if (remaining > 0.0f) {
                 const float ratio = std::clamp(remaining / total, 0.0f, 1.0f);
                 DrawCircleSector({slot.x + slot.width * 0.5f, slot.y + slot.height * 0.5f}, slot.width * 0.45f, -90.0f,
@@ -9317,11 +9920,218 @@ bool GameApp::PlayerHasEquippedWeapon(const Player& player, const char* weapon_i
     return std::find(player.weapon_slots.begin(), player.weapon_slots.end(), weapon_id) != player.weapon_slots.end();
 }
 
+const AttackProfile* GameApp::GetEquippedPrimaryAttack(const Player& player) const {
+    return equipment_registry_.ResolvePrimaryAttack(player);
+}
+
+const MobilityProfile* GameApp::GetEquippedMobility(const Player& player) const {
+    return equipment_registry_.ResolveMobility(player);
+}
+
+void GameApp::UpdateActiveModularAttackVisuals(float dt) {
+    const auto play_random_loaded_sfx = [&](const auto& clips, Vector2 world_pos) {
+        std::vector<size_t> loaded_indices;
+        loaded_indices.reserve(clips.size());
+        for (size_t i = 0; i < clips.size(); ++i) {
+            if (clips[i].loaded) {
+                loaded_indices.push_back(i);
+            }
+        }
+        if (loaded_indices.empty()) {
+            return;
+        }
+        std::uniform_int_distribution<size_t> dist(0, loaded_indices.size() - 1);
+        const LoadedSfx& clip = clips[loaded_indices[dist(rng_)]];
+        PlaySfxIfVisible(clip.sound, clip.loaded, world_pos);
+    };
+
+    std::unordered_map<int, PlayerActionState> updated_action_states;
+    updated_action_states.reserve(state_.players.size());
+
+    for (const auto& player : state_.players) {
+        updated_action_states[player.id] = player.action_state;
+
+        if (!player.alive) {
+            active_modular_attack_visuals_.erase(player.id);
+            continue;
+        }
+
+        if (auto active_it = active_modular_attack_visuals_.find(player.id);
+            active_it != active_modular_attack_visuals_.end()) {
+            const float previous_elapsed = active_it->second.elapsed_seconds;
+            active_it->second.elapsed_seconds =
+                std::min(active_it->second.elapsed_seconds + dt, active_it->second.duration_seconds);
+            if (active_it->second.weapon_item_id == "hammer_item") {
+                const float swing_time =
+                    GetModularTagFrameStartSeconds(active_it->second.tag, Constants::kHammerSwingEventFrame - 1);
+                if (!active_it->second.swing_event_played && active_it->second.elapsed_seconds >= swing_time &&
+                    previous_elapsed < swing_time) {
+                    play_random_loaded_sfx(sfx_hammer_swing_, player.pos);
+                    active_it->second.swing_event_played = true;
+                }
+
+                const float impact_time =
+                    GetModularTagFrameStartSeconds(active_it->second.tag, Constants::kHammerImpactEventFrame - 1);
+                if (!active_it->second.impact_event_played && active_it->second.elapsed_seconds >= impact_time &&
+                    previous_elapsed < impact_time) {
+                    const Vector2 impact_world = ResolveHammerImpactWorldPosition(player);
+                    play_random_loaded_sfx(sfx_hammer_impact_, impact_world);
+                    SpawnHammerImpactEffect(impact_world);
+                    camera_shake_time_remaining_ = std::max(camera_shake_time_remaining_,
+                                                            Constants::kHammerImpactCameraShakeDurationSeconds);
+                    active_it->second.impact_event_played = true;
+                }
+            }
+            if (active_it->second.elapsed_seconds >= active_it->second.duration_seconds) {
+                active_modular_attack_visuals_.erase(active_it);
+            }
+        }
+
+        const auto previous_it = previous_player_action_states_.find(player.id);
+        const PlayerActionState previous_state =
+            previous_it != previous_player_action_states_.end() ? previous_it->second : PlayerActionState::Idle;
+        const bool slash_started =
+            player.action_state == PlayerActionState::Slashing && previous_state != PlayerActionState::Slashing;
+        if (!slash_started) {
+            continue;
+        }
+
+        const std::string attack_tag = ResolvePrimaryWeaponAttackModularTag(player);
+        if (attack_tag.empty()) {
+            continue;
+        }
+
+        float duration_seconds = modular_player_asset_.GetTagDurationSeconds("main", attack_tag);
+        for (const std::string& layer_name : GetEquippedModularLayers(player)) {
+            duration_seconds = std::max(duration_seconds, modular_player_asset_.GetTagDurationSeconds(layer_name, attack_tag));
+        }
+        duration_seconds = std::max(duration_seconds, modular_player_asset_.GetTagDurationSeconds("fx", attack_tag));
+        if (duration_seconds <= 0.0f) {
+            continue;
+        }
+
+        const EquipmentItemDefinition* item =
+            equipment_registry_.ResolveEquippedItem(player, EquipmentSlot::PrimaryWeapon);
+        ActiveModularAttackVisual visual;
+        visual.tag = attack_tag;
+        visual.weapon_item_id = item != nullptr ? item->id : "";
+        visual.duration_seconds = duration_seconds;
+        if (visual.weapon_item_id == "hammer_item") {
+            visual.swing_event_played = false;
+            visual.impact_event_played = false;
+        } else {
+            visual.swing_event_played = true;
+            visual.impact_event_played = true;
+        }
+        active_modular_attack_visuals_[player.id] = visual;
+    }
+
+    for (auto it = active_modular_attack_visuals_.begin(); it != active_modular_attack_visuals_.end();) {
+        if (updated_action_states.find(it->first) == updated_action_states.end()) {
+            it = active_modular_attack_visuals_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    previous_player_action_states_.swap(updated_action_states);
+}
+
+float GameApp::GetModularTagFrameStartSeconds(const std::string& tag_name, int frame_index,
+                                              std::string* out_layer_name) const {
+    if (out_layer_name != nullptr) {
+        out_layer_name->clear();
+    }
+
+    static constexpr std::array<const char*, 5> kCandidateLayers = {"main", "hammer", "sword", "ghook", "fx"};
+    for (const char* layer_name : kCandidateLayers) {
+        if (!modular_player_asset_.HasTag(layer_name, tag_name)) {
+            continue;
+        }
+        if (out_layer_name != nullptr) {
+            *out_layer_name = layer_name;
+        }
+        return modular_player_asset_.GetTagFrameStartSeconds(layer_name, tag_name, frame_index);
+    }
+    return 0.0f;
+}
+
+std::vector<std::string> GameApp::GetEquippedModularLayers(const Player& player) const {
+    return equipment_registry_.CollectVisibleLayers(player);
+}
+
+std::string GameApp::ResolveSwordAttackModularTag(const Player& player) const {
+    if (!PlayerHasEquippedWeapon(player, "sword_item")) {
+        return "";
+    }
+
+    const std::string facing_specific_tag = ModularCharacterAsset::BuildTag("sword_attack", player.facing);
+    if (modular_player_asset_.HasTag("main", facing_specific_tag)) {
+        return facing_specific_tag;
+    }
+
+    const std::string east_fallback_tag = ModularCharacterAsset::BuildTag("sword_attack", FacingDirection::Right);
+    if (modular_player_asset_.HasTag("main", east_fallback_tag)) {
+        return east_fallback_tag;
+    }
+
+    return "";
+}
+
+std::string GameApp::ResolvePrimaryWeaponAttackModularTag(const Player& player) const {
+    const EquipmentItemDefinition* item =
+        equipment_registry_.ResolveEquippedItem(player, EquipmentSlot::PrimaryWeapon);
+    if (item == nullptr) {
+        return "";
+    }
+    if (item->id == "sword_item") {
+        return ResolveSwordAttackModularTag(player);
+    }
+    if (item->id != "hammer_item") {
+        return "";
+    }
+
+    const auto has_tag_any_layer = [&](const std::string& tag) {
+        if (modular_player_asset_.HasTag("main", tag) || modular_player_asset_.HasTag("hammer", tag) ||
+            modular_player_asset_.HasTag("fx", tag)) {
+            return true;
+        }
+        return false;
+    };
+
+    std::vector<std::string> candidates;
+    candidates.push_back(ModularCharacterAsset::BuildTag("hammer_attack", player.facing));
+    if (player.facing == FacingDirection::Left) {
+        candidates.push_back("wizhammer_attack_w");
+    }
+    candidates.push_back(ModularCharacterAsset::BuildTag("hammer_attack", FacingDirection::TopLeft));
+    candidates.push_back(ModularCharacterAsset::BuildTag("hammer_attack", FacingDirection::TopRight));
+    candidates.push_back("wizhammer_attack_w");
+
+    for (const std::string& candidate : candidates) {
+        if (!candidate.empty() && has_tag_any_layer(candidate)) {
+            return candidate;
+        }
+    }
+    return "";
+}
+
+Vector2 GameApp::ResolveHammerImpactWorldPosition(const Player& player) const {
+    Vector2 aim_dir = player.aim_dir;
+    if (Vector2LengthSqr(aim_dir) <= 0.0001f) {
+        aim_dir = {1.0f, 0.0f};
+    } else {
+        aim_dir = Vector2Normalize(aim_dir);
+    }
+    return Vector2Add(player.pos, Vector2Scale(aim_dir, Constants::kHammerImpactOffsetPixels));
+}
+
 Rectangle GameApp::GetPlayerCollisionRect(const Player& player) const {
     return GetPlayerCollisionRect(player.pos);
 }
 
 Rectangle GameApp::GetPlayerCollisionRect(Vector2 center) const {
+    center.y += Constants::kPlayerHitboxOffsetY;
     return MakeCenteredRect(center, Constants::kPlayerHitboxWidth, Constants::kPlayerHitboxHeight);
 }
 
@@ -9336,16 +10146,128 @@ float GameApp::GetPlayerCollisionSupportDistance(Vector2 direction) const {
     return std::fabs(direction.x) * half_width + std::fabs(direction.y) * half_height;
 }
 
+bool GameApp::TryEquipItem(Player& player, const std::string& item_id, const MapObjectInstance* source_object) {
+    const EquipmentItemDefinition* item = equipment_registry_.FindItem(item_id);
+    if (item == nullptr || item->slot == EquipmentSlot::Inventory) {
+        return false;
+    }
+    const size_t slot_index = item->slot == EquipmentSlot::PrimaryWeapon ? 0 : 1;
+    if (slot_index >= player.weapon_slots.size()) {
+        return false;
+    }
+    if (player.weapon_slots[slot_index] == item_id) {
+        return false;
+    }
+
+    if (item->slot == EquipmentSlot::PrimaryWeapon && !player.weapon_slots[slot_index].empty() &&
+        player.weapon_slots[slot_index] != item_id && source_object != nullptr) {
+        SpawnDroppedEquipmentItem(player.weapon_slots[slot_index], source_object->cell, player.id);
+    }
+
+    player.weapon_slots[slot_index] = item_id;
+    return true;
+}
+
+void GameApp::RegisterSpellRuntimes() {
+    spell_runtime_registry_.Register("fire_bolt",
+                                     [](const SpellRuntimeMatch& match, const SpellRuntimeContext& context) {
+                                         if (context.state == nullptr || context.event_queue == nullptr) {
+                                             return false;
+                                         }
+                                         FireBoltSpell spell(context.state->map.CellCenterWorld(match.cast_origin),
+                                                             match.caster_player_id, match.direction,
+                                                             match.static_fire_bolt);
+                                         spell.Cast(*context.state, *context.event_queue);
+                                         return true;
+                                     });
+    spell_runtime_registry_.Register("ice_wall",
+                                     [](const SpellRuntimeMatch& match, const SpellRuntimeContext& context) {
+                                         if (context.state == nullptr || context.event_queue == nullptr) {
+                                             return false;
+                                         }
+                                         IceWallSpell spell(match.cast_origin, match.caster_player_id, match.direction);
+                                         spell.Cast(*context.state, *context.event_queue);
+                                         return true;
+                                     });
+    spell_runtime_registry_.Register("fire_storm",
+                                     [](const SpellRuntimeMatch& match, const SpellRuntimeContext& context) {
+                                         if (context.state == nullptr) {
+                                             return false;
+                                         }
+                                         FireStormCast cast;
+                                         cast.id = context.state->next_entity_id++;
+                                         cast.owner_player_id = match.caster_player_id;
+                                         cast.owner_team = match.caster_team;
+                                         cast.center_cell = match.cast_origin;
+                                         cast.elapsed_seconds = 0.0f;
+                                         cast.duration_seconds =
+                                             context.get_effect_duration_seconds != nullptr
+                                                 ? context.get_effect_duration_seconds("fire_storm_cast")
+                                                 : 0.0f;
+                                         if (cast.duration_seconds <= 0.0f) {
+                                             cast.duration_seconds = 1.0f;
+                                         }
+                                         cast.alive = true;
+                                         context.state->fire_storm_casts.push_back(cast);
+                                         return true;
+                                     });
+}
+
+bool GameApp::CastRuntimeSpell(const SpellRuntimeMatch& match) {
+    const SpellRuntimeContext context = {
+        &state_,
+        &event_queue_,
+        [&](const std::string& effect_id) { return GetCompositeEffectDurationSeconds(effect_id); },
+    };
+    return spell_runtime_registry_.Cast(match, context);
+}
+
 std::string GameApp::ResolvePlayerModularAnimationName(const Player& player) const {
     const bool is_moving = Vector2LengthSqr(player.vel) > 8.0f;
-    if (player.action_state == PlayerActionState::Slashing || player.action_state == PlayerActionState::RunePlacing) {
+    if (player.action_state == PlayerActionState::RunePlacing) {
         return is_moving ? "walk" : "idle";
     }
     return is_moving ? "walk" : "idle";
 }
 
 std::string GameApp::ResolvePlayerModularTag(const Player& player) const {
+    if (const auto active_it = active_modular_attack_visuals_.find(player.id);
+        active_it != active_modular_attack_visuals_.end() && !active_it->second.tag.empty()) {
+        return active_it->second.tag;
+    }
+
+    if (player.action_state == PlayerActionState::Slashing) {
+        const std::string attack_tag = ResolvePrimaryWeaponAttackModularTag(player);
+        if (!attack_tag.empty()) {
+            return attack_tag;
+        }
+    }
+
     return ModularCharacterAsset::BuildTag(ResolvePlayerModularAnimationName(player).c_str(), player.facing);
+}
+
+float GameApp::ResolvePlayerModularTime(const Player& player) const {
+    if (const auto active_it = active_modular_attack_visuals_.find(player.id);
+        active_it != active_modular_attack_visuals_.end()) {
+        return active_it->second.elapsed_seconds;
+    }
+    return render_time_seconds_;
+}
+
+float GameApp::GetPlayerDamageFlashAmount(const Player& player) const {
+    const auto it = player_damage_flash_remaining_.find(player.id);
+    if (it == player_damage_flash_remaining_.end()) {
+        return 0.0f;
+    }
+    return ComputeDamageFlashAmount(it->second);
+}
+
+float GameApp::GetObjectDamageFlashAmount(const MapObjectInstance& object) const {
+    const auto it = object_damage_flash_remaining_.find(object.id);
+    if (it == object_damage_flash_remaining_.end()) {
+        return 0.0f;
+    }
+    return ComputeDamageFlashAmount(it->second);
 }
 
 Rectangle GameApp::GetPlayerSpriteRect(Vector2 draw_pos, const std::string& layer_name) const {
@@ -9358,6 +10280,14 @@ Rectangle GameApp::GetPlayerSpriteRect(Vector2 draw_pos, const std::string& laye
 
 void GameApp::RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) const {
     const std::string tag = ResolvePlayerModularTag(player);
+    const float modular_time = ResolvePlayerModularTime(player);
+    const float flash_amount = GetPlayerDamageFlashAmount(player);
+    const bool use_damage_flash = flash_amount > 0.0f && has_damage_flash_shader_;
+
+    if (use_damage_flash) {
+        SetShaderValue(damage_flash_shader_, damage_flash_amount_loc_, &flash_amount, SHADER_UNIFORM_FLOAT);
+        BeginShaderMode(damage_flash_shader_);
+    }
 
     const auto draw_layer = [&](const char* layer_name) {
         if (!modular_player_asset_.HasTag(layer_name, tag)) {
@@ -9368,14 +10298,22 @@ void GameApp::RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) 
             return;
         }
         const Rectangle src =
-            InsetSourceRect(modular_player_asset_.GetFrame(layer_name, tag, render_time_seconds_),
+            InsetSourceRect(modular_player_asset_.GetFrame(layer_name, tag, modular_time),
                             Constants::kAtlasSampleInsetPixels);
         const Rectangle dst = GetPlayerSpriteRect(draw_pos, layer_name);
         DrawTexturePro(*texture, src, dst, {0, 0}, 0.0f, WHITE);
     };
 
     draw_layer("main");
-    if (PlayerHasEquippedWeapon(player, "sword_item")) {
-        draw_layer("sword");
+    for (const std::string& layer_name : GetEquippedModularLayers(player)) {
+        if (layer_name == "main" || layer_name == "shadow") {
+            continue;
+        }
+        draw_layer(layer_name.c_str());
+    }
+    draw_layer("fx");
+
+    if (use_damage_flash) {
+        EndShaderMode();
     }
 }

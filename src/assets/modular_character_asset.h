@@ -36,6 +36,9 @@ class ModularCharacterAsset {
     bool HasTag(const std::string& layer_name, const std::string& tag_name) const;
     const Texture2D* GetLayerTexture(const std::string& layer_name) const;
     Rectangle GetFrame(const std::string& layer_name, const std::string& tag_name, float time_seconds) const;
+    float GetTagDurationSeconds(const std::string& layer_name, const std::string& tag_name) const;
+    int GetTagFrameCount(const std::string& layer_name, const std::string& tag_name) const;
+    float GetTagFrameStartSeconds(const std::string& layer_name, const std::string& tag_name, int frame_index) const;
     int GetFrameWidth(const std::string& layer_name) const;
     int GetFrameHeight(const std::string& layer_name) const;
 

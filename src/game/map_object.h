@@ -10,6 +10,7 @@ enum class ObjectType {
     Decoration,
     Destructible,
     Consumable,
+    Unit,
 };
 
 enum class SpriteSheetType {
@@ -64,9 +65,15 @@ struct ObjectPrototype {
     int collision_box_h = 0;
 
     TileType terrain_tile = TileType::Grass;
+    bool has_terrain_tile_override = false;
     bool terrain_is_spawn_point = false;
 
+    float wind_strength_pixels = 0.0f;
+    float wind_speed_multiplier = 1.0f;
+    float wind_gradient_start = 0.3f;
+
     int destructible_hp = 0;
+    int unit_hp = 0;
     std::vector<DropEntry> on_destroy_drops;
     std::vector<EffectSpec> consumable_effects;
 };

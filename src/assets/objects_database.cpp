@@ -14,6 +14,7 @@ ObjectType ParseObjectType(const std::string& value, bool& ok) {
     if (value == "Decoration") return ObjectType::Decoration;
     if (value == "Destructible") return ObjectType::Destructible;
     if (value == "Consumable") return ObjectType::Consumable;
+    if (value == "Unit") return ObjectType::Unit;
     ok = false;
     return ObjectType::Terrain;
 }
@@ -199,7 +200,21 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
                 }
             }
             proto.terrain_tile = ParseTerrainTileType(terrain_tile_name);
+            proto.has_terrain_tile_override = true;
             proto.terrain_is_spawn_point = (proto.terrain_tile == TileType::SpawnPoint);
+        } else {
+            const std::string terrain_tile_name = it.value().value("terrain_tile", "");
+            if (!terrain_tile_name.empty()) {
+                proto.terrain_tile = ParseTerrainTileType(terrain_tile_name);
+                proto.has_terrain_tile_override = true;
+                proto.terrain_is_spawn_point = (proto.terrain_tile == TileType::SpawnPoint);
+            }
+        }
+
+        if (const auto wind_it = it.value().find("wind"); wind_it != it.value().end() && wind_it->is_object()) {
+            proto.wind_strength_pixels = std::max(0.0f, wind_it->value("strength_pixels", 0.0f));
+            proto.wind_speed_multiplier = std::max(0.0f, wind_it->value("speed_multiplier", 1.0f));
+            proto.wind_gradient_start = std::clamp(wind_it->value("gradient_start", 0.3f), 0.0f, 1.0f);
         }
 
         if (proto.type == ObjectType::Destructible) {
@@ -244,6 +259,16 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
             }
             if (proto.destructible_hp <= 0) {
                 proto.destructible_hp = 1;
+            }
+        }
+
+        if (proto.type == ObjectType::Unit) {
+            const auto unit_it = it.value().find("unit");
+            if (unit_it != it.value().end() && unit_it->is_object()) {
+                proto.unit_hp = std::max(1, unit_it->value("hp", 1));
+            }
+            if (proto.unit_hp <= 0) {
+                proto.unit_hp = 1;
             }
         }
 

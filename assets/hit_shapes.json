@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "shapes": {
+    "melee_sword_basic": {
+      "type": "circle",
+      "center": { "x": 22.0, "y": 0.0 },
+      "radius": 16.0
+    },
+    "melee_hammer_arc": {
+      "type": "circle",
+      "center": { "x": 64.0, "y": 0.0 },
+      "radius": 64.0
+    },
+    "fire_bolt_projectile": {
+      "type": "circle",
+      "center": { "x": 0.0, "y": 0.0 },
+      "radius": 6.5
+    },
+    "fire_bolt_explosion": {
+      "type": "circle",
+      "center": { "x": 0.0, "y": 0.0 },
+      "radius": 20.0
+    }
+  }
+}

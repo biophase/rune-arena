@@ -14,7 +14,7 @@ constexpr double kFixedDt = 1.0 / 60.0;
 constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 40.0f;
 constexpr int kNetworkSnapshotKeyframeIntervalTicks = 18;
 constexpr int kNetworkSnapshotHistorySize = 128;
-constexpr float kCameraZoom = 2.4f;
+constexpr float kCameraZoom = 2.f;
 constexpr float kClientVisualSmoothing = 16.0f;
 constexpr float kRemoteInterpolationDelaySeconds = 0.08f; // reduce to improve feel
 constexpr float kPredictionHardSnapThresholdPx = 32.0f;
@@ -32,7 +32,10 @@ constexpr float kMinArenaRadiusTilesStep = 1.0f;
 constexpr float kMaxArenaRadiusTiles = 256.0f;
 
 constexpr float kPlayerHitboxWidth = 15.0f;
-constexpr float kPlayerHitboxHeight = 30.0f;
+constexpr float kPlayerHitboxHeight = 15.0f;
+constexpr float kPlayerHitboxOffsetY = 7.0f;
+constexpr float kTerrainCollisionOffsetX = 0.0f;
+constexpr float kTerrainCollisionOffsetY = -12.0f;
 constexpr float kPlayerAcceleration = 300.0f;
 constexpr float kPlayerFriction = 3.5f;
 constexpr float kPlayerMaxSpeed = 100.0f;
@@ -58,6 +61,21 @@ constexpr int kProjectileSmokeParticlesPerBurst = 5;
 constexpr float kProjectileSmokeBackVelocityFactor = -0.08f;
 constexpr float kSmokeEmitterOffsetStdDev = 4.0f;
 constexpr float kSmokeEmitterVelocityJitterStdDev = 10.0f;
+constexpr int kDamageHitParticlesPerBurst = 6;
+constexpr float kDamageHitParticleBaseSpeed = 240.0f;
+constexpr float kDamageHitParticleSpeedJitter = 60.0f;
+constexpr float kDamageHitParticleSpreadRadians = 0.55f;
+constexpr float kDamageHitParticleLifetimeSeconds = 0.32f;
+constexpr float kDamageHitParticleVelocityDecay = 7.5f;
+constexpr float kDamageHitParticleSizeDecay = 4.0f;
+constexpr float kDamageHitParticleBaseSize = 24.0f;
+constexpr float kDamageHitParticleSizeJitter = 5.0f;
+constexpr float kHammerImpactOffsetPixels = 64.0f;
+constexpr float kHammerImpactRadiusPixels = 64.0f;
+constexpr float kHammerAccelerationPenalty = 80.0f;
+constexpr float kHammerAnticipationAccelerationMultiplier = 0.1f;
+constexpr int kHammerSwingEventFrame = 6;
+constexpr int kHammerImpactEventFrame = 9;
 
 constexpr float kMeleeCooldownSeconds = 0.5f;
 constexpr float kMeleeActiveWindowSeconds = 0.25f;
@@ -155,9 +173,10 @@ constexpr float kArenaUnsafeDamagePerSecond = 5.0f;
 constexpr float kArenaUnsafeDamageTickSeconds = 3.0f;
 constexpr float kArenaSpawnBufferTiles = 3.0f;
 constexpr float kOutsideZoneTileBrightness = 0.5f;
+constexpr unsigned char kGlobalShadowAlpha = 50;
 constexpr float kPlayerHealthBarWidth = 32.0f;
 constexpr float kPlayerHealthBarHeight = 4.0f;
-constexpr float kPlayerHealthBarOffsetY = 11.0f;
+constexpr float kPlayerHealthBarOffsetY = -20.0f;
 constexpr int kMainMenuTitleFontSize = 120;
 constexpr float kPlayerVisualScale = 1.0f;
 constexpr float kDroppedItemVisualScale = 1.0f;
@@ -175,13 +194,20 @@ constexpr int kRuneCooldownTextFontSize = 14;
 constexpr float kDamagePopupLifetimeSeconds = 0.75f;
 constexpr float kDamagePopupRisePerSecond = 20.0f;
 constexpr int kDamagePopupFontSize = 11;
+constexpr float kDamageFlashDurationSeconds = 0.24f;
 constexpr float kCameraShakeDurationSeconds = 0.12f;
 constexpr float kCameraShakePixels = 7.0f;
+constexpr float kHammerImpactCameraShakeDurationSeconds = 0.12f;
+constexpr float kTreeWindSwayStrengthPixels = 3.0f;
+constexpr float kTreeWindSpeed = 0.45f;
+constexpr float kTreeWindGradientStart = 0.3f;
 constexpr int kOccluderRevealMaxCircles = 8;
 constexpr float kOccluderRevealPlayerRadiusWorld = 15.0f;
 constexpr float kOccluderRevealItemRadiusWorld = 9.0f;
 constexpr float kOccluderRevealFalloffWorld = 6.0f;
 constexpr float kOccluderRevealInsideAlpha = 0.22f;
+constexpr float kDroppedEquipmentPickupRadius = 24.0f;
+constexpr float kDroppedEquipmentPickupUnlockRadiusMultiplier = 1.5f;
 constexpr int kWaterOverlayStartR = 45;
 constexpr int kWaterOverlayStartG = 112;
 constexpr int kWaterOverlayStartB = 130;
@@ -212,13 +238,30 @@ constexpr const char* kSpriteMetadataPath = "assets/sprite_sheet.json";
 constexpr const char* kSpriteMetadataTallPath = "assets/sprite_sheet_32x64.json";
 constexpr const char* kSpriteMetadata96x96Path = "assets/sprite_sheet_96x96.json";
 constexpr const char* kSpriteMetadata128x128Path = "assets/sprite_sheet_128x128.json";
-constexpr const char* kModularPlayerMainMetadataPath =
-    "assets/64x64_modular/wizzard_64x64_exports/wizzard_64x64-main.json";
+constexpr const char* kModularPlayerMainMetadataPath = "assets/128x128_modular/exports/wizzard_128x128-main.json";
 constexpr const char* kModularPlayerShadowMetadataPath =
-    "assets/64x64_modular/wizzard_64x64_exports/wizzard_64x64-shadow.json";
+    "assets/128x128_modular/exports/wizzard_128x128-shadow.json";
 constexpr const char* kModularPlayerSwordMetadataPath =
-    "assets/64x64_modular/wizzard_64x64_exports/wizzard_64x64-sword.json";
+    "assets/128x128_modular/exports/wizzard_128x128-sword.json";
+constexpr const char* kModularPlayerHammerMetadataPath =
+    "assets/128x128_modular/exports/wizzard_128x128-hammer.json";
+constexpr const char* kModularPlayerGhookMetadataPath =
+    "assets/128x128_modular/exports/wizzard_128x128-ghook.json";
+constexpr const char* kModularPlayerFxMetadataPath = "assets/128x128_modular/exports/wizzard_128x128-fx.json";
+constexpr const char* kModularTreeCanopyBackgroundMetadataPath =
+    "assets/128x128_tree_modular/exports/128x128_tree_modular-canopy_background.json";
+constexpr const char* kModularTreeTrunkMetadataPath =
+    "assets/128x128_tree_modular/exports/128x128_tree_modular-trunk.json";
+constexpr const char* kModularTreeCanopyForegroundMetadataPath =
+    "assets/128x128_tree_modular/exports/128x128_tree_modular-canopy_foreground.json";
+constexpr const char* kModularTreeShadowMetadataPath =
+    "assets/128x128_tree_modular/exports/128x128_tree_modular-shadow.json";
+constexpr const char* kModularTreeOutlineMaskMetadataPath =
+    "assets/128x128_tree_modular/exports/128x128_tree_modular-layer_2.json";
 constexpr const char* kSpellPatternPath = "assets/spell_patterns.json";
+constexpr const char* kEquipmentProfilesPath = "assets/equipment_profiles.json";
+constexpr const char* kHitShapesPath = "assets/hit_shapes.json";
+constexpr const char* kLootTablesPath = "assets/loot_tables.json";
 constexpr const char* kObjectsConfigPath = "assets/objects.json";
 constexpr const char* kCompositeEffectsPath = "assets/composite_effects.json";
 constexpr const char* kMenuBackgroundPath = "assets/menu_background.png";
@@ -229,6 +272,9 @@ constexpr const char* kZoneFillOverlayShaderPath = "assets/shaders/zone_fill_ove
 constexpr const char* kZoneBorderOverlayShaderPath = "assets/shaders/zone_border_overlay.fs";
 constexpr const char* kMapBoundsFadeShaderPath = "assets/shaders/map_bounds_fade.fs";
 constexpr const char* kInfluenceZoneOverlayShaderPath = "assets/shaders/influence_zone_overlay.fs";
+constexpr const char* kDamageFlashShaderPath = "assets/shaders/damage_flash.fs";
+constexpr const char* kTreeCompositeShaderPath = "assets/shaders/tree_composite.fs";
+constexpr const char* kTreeWindShaderPath = "assets/shaders/tree_wind.fs";
 constexpr const char* kSfxFireballCreatedPath = "assets/sfx/ogg/SFX/Spells/Fireball 1.ogg";
 constexpr const char* kSfxMeleeAttackPath = "assets/sfx/ogg/SFX/Attacks/Sword Attacks Hits and Blocks/Sword Attack 1.ogg";
 constexpr const char* kSfxCreateRunePath = "assets/sfx/ogg/SFX/Torch/Light Torch 1.ogg";
@@ -250,6 +296,15 @@ constexpr const char* kSfxGrapplingLatchPath =
     "assets/sfx/ogg/SFX/Attacks/Bow Attacks Hits and Blocks/Bow Impact Hit 1.ogg";
 constexpr const char* kSfxEarthRuneLaunchPath = "assets/sfx/EM_EARTH_LAUNCH_01.ogg";
 constexpr const char* kSfxEarthRuneImpactPath = "assets/sfx/EM_EARTH_IMPACT_01.ogg";
+constexpr std::array<const char*, 2> kSfxHammerSwingPaths = {
+    "assets/sfx/ogg/SFX/Spells/Rock Meteor Throw 1.ogg",
+    "assets/sfx/ogg/SFX/Spells/Rock Meteor Throw 2.ogg",
+};
+constexpr std::array<const char*, 3> kSfxHammerImpactPaths = {
+    "assets/sfx/ogg/SFX/Spells/Spell Impact 1.ogg",
+    "assets/sfx/ogg/SFX/Spells/Spell Impact 2.ogg",
+    "assets/sfx/ogg/SFX/Spells/Spell Impact 3.ogg",
+};
 constexpr std::array<const char*, 3> kSfxZoneDamagePaths = {
     "assets/sfx/Arcane_AttackF1.wav",
     "assets/sfx/Arcane_AttackF2.wav",
@@ -287,6 +342,8 @@ constexpr float kSfxVolumeGrapplingThrow = 0.68f;
 constexpr float kSfxVolumeGrapplingLatch = 0.72f;
 constexpr float kSfxVolumeEarthRuneLaunch = 0.74f;
 constexpr float kSfxVolumeEarthRuneImpact = 0.78f;
+constexpr float kSfxVolumeHammerSwing = 0.72f;
+constexpr float kSfxVolumeHammerImpact = 0.80f;
 constexpr float kSfxVolumeFootstepDirt = 0.50f;
 constexpr float kFireStormAmbientVolume = 0.42f;
 constexpr float kFireStormAmbientLoopStartSeconds = 0.20f;
