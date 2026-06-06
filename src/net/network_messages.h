@@ -42,6 +42,13 @@ struct ClientActionMessage {
     int request_rune_type = -1;
     std::string request_item_id;
     bool toggle_inventory_mode = false;
+    bool has_inventory_layout_sync = false;
+    int selected_rune_slot = 0;
+    std::vector<int> rune_slots;
+    std::vector<std::string> item_slots;
+    std::vector<int> item_slot_counts;
+    std::vector<float> item_slot_cooldown_remaining;
+    std::vector<float> item_slot_cooldown_total;
 };
 
 struct PlayerSnapshot {

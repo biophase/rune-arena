@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -19,6 +21,115 @@ struct ModularFrameEntry {
     int frame_index = -1;
     size_t source_order = 0;
 };
+
+using ColorKey = uint32_t;
+
+struct TeamPaletteRemap {
+    std::vector<std::unordered_map<ColorKey, Color>> per_team_replacements;
+    int source_team_index = 0;
+};
+
+ColorKey PackColorKey(const Color& color) {
+    return static_cast<ColorKey>(color.r) | (static_cast<ColorKey>(color.g) << 8) |
+           (static_cast<ColorKey>(color.b) << 16) | (static_cast<ColorKey>(color.a) << 24);
+}
+
+void UnloadLayerTextures(ModularLayerAsset* layer) {
+    if (layer == nullptr) {
+        return;
+    }
+    if (layer->texture.id != 0) {
+        UnloadTexture(layer->texture);
+        layer->texture = {};
+    }
+    for (Texture2D& texture : layer->team_variant_textures) {
+        if (texture.id != 0) {
+            UnloadTexture(texture);
+            texture = {};
+        }
+    }
+    layer->team_variant_textures.clear();
+}
+
+bool BuildTeamPaletteRemap(const std::string& palette_map_path, int team_count, int source_team_index,
+                           TeamPaletteRemap* out_remap) {
+    if (out_remap == nullptr || team_count <= 0 || source_team_index < 0 || source_team_index >= team_count) {
+        return false;
+    }
+    if (palette_map_path.empty() || !FileExists(palette_map_path.c_str())) {
+        TraceLog(LOG_ERROR, "Missing player palette map: %s", palette_map_path.c_str());
+        return false;
+    }
+
+    Image palette_image = LoadImage(palette_map_path.c_str());
+    if (palette_image.data == nullptr) {
+        TraceLog(LOG_ERROR, "Failed to load player palette map: %s", palette_map_path.c_str());
+        return false;
+    }
+    ImageFormat(&palette_image, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+    bool valid = false;
+    if (palette_image.width < team_count || palette_image.width <= source_team_index) {
+        TraceLog(LOG_ERROR, "Player palette map has insufficient columns for %d teams: %s", team_count,
+                 palette_map_path.c_str());
+    } else {
+        const Color* pixels = static_cast<const Color*>(palette_image.data);
+        TeamPaletteRemap remap;
+        remap.source_team_index = source_team_index;
+        remap.per_team_replacements.resize(static_cast<size_t>(team_count));
+
+        for (int y = 0; y < palette_image.height; ++y) {
+            const Color source_color = pixels[y * palette_image.width + source_team_index];
+            if (source_color.a == 0) {
+                continue;
+            }
+            valid = true;
+            const ColorKey source_key = PackColorKey(source_color);
+            for (int team_index = 0; team_index < team_count; ++team_index) {
+                remap.per_team_replacements[static_cast<size_t>(team_index)][source_key] =
+                    pixels[y * palette_image.width + team_index];
+            }
+        }
+
+        if (valid) {
+            *out_remap = std::move(remap);
+        } else {
+            TraceLog(LOG_ERROR, "Player palette map contains no remap rows: %s", palette_map_path.c_str());
+        }
+    }
+
+    UnloadImage(palette_image);
+    return valid;
+}
+
+Texture2D CreateTextureFromImage(const Image& image) {
+    Texture2D texture = LoadTextureFromImage(image);
+    if (texture.id != 0) {
+        SetTextureFilter(texture, TEXTURE_FILTER_POINT);
+    }
+    return texture;
+}
+
+Texture2D CreateRemappedTextureVariant(const Image& source_image, const std::unordered_map<ColorKey, Color>& replacement_map) {
+    Image variant_image = ImageCopy(source_image);
+    if (variant_image.data == nullptr) {
+        return {};
+    }
+
+    ImageFormat(&variant_image, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    Color* pixels = static_cast<Color*>(variant_image.data);
+    const int pixel_count = variant_image.width * variant_image.height;
+    for (int i = 0; i < pixel_count; ++i) {
+        const auto replacement_it = replacement_map.find(PackColorKey(pixels[i]));
+        if (replacement_it != replacement_map.end()) {
+            pixels[i] = replacement_it->second;
+        }
+    }
+
+    Texture2D texture = CreateTextureFromImage(variant_image);
+    UnloadImage(variant_image);
+    return texture;
+}
 
 const char* FacingToModularSuffix(FacingDirection facing) {
     switch (facing) {
@@ -112,7 +223,8 @@ bool CollectFrameEntries(const nlohmann::json& frames_json, std::vector<ModularF
 
 ModularCharacterAsset::~ModularCharacterAsset() { Unload(); }
 
-bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::string& json_path) {
+bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::string& json_path,
+                                      const ModularLayerLoadOptions& options) {
     std::ifstream input(json_path);
     if (!input.is_open()) {
         TraceLog(LOG_ERROR, "Failed to open modular character metadata: %s", json_path.c_str());
@@ -145,13 +257,34 @@ bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::
     }
 
     ModularLayerAsset layer_asset;
-    layer_asset.texture = LoadTextureFromImage(source_image);
-    UnloadImage(source_image);
+    layer_asset.texture = CreateTextureFromImage(source_image);
     if (layer_asset.texture.id == 0) {
         TraceLog(LOG_ERROR, "Failed to create modular character texture: %s", texture_path.string().c_str());
+        UnloadImage(source_image);
         return false;
     }
-    SetTextureFilter(layer_asset.texture, TEXTURE_FILTER_POINT);
+    layer_asset.source_team_index = options.source_team_index;
+
+    if (options.generate_team_variants) {
+        TeamPaletteRemap remap;
+        if (BuildTeamPaletteRemap(options.palette_map_path, options.team_count, options.source_team_index, &remap)) {
+            layer_asset.team_variant_textures.resize(static_cast<size_t>(options.team_count));
+            for (int team_index = 0; team_index < options.team_count; ++team_index) {
+                if (team_index == options.source_team_index) {
+                    continue;
+                }
+                layer_asset.team_variant_textures[static_cast<size_t>(team_index)] =
+                    CreateRemappedTextureVariant(source_image, remap.per_team_replacements[static_cast<size_t>(team_index)]);
+                if (layer_asset.team_variant_textures[static_cast<size_t>(team_index)].id == 0) {
+                    TraceLog(LOG_ERROR, "Failed to create modular team variant %d for layer '%s'", team_index,
+                             layer_name.c_str());
+                }
+            }
+        } else {
+            TraceLog(LOG_ERROR, "Falling back to base texture for modular layer '%s'", layer_name.c_str());
+        }
+    }
+    UnloadImage(source_image);
 
     std::vector<Rectangle> frame_rects;
     std::vector<float> frame_durations_seconds;
@@ -231,9 +364,7 @@ bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::
 
     auto existing_it = layers_.find(layer_name);
     if (existing_it != layers_.end()) {
-        if (existing_it->second.texture.id != 0) {
-            UnloadTexture(existing_it->second.texture);
-        }
+        UnloadLayerTextures(&existing_it->second);
         existing_it->second = std::move(layer_asset);
     } else {
         layers_.emplace(layer_name, std::move(layer_asset));
@@ -244,9 +375,7 @@ bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::
 
 void ModularCharacterAsset::Unload() {
     for (auto& entry : layers_) {
-        if (entry.second.texture.id != 0) {
-            UnloadTexture(entry.second.texture);
-        }
+        UnloadLayerTextures(&entry.second);
     }
     layers_.clear();
 }
@@ -266,9 +395,19 @@ bool ModularCharacterAsset::HasTag(const std::string& layer_name, const std::str
     return FindTag(layer_name, tag_name) != nullptr;
 }
 
-const Texture2D* ModularCharacterAsset::GetLayerTexture(const std::string& layer_name) const {
+const Texture2D* ModularCharacterAsset::GetLayerTexture(const std::string& layer_name, int team_index) const {
     const ModularLayerAsset* layer = FindLayer(layer_name);
-    return layer != nullptr ? &layer->texture : nullptr;
+    if (layer == nullptr) {
+        return nullptr;
+    }
+    if (team_index >= 0 && team_index != layer->source_team_index &&
+        static_cast<size_t>(team_index) < layer->team_variant_textures.size()) {
+        const Texture2D& variant_texture = layer->team_variant_textures[static_cast<size_t>(team_index)];
+        if (variant_texture.id != 0) {
+            return &variant_texture;
+        }
+    }
+    return &layer->texture;
 }
 
 Rectangle ModularCharacterAsset::GetFrame(const std::string& layer_name, const std::string& tag_name, float time_seconds) const {

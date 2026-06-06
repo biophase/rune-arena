@@ -8,6 +8,7 @@ enum class StatusEffectType {
     Stunned = 2,
     Rooted = 3,
     RootedRecovery = 4,
+    Frozen = 5,
 };
 
 struct StatusEffectInstance {

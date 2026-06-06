@@ -694,6 +694,54 @@
         }
       }
     },
+    "volatile_cast_effect":{
+      "facings":{
+        "default":{
+          "frames": [[1,96],[2,96],[3,96],[0,97],[1,97]], 
+          "fps": 20
+        }
+      }
+    },
+    "ice_shard_projectile_idle":{
+      "facings":{
+        "default":{
+          "frames": [[98,0]], 
+          "fps": 10
+        }
+      }
+    },
+    "ice_shard_projectile_death":{
+      "facings":{
+        "default":{
+          "frames": [[98,2],[98,3],[99,0],[99,1],[99,2],[99,3],[100,0],[100,1]], 
+          "fps": 50
+        }
+      }
+    },
+    "snow_particle_idle":{
+      "facings":{
+        "default":{
+          "frames": [[100,3]],
+          "fps": 10
+        }
+      }
+    },
+    "snow_particle_born":{
+      "facings":{
+        "default":{
+          "frames": [[101,1],[101,2],[101,3],[102,0]],
+          "fps": 20
+        }
+      }
+    },
+    "snow_particle_death":{
+      "facings":{
+        "default":{
+          "frames": [[102,2],[102,3],[103,0],[103,1]],
+          "fps": 20
+        }
+      }
+    },
     "totem_fire_idle":{
       "facings":{
         "default":{

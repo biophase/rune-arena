@@ -23,6 +23,7 @@ struct Projectile {
     bool emitter_enabled = false;
     int emitter_emit_every_frames = Constants::kProjectileSmokeEmitEveryFrames;
     int emitter_frame_counter = 0;
+    float lifetime_remaining = -1.0f;
 
     bool alive = true;
 };

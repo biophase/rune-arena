@@ -74,6 +74,13 @@ nlohmann::json ToJson(const ClientActionMessage& message) {
         {"request_rune_type", message.request_rune_type},
         {"request_item_id", message.request_item_id},
         {"toggle_inventory_mode", message.toggle_inventory_mode},
+        {"has_inventory_layout_sync", message.has_inventory_layout_sync},
+        {"selected_rune_slot", message.selected_rune_slot},
+        {"rune_slots", message.rune_slots},
+        {"item_slots", message.item_slots},
+        {"item_slot_counts", message.item_slot_counts},
+        {"item_slot_cooldown_remaining", message.item_slot_cooldown_remaining},
+        {"item_slot_cooldown_total", message.item_slot_cooldown_total},
     };
 }
 
@@ -87,6 +94,13 @@ std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& js
     out.request_rune_type = json.value("request_rune_type", -1);
     out.request_item_id = json.value("request_item_id", std::string{});
     out.toggle_inventory_mode = json.value("toggle_inventory_mode", false);
+    out.has_inventory_layout_sync = json.value("has_inventory_layout_sync", false);
+    out.selected_rune_slot = json.value("selected_rune_slot", 0);
+    out.rune_slots = json.value("rune_slots", std::vector<int>{});
+    out.item_slots = json.value("item_slots", std::vector<std::string>{});
+    out.item_slot_counts = json.value("item_slot_counts", std::vector<int>{});
+    out.item_slot_cooldown_remaining = json.value("item_slot_cooldown_remaining", std::vector<float>{});
+    out.item_slot_cooldown_total = json.value("item_slot_cooldown_total", std::vector<float>{});
     return out;
 }
 

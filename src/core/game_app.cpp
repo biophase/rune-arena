@@ -21,6 +21,7 @@
 #include "gameplay/action_intent.h"
 #include "gameplay/snapshot_translation.h"
 #include "spells/fire_bolt_spell.h"
+#include "spells/ice_wave_spell.h"
 #include "spells/ice_wall_spell.h"
 #include "ui/ui_lobby.h"
 #include "ui/ui_main_menu.h"
@@ -160,6 +161,41 @@ bool HasStatusEffect(const Player& player, StatusEffectType type) {
                        [&](const StatusEffectInstance& status) {
                            return status.type == type && status.remaining_seconds > 0.0f;
                        });
+}
+
+bool IsIceShardProjectileAnimation(const std::string& animation_key) {
+    return animation_key == "ice_shard_projectile_idle";
+}
+
+bool IsIceShardProjectile(const Projectile& projectile) { return IsIceShardProjectileAnimation(projectile.animation_key); }
+
+bool IsSnowParticleAnimation(const std::string& animation_key) {
+    return animation_key == "snow_particle_born" || animation_key == "snow_particle_idle" ||
+           animation_key == "snow_particle_death";
+}
+
+float GetAnimationDurationSeconds(const SpriteMetadataLoader& metadata, const std::string& animation_key,
+                                  const std::string& facing, int max_cycles, float fallback_seconds) {
+    int frame_count = 0;
+    float fps = 0.0f;
+    if (!metadata.GetAnimationStats(animation_key, facing, frame_count, fps)) {
+        return fallback_seconds;
+    }
+    const float cycle_seconds = static_cast<float>(frame_count) / std::max(0.001f, fps);
+    return cycle_seconds * static_cast<float>(std::max(1, max_cycles));
+}
+
+Vector2 GetParticleRenderCenter(const Particle& particle, double now_seconds) {
+    Vector2 center = particle.pos;
+    if (particle.use_visual_z) {
+        center.y -= particle.visual_z;
+        if (particle.sway_amplitude > 0.0f && particle.sway_frequency_hz > 0.0f) {
+            const float phase =
+                particle.sway_phase + static_cast<float>(now_seconds) * particle.sway_frequency_hz * 2.0f * PI;
+            center.x += particle.sway_amplitude * std::sin(phase);
+        }
+    }
+    return center;
 }
 
 struct OccluderRevealCircle {
@@ -463,6 +499,8 @@ StatusEffectUiSpec GetStatusEffectUiSpec(StatusEffectType type) {
             return {"earth_rune_rooted_idle", false};
         case StatusEffectType::RootedRecovery:
             return {"earth_rune_rooted_idle", false};
+        case StatusEffectType::Frozen:
+            return {"ice_shard_projectile_idle", false};
     }
     return {"altar_rune_slot_generic", true};
 }
@@ -944,7 +982,12 @@ bool GameApp::Initialize() {
     sprite_metadata_tall_.LoadFromFile(resolved_sprite_metadata_tall_path_);
     sprite_metadata_96x96_.LoadFromFile(resolved_sprite_metadata_96x96_path_);
     sprite_metadata_128x128_.LoadFromFile(resolved_sprite_metadata_128x128_path_);
-    modular_player_asset_.LoadLayer("main", resolved_modular_player_main_path_);
+    ModularLayerLoadOptions modular_player_main_options;
+    modular_player_main_options.generate_team_variants = true;
+    modular_player_main_options.palette_map_path = ResolveRuntimePath(Constants::kPlayerColorsMapPath);
+    modular_player_main_options.team_count = Constants::kTeamCount;
+    modular_player_main_options.source_team_index = Constants::kTeamBlue;
+    modular_player_asset_.LoadLayer("main", resolved_modular_player_main_path_, modular_player_main_options);
     modular_player_asset_.LoadLayer("shadow", resolved_modular_player_shadow_path_);
     modular_player_asset_.LoadLayer("sword", resolved_modular_player_sword_path);
     if (FileExists(resolved_modular_player_hammer_path.c_str())) {
@@ -1781,10 +1824,23 @@ void GameApp::LoadAudioAssets() {
             SetSoundVolume(clip.sound, volume);
         }
     };
+    auto load_sfx_with_fallback = [&](LoadedSfx& clip, const char* primary_path, const char* fallback_path, float volume) {
+        const std::string resolved_primary = ResolveRuntimePath(primary_path);
+        if (FileExists(resolved_primary.c_str())) {
+            clip.sound = LoadSound(resolved_primary.c_str());
+            clip.loaded = IsLoadedSound(clip.sound);
+            if (clip.loaded) {
+                SetSoundVolume(clip.sound, volume);
+            }
+            return;
+        }
+        load_sfx(clip, fallback_path, volume);
+    };
 
     load_sfx(sfx_fireball_created_, Constants::kSfxFireballCreatedPath, Constants::kSfxVolumeFireballCreated);
     load_sfx(sfx_melee_attack_, Constants::kSfxMeleeAttackPath, Constants::kSfxVolumeMeleeAttack);
     load_sfx(sfx_create_rune_, Constants::kSfxCreateRunePath, Constants::kSfxVolumeCreateRune);
+    load_sfx(sfx_volatile_cast_, Constants::kSfxVolatileCastPath, Constants::kSfxVolumeVolatileCast);
     load_sfx(sfx_explosion_, Constants::kSfxExplosionPath, Constants::kSfxVolumeExplosion);
     load_sfx(sfx_vase_breaking_, Constants::kSfxVaseBreakingPath, Constants::kSfxVolumeVaseBreaking);
     load_sfx(sfx_ice_wall_freeze_, Constants::kSfxIceWallFreezePath, Constants::kSfxVolumeIceWallFreeze);
@@ -1801,6 +1857,14 @@ void GameApp::LoadAudioAssets() {
     load_sfx(sfx_grappling_latch_, Constants::kSfxGrapplingLatchPath, Constants::kSfxVolumeGrapplingLatch);
     load_sfx(sfx_earth_rune_launch_, Constants::kSfxEarthRuneLaunchPath, Constants::kSfxVolumeEarthRuneLaunch);
     load_sfx(sfx_earth_rune_impact_, Constants::kSfxEarthRuneImpactPath, Constants::kSfxVolumeEarthRuneImpact);
+    for (size_t i = 0; i < sfx_ice_wave_cast_.size(); ++i) {
+        load_sfx_with_fallback(sfx_ice_wave_cast_[i], Constants::kSfxIceWaveCastPaths[i],
+                               Constants::kSfxIceWaveCastFallbackPaths[i], Constants::kSfxVolumeIceWaveCast);
+    }
+    for (size_t i = 0; i < sfx_ice_wave_impact_.size(); ++i) {
+        load_sfx_with_fallback(sfx_ice_wave_impact_[i], Constants::kSfxIceWaveImpactPaths[i],
+                               Constants::kSfxIceWaveImpactFallbackPaths[i], Constants::kSfxVolumeIceWaveImpact);
+    }
     for (size_t i = 0; i < sfx_hammer_swing_.size(); ++i) {
         load_sfx(sfx_hammer_swing_[i], Constants::kSfxHammerSwingPaths[i], Constants::kSfxVolumeHammerSwing);
     }
@@ -1868,6 +1932,7 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_fireball_created_);
     unload_sfx(sfx_melee_attack_);
     unload_sfx(sfx_create_rune_);
+    unload_sfx(sfx_volatile_cast_);
     unload_sfx(sfx_explosion_);
     unload_sfx(sfx_vase_breaking_);
     unload_sfx(sfx_ice_wall_freeze_);
@@ -1884,6 +1949,12 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_grappling_latch_);
     unload_sfx(sfx_earth_rune_launch_);
     unload_sfx(sfx_earth_rune_impact_);
+    for (auto& clip : sfx_ice_wave_cast_) {
+        unload_sfx(clip);
+    }
+    for (auto& clip : sfx_ice_wave_impact_) {
+        unload_sfx(clip);
+    }
     for (auto& clip : sfx_hammer_swing_) {
         unload_sfx(clip);
     }
@@ -2252,7 +2323,7 @@ void GameApp::UpdateMatch(float dt) {
 
         if (local_input.primary_pressed || local_input.grappling_pressed ||
             local_input.request_rune_type != static_cast<int>(RuneType::None) || !local_input.request_item_id.empty() ||
-            local_input.toggle_inventory_mode) {
+            local_input.toggle_inventory_mode || pending_local_inventory_sync_dirty_) {
             ClientActionMessage action_message;
             action_message.player_id = local_input.player_id;
             action_message.seq = local_input.seq;
@@ -2261,6 +2332,22 @@ void GameApp::UpdateMatch(float dt) {
             action_message.request_rune_type = local_input.request_rune_type;
             action_message.request_item_id = local_input.request_item_id;
             action_message.toggle_inventory_mode = local_input.toggle_inventory_mode;
+            if (pending_local_inventory_sync_dirty_ && pending_local_inventory_sync_.has_value()) {
+                const Player& pending = *pending_local_inventory_sync_;
+                action_message.has_inventory_layout_sync = true;
+                action_message.selected_rune_slot = pending.selected_rune_slot;
+                action_message.rune_slots.reserve(pending.rune_slots.size());
+                for (const RuneType rune_type : pending.rune_slots) {
+                    action_message.rune_slots.push_back(static_cast<int>(rune_type));
+                }
+                action_message.item_slots.assign(pending.item_slots.begin(), pending.item_slots.end());
+                action_message.item_slot_counts.assign(pending.item_slot_counts.begin(), pending.item_slot_counts.end());
+                action_message.item_slot_cooldown_remaining.assign(pending.item_slot_cooldown_remaining.begin(),
+                                                                  pending.item_slot_cooldown_remaining.end());
+                action_message.item_slot_cooldown_total.assign(pending.item_slot_cooldown_total.begin(),
+                                                               pending.item_slot_cooldown_total.end());
+                pending_local_inventory_sync_dirty_ = false;
+            }
             network_manager_.SendClientAction(action_message);
         }
 
@@ -2278,8 +2365,10 @@ void GameApp::UpdateMatch(float dt) {
     }
 
     UpdateActiveModularAttackVisuals(dt);
+    UpdateVolatileCastCasterFx(dt);
     UpdateDamageFlashVisuals(dt);
     UpdateProjectileEmitters();
+    UpdateSnowParticleEmitters(dt);
     UpdateParticles(dt);
     UpdateHammerImpactEffects(dt);
     UpdateLightningEffects(dt);
@@ -2755,11 +2844,15 @@ void GameApp::StartAsHost() {
     render_player_positions_.clear();
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
+    volatile_cast_caster_fx_.clear();
     known_player_names_.clear();
     known_player_names_[0] = settings_.player_name;
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
+    volatile_cast_caster_fx_.clear();
+    pending_local_inventory_sync_.reset();
+    pending_local_inventory_sync_dirty_ = false;
 
     app_screen_ = AppScreen::Lobby;
 }
@@ -2796,6 +2889,9 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = GetTime();
+    volatile_cast_caster_fx_.clear();
+    pending_local_inventory_sync_.reset();
+    pending_local_inventory_sync_dirty_ = false;
     app_screen_ = AppScreen::Connecting;
 }
 
@@ -2816,11 +2912,14 @@ void GameApp::ReturnToMainMenu() {
     render_player_positions_.clear();
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
+    volatile_cast_caster_fx_.clear();
     known_player_names_.clear();
     pending_primary_pressed_ = false;
     pending_select_rune_slot_ = -1;
     pending_activate_item_slot_ = -1;
     pending_toggle_inventory_mode_ = false;
+    pending_local_inventory_sync_.reset();
+    pending_local_inventory_sync_dirty_ = false;
     pending_object_spawns_.clear();
     dropped_item_pickup_blocks_.clear();
     loot_quota_remaining_.clear();
@@ -2877,12 +2976,15 @@ void GameApp::StartMatchAsHost() {
     render_player_positions_.clear();
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
+    volatile_cast_caster_fx_.clear();
     host_server_tick_ = 0;
     snapshot_accumulator_ = 0.0;
     pending_primary_pressed_ = false;
     pending_select_rune_slot_ = -1;
     pending_activate_item_slot_ = -1;
     pending_toggle_inventory_mode_ = false;
+    pending_local_inventory_sync_.reset();
+    pending_local_inventory_sync_dirty_ = false;
     pending_object_spawns_.clear();
     dropped_item_pickup_blocks_.clear();
 
@@ -2975,6 +3077,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     previous_hp.reserve(state_.players.size());
     std::unordered_map<int, PreviousPlayerState> previous_player_state;
     previous_player_state.reserve(state_.players.size());
+    std::unordered_map<int, float> previous_player_frozen_remaining;
+    previous_player_frozen_remaining.reserve(state_.players.size());
     std::unordered_map<int, std::array<std::string, 4>> previous_player_item_slots;
     previous_player_item_slots.reserve(state_.players.size());
     std::unordered_map<int, std::array<int, 4>> previous_player_item_counts;
@@ -2982,6 +3086,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     for (const auto& player : state_.players) {
         previous_hp[player.id] = player.hp;
         previous_player_state[player.id] = {player.hp, player.alive, player.action_state};
+        previous_player_frozen_remaining[player.id] = 0.0f;
+        for (const auto& status : player.status_effects) {
+            if (status.type == StatusEffectType::Frozen && status.remaining_seconds > 0.0f) {
+                previous_player_frozen_remaining[player.id] =
+                    std::max(previous_player_frozen_remaining[player.id], status.remaining_seconds);
+            }
+        }
         previous_player_item_slots[player.id] = player.item_slots;
         previous_player_item_counts[player.id] = player.item_slot_counts;
     }
@@ -3011,10 +3122,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
     std::unordered_map<int, Vector2> previous_projectile_positions;
     previous_projectile_positions.reserve(state_.projectiles.size());
+    std::unordered_map<int, Vector2> previous_projectile_velocities;
+    previous_projectile_velocities.reserve(state_.projectiles.size());
     std::unordered_map<int, std::string> previous_projectile_animation_keys;
     previous_projectile_animation_keys.reserve(state_.projectiles.size());
     for (const auto& projectile : state_.projectiles) {
         previous_projectile_positions[projectile.id] = projectile.pos;
+        previous_projectile_velocities[projectile.id] = projectile.vel;
         previous_projectile_animation_keys[projectile.id] = projectile.animation_key;
     }
     std::unordered_map<int, IceWallState> previous_wall_states;
@@ -3082,20 +3196,30 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             known_name_it != known_player_names_.end() ? known_name_it->second : TextFormat("Player%d", player_snapshot.id);
         SnapshotTranslation::ApplyPlayerSnapshot(&player, player_snapshot, resolved_name);
         if (has_previous_local_ui_state && player.id == state_.local_player_id) {
-            player.rune_slots = previous_local_ui_state.rune_slots;
-            player.selected_rune_slot = previous_local_ui_state.selected_rune_slot;
             player.inventory_mode = previous_local_ui_state.inventory_mode;
-            for (size_t i = 0; i < player.weapon_slots.size() && i < previous_local_ui_state.weapon_slots.size(); ++i) {
-                player.weapon_slots[i] = previous_local_ui_state.weapon_slots[i];
+            if (PendingLocalInventorySyncMatches(player)) {
+                pending_local_inventory_sync_.reset();
+                pending_local_inventory_sync_dirty_ = false;
             }
-            player.ui_dragging_slot = previous_local_ui_state.ui_dragging_slot;
-            player.ui_drag_source_family = previous_local_ui_state.ui_drag_source_family;
-            player.ui_drag_source_index = previous_local_ui_state.ui_drag_source_index;
-            player.ui_drag_rune_type = previous_local_ui_state.ui_drag_rune_type;
-            player.ui_drag_item_id = previous_local_ui_state.ui_drag_item_id;
-            player.ui_drag_item_count = previous_local_ui_state.ui_drag_item_count;
-            player.ui_drag_item_cooldown_remaining = previous_local_ui_state.ui_drag_item_cooldown_remaining;
-            player.ui_drag_item_cooldown_total = previous_local_ui_state.ui_drag_item_cooldown_total;
+            const bool preserve_local_inventory =
+                previous_local_ui_state.ui_dragging_slot || pending_local_inventory_sync_.has_value();
+            if (preserve_local_inventory) {
+                player.rune_slots = previous_local_ui_state.rune_slots;
+                player.selected_rune_slot = previous_local_ui_state.selected_rune_slot;
+                player.selected_rune_type = previous_local_ui_state.selected_rune_type;
+                player.item_slots = previous_local_ui_state.item_slots;
+                player.item_slot_counts = previous_local_ui_state.item_slot_counts;
+                player.item_slot_cooldown_remaining = previous_local_ui_state.item_slot_cooldown_remaining;
+                player.item_slot_cooldown_total = previous_local_ui_state.item_slot_cooldown_total;
+                player.ui_dragging_slot = previous_local_ui_state.ui_dragging_slot;
+                player.ui_drag_source_family = previous_local_ui_state.ui_drag_source_family;
+                player.ui_drag_source_index = previous_local_ui_state.ui_drag_source_index;
+                player.ui_drag_rune_type = previous_local_ui_state.ui_drag_rune_type;
+                player.ui_drag_item_id = previous_local_ui_state.ui_drag_item_id;
+                player.ui_drag_item_count = previous_local_ui_state.ui_drag_item_count;
+                player.ui_drag_item_cooldown_remaining = previous_local_ui_state.ui_drag_item_cooldown_remaining;
+                player.ui_drag_item_cooldown_total = previous_local_ui_state.ui_drag_item_cooldown_total;
+            }
         }
         state_.players.push_back(player);
 
@@ -3111,6 +3235,32 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
     }
     render_player_positions_.swap(updated_render_positions);
+    if (!network_manager_.IsHost()) {
+        for (const auto& player : state_.players) {
+            float frozen_remaining = 0.0f;
+            for (const auto& status : player.status_effects) {
+                if (status.type == StatusEffectType::Frozen && status.remaining_seconds > 0.0f) {
+                    frozen_remaining = std::max(frozen_remaining, status.remaining_seconds);
+                }
+            }
+            const float previous_remaining =
+                previous_player_frozen_remaining.count(player.id) ? previous_player_frozen_remaining[player.id] : 0.0f;
+            if (frozen_remaining > previous_remaining + 0.001f) {
+                std::vector<size_t> loaded_indices;
+                loaded_indices.reserve(sfx_ice_wave_impact_.size());
+                for (size_t i = 0; i < sfx_ice_wave_impact_.size(); ++i) {
+                    if (sfx_ice_wave_impact_[i].loaded) {
+                        loaded_indices.push_back(i);
+                    }
+                }
+                if (!loaded_indices.empty()) {
+                    std::uniform_int_distribution<size_t> dist(0, loaded_indices.size() - 1);
+                    const LoadedSfx& clip = sfx_ice_wave_impact_[loaded_indices[dist(rng_)]];
+                    PlaySfxIfVisible(clip.sound, clip.loaded, player.pos);
+                }
+            }
+        }
+    }
 
     state_.runes.clear();
     for (const auto& rune_snapshot : snapshot.runes) {
@@ -3136,6 +3286,10 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     RebuildInfluenceZones();
     if (!network_manager_.IsHost()) {
         for (const auto& rune : state_.runes) {
+            const bool is_new_rune = previous_rune_ids.find(rune.id) == previous_rune_ids.end();
+            if (is_new_rune && rune.volatile_cast && !rune.active && rune.activation_remaining_seconds > 0.0f) {
+                SpawnVolatileCastCasterFx(rune.owner_player_id);
+            }
             const auto previous_active_it = previous_rune_active.find(rune.id);
             const bool became_active = rune.active &&
                                        (previous_active_it == previous_rune_active.end() || !previous_active_it->second);
@@ -3206,11 +3360,28 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     if (!network_manager_.IsHost()) {
         std::unordered_set<int> current_projectile_ids;
         current_projectile_ids.reserve(state_.projectiles.size());
+        bool played_ice_wave_cast = false;
         for (const auto& projectile : state_.projectiles) {
             current_projectile_ids.insert(projectile.id);
             if (previous_projectile_positions.find(projectile.id) == previous_projectile_positions.end() &&
                 projectile.animation_key == "projectile_fire_bolt") {
                 PlaySfxIfVisible(sfx_fireball_created_.sound, sfx_fireball_created_.loaded, projectile.pos);
+            } else if (!played_ice_wave_cast &&
+                       previous_projectile_positions.find(projectile.id) == previous_projectile_positions.end() &&
+                       IsIceShardProjectile(projectile)) {
+                std::vector<size_t> loaded_indices;
+                loaded_indices.reserve(sfx_ice_wave_cast_.size());
+                for (size_t i = 0; i < sfx_ice_wave_cast_.size(); ++i) {
+                    if (sfx_ice_wave_cast_[i].loaded) {
+                        loaded_indices.push_back(i);
+                    }
+                }
+                if (!loaded_indices.empty()) {
+                    std::uniform_int_distribution<size_t> dist(0, loaded_indices.size() - 1);
+                    const LoadedSfx& clip = sfx_ice_wave_cast_[loaded_indices[dist(rng_)]];
+                    PlaySfxIfVisible(clip.sound, clip.loaded, projectile.pos);
+                }
+                played_ice_wave_cast = true;
             }
             const auto previous_animation_it = previous_projectile_animation_keys.find(projectile.id);
             if (previous_animation_it != previous_projectile_animation_keys.end() &&
@@ -3235,6 +3406,14 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 continue;
             }
             const auto previous_animation_it = previous_projectile_animation_keys.find(projectile_id);
+            if (previous_animation_it != previous_projectile_animation_keys.end() &&
+                IsIceShardProjectileAnimation(previous_animation_it->second)) {
+                const Vector2 travel_velocity =
+                    previous_projectile_velocities.count(projectile_id) ? previous_projectile_velocities[projectile_id]
+                                                                        : Vector2{1.0f, 0.0f};
+                SpawnIceShardDeathParticle(projectile_pos, travel_velocity);
+                continue;
+            }
             const bool was_static = previous_animation_it != previous_projectile_animation_keys.end() &&
                                     previous_animation_it->second == "fire_storm_static_large";
             Particle explosion_vfx;
@@ -3834,6 +4013,11 @@ void GameApp::SimulateHostGameplay(float dt) {
         if (action.request_rune_type != static_cast<int>(RuneType::None)) input.request_rune_type = action.request_rune_type;
         if (!action.request_item_id.empty()) input.request_item_id = action.request_item_id;
         input.toggle_inventory_mode = input.toggle_inventory_mode || action.toggle_inventory_mode;
+        if (action.has_inventory_layout_sync) {
+            if (Player* player = FindPlayerById(action.player_id); player != nullptr) {
+                ApplyInventoryLayoutSync(*player, action);
+            }
+        }
     }
 
     for (auto& player : state_.players) {
@@ -4103,6 +4287,9 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
             }
             case StatusEffectType::Stunned:
                 break;
+            case StatusEffectType::Frozen:
+                status.movement_speed_multiplier = Constants::kFrozenMovementSpeedMultiplier;
+                break;
             case StatusEffectType::Rooted: {
                 status.source_elapsed_seconds += applied_dt;
                 const float burn_duration = std::max(0.001f, status.burn_duration_seconds);
@@ -4158,7 +4345,8 @@ float GameApp::GetPlayerMovementSpeedMultiplier(const Player& player) const {
         if (status.remaining_seconds <= 0.0f) {
             continue;
         }
-        if (status.type == StatusEffectType::Rooted || status.type == StatusEffectType::RootedRecovery) {
+        if (status.type == StatusEffectType::Rooted || status.type == StatusEffectType::RootedRecovery ||
+            status.type == StatusEffectType::Frozen) {
             multiplier = std::min(multiplier, std::clamp(status.movement_speed_multiplier, 0.0f, 1.0f));
         }
     }
@@ -4821,6 +5009,48 @@ void GameApp::DropInventoryDrag(Player& player, SlotFamily family, int slot_inde
     player.ui_drag_source_index = -1;
 }
 
+void GameApp::QueueLocalInventorySync(const Player& player) {
+    pending_local_inventory_sync_ = player;
+    pending_local_inventory_sync_dirty_ = true;
+}
+
+void GameApp::ApplyInventoryLayoutSync(Player& player, const ClientActionMessage& action) {
+    if (!action.has_inventory_layout_sync) {
+        return;
+    }
+    if (action.rune_slots.size() != player.rune_slots.size() || action.item_slots.size() != player.item_slots.size() ||
+        action.item_slot_counts.size() != player.item_slot_counts.size() ||
+        action.item_slot_cooldown_remaining.size() != player.item_slot_cooldown_remaining.size() ||
+        action.item_slot_cooldown_total.size() != player.item_slot_cooldown_total.size()) {
+        return;
+    }
+
+    for (size_t i = 0; i < player.rune_slots.size(); ++i) {
+        player.rune_slots[i] = static_cast<RuneType>(action.rune_slots[i]);
+    }
+    player.selected_rune_slot =
+        std::clamp(action.selected_rune_slot, 0, static_cast<int>(player.rune_slots.size()) - 1);
+    player.selected_rune_type = player.rune_slots[player.selected_rune_slot];
+
+    for (size_t i = 0; i < player.item_slots.size(); ++i) {
+        player.item_slots[i] = action.item_slots[i];
+        player.item_slot_counts[i] = action.item_slot_counts[i];
+        player.item_slot_cooldown_remaining[i] = action.item_slot_cooldown_remaining[i];
+        player.item_slot_cooldown_total[i] = action.item_slot_cooldown_total[i];
+    }
+}
+
+bool GameApp::PendingLocalInventorySyncMatches(const Player& player) const {
+    if (!pending_local_inventory_sync_.has_value()) {
+        return false;
+    }
+    const Player& pending = *pending_local_inventory_sync_;
+    return player.rune_slots == pending.rune_slots && player.selected_rune_slot == pending.selected_rune_slot &&
+           player.item_slots == pending.item_slots && player.item_slot_counts == pending.item_slot_counts &&
+           player.item_slot_cooldown_remaining == pending.item_slot_cooldown_remaining &&
+           player.item_slot_cooldown_total == pending.item_slot_cooldown_total;
+}
+
 void GameApp::AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second) {
     StatusEffectInstance status;
     status.type = StatusEffectType::Regeneration;
@@ -4866,6 +5096,31 @@ void GameApp::AddStunnedStatus(Player& player, float duration_seconds) {
     status.visible = true;
     status.is_buff = false;
     status.composite_effect_id = "stunned_effect";
+    player.status_effects.push_back(status);
+}
+
+void GameApp::AddFrozenStatus(Player& player, float duration_seconds) {
+    const float clamped_duration = std::max(0.0f, duration_seconds);
+    for (auto& status : player.status_effects) {
+        if (status.type != StatusEffectType::Frozen) {
+            continue;
+        }
+        status.total_seconds = std::max(status.total_seconds, clamped_duration);
+        status.remaining_seconds = std::max(status.remaining_seconds, clamped_duration);
+        status.movement_speed_multiplier = Constants::kFrozenMovementSpeedMultiplier;
+        status.visible = true;
+        status.is_buff = false;
+        return;
+    }
+
+    StatusEffectInstance status;
+    status.type = StatusEffectType::Frozen;
+    status.remaining_seconds = clamped_duration;
+    status.total_seconds = clamped_duration;
+    status.visible = true;
+    status.is_buff = false;
+    status.movement_speed_multiplier = Constants::kFrozenMovementSpeedMultiplier;
+    status.composite_effect_id = "ice_shard_projectile_idle";
     player.status_effects.push_back(status);
 }
 
@@ -5569,6 +5824,10 @@ void GameApp::UpdateProjectiles(float dt) {
             continue;
         }
 
+        if (projectile.lifetime_remaining > 0.0f) {
+            projectile.lifetime_remaining = std::max(0.0f, projectile.lifetime_remaining - dt);
+        }
+
         if (projectile.upgrade_pause_remaining > 0.0f) {
             projectile.upgrade_pause_remaining = std::max(0.0f, projectile.upgrade_pause_remaining - dt);
             if (projectile.upgrade_pause_remaining > 0.0f) {
@@ -5623,6 +5882,8 @@ void GameApp::UpdateProjectiles(float dt) {
 
         const GridCoord cell = WorldToCell(projectile.pos);
         if (!state_.map.IsInside(cell)) {
+            destroy_projectile = true;
+        } else if (projectile.lifetime_remaining == 0.0f) {
             destroy_projectile = true;
         }
 
@@ -5688,10 +5949,24 @@ void GameApp::UpdateProjectiles(float dt) {
 
                 destroy_projectile = true;
                 excluded_target_id = target.id;
-                ApplyDamageToPlayer(target, projectile.owner_player_id, projectile.damage, "fire_bolt", true,
-                                    projectile.pos);
+                ApplyDamageToPlayer(target, projectile.owner_player_id, projectile.damage,
+                                    IsIceShardProjectile(projectile) ? "ice_wave" : "fire_bolt", true, projectile.pos);
                 if (IsStaticFireBolt(projectile)) {
                     AddStunnedStatus(target, Constants::kStaticFireBoltStunSeconds);
+                } else if (IsIceShardProjectile(projectile)) {
+                    AddFrozenStatus(target, Constants::kFrozenStatusDurationSeconds);
+                    std::vector<size_t> loaded_indices;
+                    loaded_indices.reserve(sfx_ice_wave_impact_.size());
+                    for (size_t i = 0; i < sfx_ice_wave_impact_.size(); ++i) {
+                        if (sfx_ice_wave_impact_[i].loaded) {
+                            loaded_indices.push_back(i);
+                        }
+                    }
+                    if (!loaded_indices.empty()) {
+                        std::uniform_int_distribution<size_t> dist(0, loaded_indices.size() - 1);
+                        const LoadedSfx& clip = sfx_ice_wave_impact_[loaded_indices[dist(rng_)]];
+                        PlaySfxIfVisible(clip.sound, clip.loaded, projectile.pos);
+                    }
                 }
 
                 break;
@@ -5699,7 +5974,11 @@ void GameApp::UpdateProjectiles(float dt) {
         }
 
         if (destroy_projectile) {
-            SpawnProjectileExplosion(projectile, excluded_target_id);
+            if (IsIceShardProjectile(projectile)) {
+                SpawnIceShardDeathParticle(projectile.pos, projectile.vel);
+            } else {
+                SpawnProjectileExplosion(projectile, excluded_target_id);
+            }
             projectile.alive = false;
         }
     }
@@ -5707,6 +5986,23 @@ void GameApp::UpdateProjectiles(float dt) {
     state_.projectiles.erase(std::remove_if(state_.projectiles.begin(), state_.projectiles.end(),
                                             [](const Projectile& projectile) { return !projectile.alive; }),
                              state_.projectiles.end());
+}
+
+void GameApp::SpawnIceShardDeathParticle(Vector2 position, Vector2 travel_velocity) {
+    Particle particle;
+    particle.pos = position;
+    particle.vel = {0.0f, 0.0f};
+    particle.acc = {0.0f, 0.0f};
+    particle.drag = 0.0f;
+    particle.size = 32.0f;
+    particle.alpha = 255;
+    particle.animation_key = "ice_shard_projectile_death";
+    particle.facing = "default";
+    particle.rotation_degrees = AimToDegrees(travel_velocity);
+    particle.age_seconds = 0.0f;
+    particle.max_cycles = 1;
+    particle.alive = true;
+    state_.particles.push_back(particle);
 }
 
 void GameApp::SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id) {
@@ -6324,6 +6620,98 @@ void GameApp::UpdateProjectileEmitters() {
     }
 }
 
+void GameApp::UpdateSnowParticleEmitters(float dt) {
+    if (dt <= 0.0f) {
+        return;
+    }
+
+    std::poisson_distribution<int> shard_spawn_dist(Constants::kIceWaveShardSnowSpawnRatePerSecond * dt);
+    for (const auto& projectile : state_.projectiles) {
+        if (!projectile.alive || !IsIceShardProjectile(projectile)) {
+            continue;
+        }
+
+        const int spawn_count = shard_spawn_dist(visual_rng_);
+        for (int i = 0; i < spawn_count; ++i) {
+            SpawnIceWaveShardSnowParticle(projectile);
+        }
+    }
+
+    std::poisson_distribution<int> frozen_spawn_dist(Constants::kFrozenSnowSpawnRatePerSecond * dt);
+    for (const auto& player : state_.players) {
+        if (!player.alive || !HasStatusEffect(player, StatusEffectType::Frozen)) {
+            continue;
+        }
+
+        const int spawn_count = frozen_spawn_dist(visual_rng_);
+        for (int i = 0; i < spawn_count; ++i) {
+            SpawnFrozenStatusSnowParticle(player);
+        }
+    }
+}
+
+void GameApp::SpawnIceWaveShardSnowParticle(const Projectile& projectile) {
+    std::uniform_real_distribution<float> z_dist(Constants::kIceWaveShardSnowSpawnZMin,
+                                                 Constants::kIceWaveShardSnowSpawnZMax);
+    std::uniform_real_distribution<float> scale_dist(Constants::kIceWaveShardSnowScaleMin,
+                                                     Constants::kIceWaveShardSnowScaleMax);
+    std::uniform_real_distribution<float> phase_dist(0.0f, 2.0f * PI);
+
+    Particle particle;
+    particle.pos = projectile.pos;
+    particle.vel = {0.0f, 0.0f};
+    particle.acc = {0.0f, 0.0f};
+    particle.drag = 0.0f;
+    particle.size = Constants::kSnowParticleBaseSize * scale_dist(visual_rng_);
+    particle.alpha = 255;
+    particle.animation_key = "snow_particle_born";
+    particle.idle_animation_key = "snow_particle_idle";
+    particle.death_animation_key = "snow_particle_death";
+    particle.facing = "default";
+    particle.age_seconds = 0.0f;
+    particle.max_cycles = 1;
+    particle.use_visual_z = true;
+    particle.visual_z = z_dist(visual_rng_);
+    particle.visual_z_velocity = Constants::kSnowParticleFallSpeed;
+    particle.sway_amplitude = Constants::kSnowParticleSwayAmplitude;
+    particle.sway_frequency_hz = Constants::kSnowParticleSwayFrequencyHz;
+    particle.sway_phase = phase_dist(visual_rng_);
+    particle.alive = true;
+    state_.particles.push_back(particle);
+}
+
+void GameApp::SpawnFrozenStatusSnowParticle(const Player& player) {
+    std::uniform_real_distribution<float> angle_dist(0.0f, 2.0f * PI);
+    std::normal_distribution<float> radius_offset_dist(0.0f, Constants::kFrozenSnowSpawnRadiusStdDev);
+    std::uniform_real_distribution<float> z_dist(Constants::kFrozenSnowSpawnZMin, Constants::kFrozenSnowSpawnZMax);
+    std::uniform_real_distribution<float> phase_dist(0.0f, 2.0f * PI);
+
+    const float angle = angle_dist(visual_rng_);
+    const float radius = std::max(0.0f, Constants::kFrozenSnowSpawnRadiusBase + radius_offset_dist(visual_rng_));
+
+    Particle particle;
+    particle.pos = {player.pos.x + std::cos(angle) * radius, player.pos.y + std::sin(angle) * radius};
+    particle.vel = {0.0f, 0.0f};
+    particle.acc = {0.0f, 0.0f};
+    particle.drag = 0.0f;
+    particle.size = Constants::kSnowParticleBaseSize;
+    particle.alpha = 255;
+    particle.animation_key = "snow_particle_born";
+    particle.idle_animation_key = "snow_particle_idle";
+    particle.death_animation_key = "snow_particle_death";
+    particle.facing = "default";
+    particle.age_seconds = 0.0f;
+    particle.max_cycles = 1;
+    particle.use_visual_z = true;
+    particle.visual_z = z_dist(visual_rng_);
+    particle.visual_z_velocity = Constants::kSnowParticleFallSpeed;
+    particle.sway_amplitude = Constants::kSnowParticleSwayAmplitude;
+    particle.sway_frequency_hz = Constants::kSnowParticleSwayFrequencyHz;
+    particle.sway_phase = phase_dist(visual_rng_);
+    particle.alive = true;
+    state_.particles.push_back(particle);
+}
+
 void GameApp::SpawnDamageHitParticles(Vector2 target_pos, std::optional<Vector2> damage_world_pos) {
     Vector2 damage_dir = {0.0f, -1.0f};
     if (damage_world_pos.has_value()) {
@@ -6385,6 +6773,35 @@ void GameApp::UpdateParticles(float dt) {
             particle.size = std::max(0.0f, particle.size * std::exp(-particle.size_decay * dt));
         }
         particle.age_seconds += dt;
+
+        if (particle.use_visual_z && IsSnowParticleAnimation(particle.animation_key)) {
+            if (particle.animation_key != particle.death_animation_key) {
+                particle.visual_z = std::max(0.0f, particle.visual_z - particle.visual_z_velocity * dt);
+            }
+
+            const float animation_seconds =
+                GetAnimationDurationSeconds(sprite_metadata_, particle.animation_key, particle.facing, particle.max_cycles, 0.0f);
+            if (particle.animation_key == "snow_particle_born") {
+                if (animation_seconds > 0.0f && particle.age_seconds >= animation_seconds) {
+                    particle.animation_key = particle.idle_animation_key.empty() ? "snow_particle_idle" : particle.idle_animation_key;
+                    particle.age_seconds = 0.0f;
+                }
+            } else if (particle.animation_key == particle.idle_animation_key) {
+                if (particle.visual_z <= 0.0f) {
+                    if (!particle.death_animation_key.empty()) {
+                        particle.animation_key = particle.death_animation_key;
+                        particle.age_seconds = 0.0f;
+                    } else {
+                        particle.alive = false;
+                    }
+                }
+            } else if (particle.animation_key == particle.death_animation_key) {
+                if (animation_seconds <= 0.0f || particle.age_seconds >= animation_seconds) {
+                    particle.alive = false;
+                }
+            }
+            continue;
+        }
 
         int frame_count = 0;
         float fps = 1.0f;
@@ -6599,17 +7016,9 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
     }
 
     bool volatile_cast = false;
-    for (const auto& influence : state_.influence_zones) {
-        if (influence.cell == cell && influence.team != player.team) {
-            volatile_cast = true;
-            break;
-        }
-    }
-
-    float mana_cost = GetRuneManaCost(player.selected_rune_type);
+    float mana_cost = GetRunePlacementManaCost(player, player.selected_rune_type, cell, &volatile_cast);
     float activation_seconds = GetRuneActivationSeconds(player.selected_rune_type);
     if (volatile_cast) {
-        mana_cost *= Constants::kRuneVolatileManaMultiplier;
         activation_seconds *= Constants::kRuneVolatileActivationMultiplier;
     }
     if (player.mana < mana_cost) {
@@ -6650,6 +7059,9 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
 
     SpawnLightningEffect(player.pos, cell_center, 0.3f, volatile_cast);
     PlaySfxIfVisible(sfx_create_rune_.sound, sfx_create_rune_.loaded, cell_center);
+    if (volatile_cast) {
+        SpawnVolatileCastCasterFx(player.id);
+    }
 
     player.mana = std::max(0.0f, player.mana - mana_cost);
     if (RuneUsesCharges(player.selected_rune_type)) {
@@ -6659,6 +7071,59 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
     ApplyRuneCooldownsAfterCast(player, player.selected_rune_type);
     player.rune_placing_mode = false;
     return true;
+}
+
+bool GameApp::IsVolatileCastCellForPlayer(const Player& player, const GridCoord& cell) const {
+    return std::any_of(state_.influence_zones.begin(), state_.influence_zones.end(), [&](const InfluenceZoneCell& influence) {
+        return influence.cell == cell && influence.team != player.team;
+    });
+}
+
+float GameApp::GetRunePlacementManaCost(const Player& player, RuneType rune_type, const GridCoord& cell,
+                                        bool* out_volatile_cast) const {
+    const bool volatile_cast = IsVolatileCastCellForPlayer(player, cell);
+    if (out_volatile_cast != nullptr) {
+        *out_volatile_cast = volatile_cast;
+    }
+
+    float mana_cost = GetRuneManaCost(rune_type);
+    if (volatile_cast) {
+        mana_cost *= Constants::kRuneVolatileManaMultiplier;
+    }
+    return mana_cost;
+}
+
+void GameApp::SpawnVolatileCastCasterFx(int player_id) {
+    const Player* player = FindPlayerById(player_id);
+    if (player == nullptr || !player->alive) {
+        return;
+    }
+
+    VolatileCastCasterFx effect;
+    effect.age_seconds = 0.0f;
+    effect.duration_seconds = 0.25f;
+
+    int frame_count = 0;
+    float fps = 0.0f;
+    if (sprite_metadata_.IsLoaded() &&
+        sprite_metadata_.GetAnimationStats("volatile_cast_effect", "default", frame_count, fps) &&
+        frame_count > 0) {
+        effect.duration_seconds = static_cast<float>(frame_count) / std::max(0.001f, fps);
+    }
+
+    volatile_cast_caster_fx_[player_id] = effect;
+    PlaySfxIfVisible(sfx_volatile_cast_.sound, sfx_volatile_cast_.loaded, player->pos);
+}
+
+void GameApp::UpdateVolatileCastCasterFx(float dt) {
+    for (auto it = volatile_cast_caster_fx_.begin(); it != volatile_cast_caster_fx_.end();) {
+        it->second.age_seconds += dt;
+        if (it->second.age_seconds >= it->second.duration_seconds) {
+            it = volatile_cast_caster_fx_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool GameApp::TryPlaceFireStormDummy(Player& player, const GridCoord& cell) {
@@ -6877,12 +7342,26 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
             event.team,
             match.direction,
             match.cast_origin,
+            match.matched_cells,
             match.static_fire_bolt,
         };
 
         const bool cast_succeeded = CastRuntimeSpell(runtime_match);
         if (cast_succeeded && match.spell_name == "fire_bolt") {
             PlaySfxIfVisible(sfx_fireball_created_.sound, sfx_fireball_created_.loaded, CellToWorldCenter(match.cast_origin));
+        } else if (cast_succeeded && match.spell_name == "ice_wave") {
+            std::vector<size_t> loaded_indices;
+            loaded_indices.reserve(sfx_ice_wave_cast_.size());
+            for (size_t i = 0; i < sfx_ice_wave_cast_.size(); ++i) {
+                if (sfx_ice_wave_cast_[i].loaded) {
+                    loaded_indices.push_back(i);
+                }
+            }
+            if (!loaded_indices.empty()) {
+                std::uniform_int_distribution<size_t> dist(0, loaded_indices.size() - 1);
+                const LoadedSfx& clip = sfx_ice_wave_cast_[loaded_indices[dist(rng_)]];
+                PlaySfxIfVisible(clip.sound, clip.loaded, CellToWorldCenter(match.cast_origin));
+            }
         } else if (cast_succeeded && match.spell_name == "ice_wall") {
             PlaySfxIfVisible(sfx_ice_wall_freeze_.sound, sfx_ice_wall_freeze_.loaded, CellToWorldCenter(match.cast_origin));
         } else if (cast_succeeded && match.spell_name == "fire_storm") {
@@ -8266,22 +8745,31 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                         projectile_metadata->GetFrame(projectile.animation_key, "default", render_time_seconds_),
                         Constants::kAtlasSampleInsetPixels);
                     const float dst_w = use_large_static ? static_cast<float>(projectile_metadata->GetCellWidth())
-                                                         : projectile.radius * 8.0f;
+                                                         : (IsIceShardProjectile(projectile)
+                                                                ? static_cast<float>(projectile_metadata->GetCellWidth()) *
+                                                                      Constants::kIceWaveShardScale
+                                                                : projectile.radius * 8.0f);
                     const float dst_h = use_large_static ? static_cast<float>(projectile_metadata->GetCellHeight())
-                                                         : projectile.radius * 8.0f;
-                    Rectangle dst = use_large_static
+                                                         : (IsIceShardProjectile(projectile)
+                                                                ? static_cast<float>(projectile_metadata->GetCellHeight()) *
+                                                                      Constants::kIceWaveShardScale
+                                                                : projectile.radius * 8.0f);
+                    const Color tint =
+                        (IsStaticFireBolt(projectile) || IsIceShardProjectile(projectile))
+                            ? WHITE
+                            : (projectile.owner_team == Constants::kTeamRed ? Color{255, 215, 215, 255}
+                                                                            : Color{215, 230, 255, 255});
+                    const Vector2 rotation_vel =
+                        use_large_static && projectile.upgrade_pause_remaining > 0.0f ? projectile.resume_vel : projectile.vel;
+                    const bool oriented_projectile = use_large_static || IsIceShardProjectile(projectile);
+                    Rectangle dst = oriented_projectile
                                         ? Rectangle{projectile.pos.x, projectile.pos.y, dst_w, dst_h}
                                         : Rectangle{projectile.pos.x - dst_w * 0.5f, projectile.pos.y - dst_h * 0.5f,
                                                     dst_w, dst_h};
                     dst = SnapRect(dst);
-                    const Color tint = IsStaticFireBolt(projectile)
-                                           ? WHITE
-                                           : (projectile.owner_team == Constants::kTeamRed ? Color{255, 215, 215, 255}
-                                                                                           : Color{215, 230, 255, 255});
-                    const Vector2 rotation_vel =
-                        use_large_static && projectile.upgrade_pause_remaining > 0.0f ? projectile.resume_vel : projectile.vel;
-                    const float rotation = use_large_static ? AimToDegrees(rotation_vel) : 0.0f;
-                    const Vector2 origin = use_large_static ? Vector2{dst_w * 0.5f, dst_h * 0.5f} : Vector2{0.0f, 0.0f};
+                    const float rotation = oriented_projectile ? AimToDegrees(rotation_vel) : 0.0f;
+                    const Vector2 origin =
+                        oriented_projectile ? Vector2{dst_w * 0.5f, dst_h * 0.5f} : Vector2{0.0f, 0.0f};
                     DrawTexturePro(*projectile_texture, src, dst, origin, rotation, tint);
                 } else {
                     DrawCircleV(projectile.pos, projectile.radius,
@@ -8292,6 +8780,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             }
             case RenderKind::Particle: {
                 const Particle& particle = state_.particles[item.index];
+                const Vector2 render_center = GetParticleRenderCenter(particle, GetTime());
                 if (has_texture && sprite_metadata_.HasAnimation(particle.animation_key)) {
                     const Rectangle src =
                         InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
@@ -8299,12 +8788,18 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                     const float particle_size = particle.size > 0.0f
                                                     ? particle.size
                                                     : (particle.animation_key == "static_upgrade" ? 48.0f : 32.0f);
-                    Rectangle dst = {particle.pos.x - particle_size * 0.5f, particle.pos.y - particle_size * 0.5f,
-                                     particle_size, particle_size};
+                    const bool rotated_particle = std::fabs(particle.rotation_degrees) > 0.001f;
+                    Rectangle dst = rotated_particle
+                                        ? Rectangle{render_center.x, render_center.y, particle_size, particle_size}
+                                        : Rectangle{render_center.x - particle_size * 0.5f,
+                                                    render_center.y - particle_size * 0.5f, particle_size, particle_size};
                     dst = SnapRect(dst);
-                    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, particle.alpha});
+                    const Vector2 origin =
+                        rotated_particle ? Vector2{particle_size * 0.5f, particle_size * 0.5f} : Vector2{0.0f, 0.0f};
+                    DrawTexturePro(texture, src, dst, origin, particle.rotation_degrees,
+                                   Color{255, 255, 255, particle.alpha});
                 } else {
-                    DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
+                    DrawCircleV(render_center, 4.0f, Color{190, 190, 190, 160});
                 }
                 break;
             }
@@ -8989,6 +9484,8 @@ void GameApp::RenderPlayerOverlays() {
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
         const Rectangle sprite_rect = GetPlayerSpriteRect(draw_pos);
 
+        RenderVolatileCastCasterFx(player, draw_pos);
+
         Rectangle health_bar = {draw_pos.x - Constants::kPlayerHealthBarWidth * 0.5f,
                                 sprite_rect.y - Constants::kPlayerHealthBarOffsetY + 20.0f,
                                 Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
@@ -9173,22 +9670,30 @@ void GameApp::RenderProjectiles() {
                 projectile_metadata->GetFrame(projectile.animation_key, "default", render_time_seconds_),
                 Constants::kAtlasSampleInsetPixels);
             const float dst_w = use_large_static ? static_cast<float>(projectile_metadata->GetCellWidth())
-                                                 : projectile.radius * 8.0f;
+                                                 : (IsIceShardProjectile(projectile)
+                                                        ? static_cast<float>(projectile_metadata->GetCellWidth()) *
+                                                              Constants::kIceWaveShardScale
+                                                        : projectile.radius * 8.0f);
             const float dst_h = use_large_static ? static_cast<float>(projectile_metadata->GetCellHeight())
-                                                 : projectile.radius * 8.0f;
-            Rectangle dst = use_large_static
+                                                 : (IsIceShardProjectile(projectile)
+                                                        ? static_cast<float>(projectile_metadata->GetCellHeight()) *
+                                                              Constants::kIceWaveShardScale
+                                                        : projectile.radius * 8.0f);
+            const Color tint =
+                (IsStaticFireBolt(projectile) || IsIceShardProjectile(projectile))
+                    ? WHITE
+                    : (projectile.owner_team == Constants::kTeamRed ? Color{255, 215, 215, 255}
+                                                                    : Color{215, 230, 255, 255});
+            const Vector2 rotation_vel =
+                use_large_static && projectile.upgrade_pause_remaining > 0.0f ? projectile.resume_vel : projectile.vel;
+            const bool oriented_projectile = use_large_static || IsIceShardProjectile(projectile);
+            Rectangle dst = oriented_projectile
                                 ? Rectangle{projectile.pos.x, projectile.pos.y, dst_w, dst_h}
                                 : Rectangle{projectile.pos.x - dst_w * 0.5f, projectile.pos.y - dst_h * 0.5f, dst_w,
                                             dst_h};
             dst = SnapRect(dst);
-            const Color tint = IsStaticFireBolt(projectile)
-                                   ? WHITE
-                                   : (projectile.owner_team == Constants::kTeamRed ? Color{255, 215, 215, 255}
-                                                                                   : Color{215, 230, 255, 255});
-            const Vector2 rotation_vel =
-                use_large_static && projectile.upgrade_pause_remaining > 0.0f ? projectile.resume_vel : projectile.vel;
-            const float rotation = use_large_static ? AimToDegrees(rotation_vel) : 0.0f;
-            const Vector2 origin = use_large_static ? Vector2{dst_w * 0.5f, dst_h * 0.5f} : Vector2{0.0f, 0.0f};
+            const float rotation = oriented_projectile ? AimToDegrees(rotation_vel) : 0.0f;
+            const Vector2 origin = oriented_projectile ? Vector2{dst_w * 0.5f, dst_h * 0.5f} : Vector2{0.0f, 0.0f};
             DrawTexturePro(*projectile_texture, src, dst, origin, rotation, tint);
         } else {
             DrawCircleV(projectile.pos, projectile.radius,
@@ -9207,18 +9712,25 @@ void GameApp::RenderParticles() {
             continue;
         }
 
+        const Vector2 render_center = GetParticleRenderCenter(particle, GetTime());
         if (has_texture && sprite_metadata_.HasAnimation(particle.animation_key)) {
             const Rectangle src =
                 InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
                                 Constants::kAtlasSampleInsetPixels);
             const float particle_size =
                 particle.size > 0.0f ? particle.size : (particle.animation_key == "static_upgrade" ? 48.0f : 32.0f);
-            Rectangle dst = {particle.pos.x - particle_size * 0.5f, particle.pos.y - particle_size * 0.5f,
-                             particle_size, particle_size};
+            const bool rotated_particle = std::fabs(particle.rotation_degrees) > 0.001f;
+            Rectangle dst = rotated_particle
+                                ? Rectangle{render_center.x, render_center.y, particle_size, particle_size}
+                                : Rectangle{render_center.x - particle_size * 0.5f, render_center.y - particle_size * 0.5f,
+                                            particle_size, particle_size};
             dst = SnapRect(dst);
-            DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, Color{255, 255, 255, particle.alpha});
+            const Vector2 origin =
+                rotated_particle ? Vector2{particle_size * 0.5f, particle_size * 0.5f} : Vector2{0.0f, 0.0f};
+            DrawTexturePro(texture, src, dst, origin, particle.rotation_degrees,
+                           Color{255, 255, 255, particle.alpha});
         } else {
-            DrawCircleV(particle.pos, 4.0f, Color{190, 190, 190, 160});
+            DrawCircleV(render_center, 4.0f, Color{190, 190, 190, 160});
         }
     }
 }
@@ -9430,6 +9942,8 @@ void GameApp::RenderBottomHud() {
     const float slot_y = hud_y + panel_height - slot_row_height - 4.0f * scale;
     const float slot_spacing = 4.0f * scale;
     const int total_slots = Constants::kHudTotalSlotCount;
+    const float volatile_low_mana_pulse =
+        0.25f + 0.25f * std::sin(render_time_seconds_ * (2.0f * PI * Constants::kHudVolatileLowManaBlinkHz));
     bool show_inventory_edit_hint = false;
     bool drag_drop_completed = false;
     bool inventory_slot_clicked = false;
@@ -9481,6 +9995,9 @@ void GameApp::RenderBottomHud() {
             } else if (local_player->ui_drag_source_family == (is_rune_slot ? SlotFamily::Rune : SlotFamily::Item)) {
                 DropInventoryDrag(*local_player, is_rune_slot ? SlotFamily::Rune : SlotFamily::Item, slot_index);
                 drag_drop_completed = true;
+                if (!network_manager_.IsHost()) {
+                    QueueLocalInventorySync(*local_player);
+                }
             }
         }
 
@@ -9491,15 +10008,30 @@ void GameApp::RenderBottomHud() {
                 const Rectangle src =
                     InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", render_time_seconds_),
                                     Constants::kAtlasSampleInsetPixels);
-                const bool low_mana = local_player->mana < GetRuneManaCost(rune_type);
+                const float normal_mana_cost = GetRuneManaCost(rune_type);
+                const float volatile_mana_cost = normal_mana_cost * Constants::kRuneVolatileManaMultiplier;
+                const bool low_mana = local_player->mana < normal_mana_cost;
                 const bool missing_charge = RuneUsesCharges(rune_type) && GetPlayerRuneChargeCount(*local_player, rune_type) <= 0;
-                const Color tint =
-                    (low_mana || missing_charge)
-                        ? Color{static_cast<unsigned char>(Constants::kHudLowManaTintR),
-                                static_cast<unsigned char>(Constants::kHudLowManaTintG),
-                                static_cast<unsigned char>(Constants::kHudLowManaTintB),
-                                static_cast<unsigned char>(255.0f * Constants::kHudLowManaBrightness)}
-                        : WHITE;
+                const bool volatile_low_mana =
+                    !low_mana && !missing_charge && local_player->mana < volatile_mana_cost;
+                const Color low_mana_tint = {
+                    static_cast<unsigned char>(Constants::kHudLowManaTintR),
+                    static_cast<unsigned char>(Constants::kHudLowManaTintG),
+                    static_cast<unsigned char>(Constants::kHudLowManaTintB),
+                    static_cast<unsigned char>(255.0f * Constants::kHudLowManaBrightness),
+                };
+                const auto blend_channel = [](unsigned char from, unsigned char to, float t) {
+                    return static_cast<unsigned char>(std::roundf(static_cast<float>(from) +
+                                                                  (static_cast<float>(to) - static_cast<float>(from)) * t));
+                };
+                const Color tint = (low_mana || missing_charge)
+                                       ? low_mana_tint
+                                       : (volatile_low_mana
+                                              ? Color{blend_channel(WHITE.r, low_mana_tint.r, volatile_low_mana_pulse),
+                                                      blend_channel(WHITE.g, low_mana_tint.g, volatile_low_mana_pulse),
+                                                      blend_channel(WHITE.b, low_mana_tint.b, volatile_low_mana_pulse),
+                                                      blend_channel(WHITE.a, low_mana_tint.a, volatile_low_mana_pulse)}
+                                              : WHITE);
                 const float base_icon_size = std::min(slot.width - 8.0f * scale, slot.height - 18.0f * scale);
                 const float icon_size =
                     std::min({slot.width - 2.0f * scale, slot.height - 10.0f * scale, base_icon_size * 1.2f});
@@ -10189,6 +10721,27 @@ void GameApp::RegisterSpellRuntimes() {
                                          spell.Cast(*context.state, *context.event_queue);
                                          return true;
                                      });
+    spell_runtime_registry_.Register("ice_wave",
+                                     [](const SpellRuntimeMatch& match, const SpellRuntimeContext& context) {
+                                         if (context.state == nullptr || context.event_queue == nullptr) {
+                                             return false;
+                                         }
+                                         Vector2 cast_position = context.state->map.CellCenterWorld(match.cast_origin);
+                                         if (!match.matched_cells.empty()) {
+                                             Vector2 accumulated = {0.0f, 0.0f};
+                                             for (const GridCoord& cell : match.matched_cells) {
+                                                 const Vector2 center = context.state->map.CellCenterWorld(cell);
+                                                 accumulated.x += center.x;
+                                                 accumulated.y += center.y;
+                                             }
+                                             const float inv_count = 1.0f / static_cast<float>(match.matched_cells.size());
+                                             cast_position = {accumulated.x * inv_count, accumulated.y * inv_count};
+                                         }
+                                         IceWaveSpell spell(cast_position,
+                                                            match.caster_player_id, match.direction);
+                                         spell.Cast(*context.state, *context.event_queue);
+                                         return true;
+                                     });
     spell_runtime_registry_.Register("fire_storm",
                                      [](const SpellRuntimeMatch& match, const SpellRuntimeContext& context) {
                                          if (context.state == nullptr) {
@@ -10293,7 +10846,8 @@ void GameApp::RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) 
         if (!modular_player_asset_.HasTag(layer_name, tag)) {
             return;
         }
-        const Texture2D* texture = modular_player_asset_.GetLayerTexture(layer_name);
+        const int team_index = std::strcmp(layer_name, "main") == 0 ? player.team : -1;
+        const Texture2D* texture = modular_player_asset_.GetLayerTexture(layer_name, team_index);
         if (texture == nullptr) {
             return;
         }
@@ -10316,4 +10870,18 @@ void GameApp::RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) 
     if (use_damage_flash) {
         EndShaderMode();
     }
+}
+
+void GameApp::RenderVolatileCastCasterFx(const Player& player, Vector2 draw_pos) const {
+    const auto effect_it = volatile_cast_caster_fx_.find(player.id);
+    if (effect_it == volatile_cast_caster_fx_.end() || !sprite_metadata_.IsLoaded() ||
+        !sprite_metadata_.HasAnimation("volatile_cast_effect")) {
+        return;
+    }
+
+    const Rectangle src =
+        InsetSourceRect(sprite_metadata_.GetFrame("volatile_cast_effect", "default", effect_it->second.age_seconds),
+                        Constants::kAtlasSampleInsetPixels);
+    const Rectangle dst = GetPlayerSpriteRect(draw_pos);
+    DrawTexturePro(sprite_metadata_.GetTexture(), src, dst, {0, 0}, 0.0f, WHITE);
 }

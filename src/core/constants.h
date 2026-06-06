@@ -52,6 +52,29 @@ constexpr float kProjectileSpeed = 420.0f;
 constexpr int kProjectileDamage = 34;
 constexpr float kFireBoltExplosionRadius = 20.0f;
 constexpr float kFireBoltExplosionFallbackDuration = 0.5f;
+constexpr int kIceWaveShardCount = 5;
+constexpr float kIceWaveFanAngleDegrees = 35.0f;
+constexpr float kIceWaveRangeTiles = 6.0f;
+constexpr float kIceWaveShardSpeed = 420.0f;
+constexpr float kIceWaveShardCollisionRadius = 4.0f;
+constexpr float kIceWaveShardScale = 1.0f;
+constexpr int kIceWaveShardDamage = 6;
+constexpr float kFrozenStatusDurationSeconds = 4.0f;
+constexpr float kFrozenMovementSpeedMultiplier = 0.75f;
+constexpr float kSnowParticleBaseSize = 32.0f;
+constexpr float kSnowParticleFallSpeed = 48.0f;
+constexpr float kSnowParticleSwayAmplitude = 6.0f;
+constexpr float kSnowParticleSwayFrequencyHz = 1.75f;
+constexpr float kIceWaveShardSnowSpawnRatePerSecond = 12.0f;
+constexpr float kIceWaveShardSnowSpawnZMin = 16.0f;
+constexpr float kIceWaveShardSnowSpawnZMax = 19.2f;
+constexpr float kIceWaveShardSnowScaleMin = 0.4f;
+constexpr float kIceWaveShardSnowScaleMax = 0.6f;
+constexpr float kFrozenSnowSpawnRatePerSecond = 7.0f;
+constexpr float kFrozenSnowSpawnRadiusBase = 16.0f;
+constexpr float kFrozenSnowSpawnRadiusStdDev = 5.0f;
+constexpr float kFrozenSnowSpawnZMin = 16.0f;
+constexpr float kFrozenSnowSpawnZMax = 32.0f;
 constexpr float kIceWallMaterializeSeconds = 0.3f;
 constexpr int kIceWallLengthCells = 5;
 constexpr float kIceWallMaxHp = 100.0f;
@@ -134,6 +157,7 @@ constexpr int kFireStormDummyLightningCooldownFrames = 8;
 constexpr float kFireStormLifetimeSeconds = 30.0f;
 constexpr float kRuneVolatileManaMultiplier = 3.0f;
 constexpr float kRuneVolatileActivationMultiplier = 2.0f;
+constexpr float kHudVolatileLowManaBlinkHz = 4.0f / 3.0f;
 constexpr float kRuneCastRangeTiles = 12.0f;
 constexpr int kAltarScanHalfExtentTiles = 8;
 constexpr int kHudRuneSlotCount = 4;
@@ -228,8 +252,9 @@ constexpr float kRunePreviewAlpha = 0.6f;
 constexpr int kSpatialCellSize = 64;
 constexpr float kAtlasSampleInsetPixels = 0.35f;
 
-constexpr int kTeamRed = 0;
-constexpr int kTeamBlue = 1;
+constexpr int kTeamBlue = 0;
+constexpr int kTeamRed = 1;
+constexpr int kTeamCount = 2;
 
 constexpr std::array<std::string_view, 1> kPlaceableTiles = {"tile_grass"};
 
@@ -239,6 +264,7 @@ constexpr const char* kSpriteMetadataTallPath = "assets/sprite_sheet_32x64.json"
 constexpr const char* kSpriteMetadata96x96Path = "assets/sprite_sheet_96x96.json";
 constexpr const char* kSpriteMetadata128x128Path = "assets/sprite_sheet_128x128.json";
 constexpr const char* kModularPlayerMainMetadataPath = "assets/128x128_modular/exports/wizzard_128x128-main.json";
+constexpr const char* kPlayerColorsMapPath = "assets/player-colors-map.png";
 constexpr const char* kModularPlayerShadowMetadataPath =
     "assets/128x128_modular/exports/wizzard_128x128-shadow.json";
 constexpr const char* kModularPlayerSwordMetadataPath =
@@ -278,6 +304,7 @@ constexpr const char* kTreeWindShaderPath = "assets/shaders/tree_wind.fs";
 constexpr const char* kSfxFireballCreatedPath = "assets/sfx/ogg/SFX/Spells/Fireball 1.ogg";
 constexpr const char* kSfxMeleeAttackPath = "assets/sfx/ogg/SFX/Attacks/Sword Attacks Hits and Blocks/Sword Attack 1.ogg";
 constexpr const char* kSfxCreateRunePath = "assets/sfx/ogg/SFX/Torch/Light Torch 1.ogg";
+constexpr const char* kSfxVolatileCastPath = "assets/sfx/energy-zap.wav";
 constexpr const char* kSfxExplosionPath = "assets/sfx/ogg/SFX/Spells/Spell Impact 1.ogg";
 constexpr const char* kSfxVaseBreakingPath = "assets/sfx/ogg/SFX/Torch/Torch Impact 2.ogg";
 constexpr const char* kSfxIceWallFreezePath = "assets/sfx/ogg/SFX/Spells/Ice Freeze 1.ogg";
@@ -310,6 +337,26 @@ constexpr std::array<const char*, 3> kSfxZoneDamagePaths = {
     "assets/sfx/Arcane_AttackF2.wav",
     "assets/sfx/Arcane_AttackF3.wav",
 };
+constexpr std::array<const char*, 3> kSfxIceWaveCastPaths = {
+    "assets/sfx/Ice_AttackF1.wav",
+    "assets/sfx/Ice_AttackF2.wav",
+    "assets/sfx/Ice_AttackF3.wav",
+};
+constexpr std::array<const char*, 3> kSfxIceWaveCastFallbackPaths = {
+    "assets/sfx/Arcane_AttackF1.wav",
+    "assets/sfx/Arcane_AttackF2.wav",
+    "assets/sfx/Arcane_AttackF3.wav",
+};
+constexpr std::array<const char*, 3> kSfxIceWaveImpactPaths = {
+    "assets/sfx/Ice_ImpactF1.wav",
+    "assets/sfx/Ice_ImpactF2.wav",
+    "assets/sfx/Ice_ImpactF3.wav",
+};
+constexpr std::array<const char*, 3> kSfxIceWaveImpactFallbackPaths = {
+    "assets/sfx/ogg/SFX/Spells/Ice Freeze 1.ogg",
+    "assets/sfx/ogg/SFX/Spells/Ice Freeze 1.ogg",
+    "assets/sfx/ogg/SFX/Spells/Ice Freeze 1.ogg",
+};
 constexpr std::array<const char*, 5> kSfxFootstepDirtPaths = {
     "assets/sfx/ogg/SFX/Footsteps/Dirt/Dirt Walk 1.ogg",
     "assets/sfx/ogg/SFX/Footsteps/Dirt/Dirt Walk 2.ogg",
@@ -325,6 +372,7 @@ constexpr float kBgmVolume = 0.35f;
 constexpr float kSfxVolumeFireballCreated = 0.70f;
 constexpr float kSfxVolumeMeleeAttack = 0.60f;
 constexpr float kSfxVolumeCreateRune = 0.70f;
+constexpr float kSfxVolumeVolatileCast = 0.76f;
 constexpr float kSfxVolumeExplosion = 0.80f;
 constexpr float kSfxVolumeVaseBreaking = 0.80f;
 constexpr float kSfxVolumeIceWallFreeze = 0.80f;
@@ -342,6 +390,8 @@ constexpr float kSfxVolumeGrapplingThrow = 0.68f;
 constexpr float kSfxVolumeGrapplingLatch = 0.72f;
 constexpr float kSfxVolumeEarthRuneLaunch = 0.74f;
 constexpr float kSfxVolumeEarthRuneImpact = 0.78f;
+constexpr float kSfxVolumeIceWaveCast = 0.72f;
+constexpr float kSfxVolumeIceWaveImpact = 0.72f;
 constexpr float kSfxVolumeHammerSwing = 0.72f;
 constexpr float kSfxVolumeHammerImpact = 0.80f;
 constexpr float kSfxVolumeFootstepDirt = 0.50f;

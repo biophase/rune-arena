@@ -94,6 +94,8 @@ bool SpellPatternLoader::LoadFromFile(const std::string& path) {
                 rune_type = RuneType::Water;
             } else if (it.key().find("catal") != std::string::npos) {
                 rune_type = RuneType::Catalyst;
+            } else if (it.key().find("earth") != std::string::npos) {
+                rune_type = RuneType::Earth;
             }
             auto add_symbol = [&](const std::string& symbol_text, PlacementConstraint explicit_constraint) {
                 PlacementConstraint constraint = explicit_constraint;

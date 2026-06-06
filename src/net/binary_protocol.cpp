@@ -173,6 +173,28 @@ std::vector<uint8_t> EncodeClientActionPacket(const ClientActionMessage& message
     payload.WriteI32(message.request_rune_type);
     payload.WriteString(message.request_item_id);
     payload.WriteBool(message.toggle_inventory_mode);
+    payload.WriteBool(message.has_inventory_layout_sync);
+    payload.WriteI32(message.selected_rune_slot);
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.rune_slots.size(), 65535)));
+    for (size_t i = 0; i < message.rune_slots.size() && i < 65535; ++i) {
+        payload.WriteI32(message.rune_slots[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.item_slots.size(), 65535)));
+    for (size_t i = 0; i < message.item_slots.size() && i < 65535; ++i) {
+        payload.WriteString(message.item_slots[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.item_slot_counts.size(), 65535)));
+    for (size_t i = 0; i < message.item_slot_counts.size() && i < 65535; ++i) {
+        payload.WriteI32(message.item_slot_counts[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.item_slot_cooldown_remaining.size(), 65535)));
+    for (size_t i = 0; i < message.item_slot_cooldown_remaining.size() && i < 65535; ++i) {
+        payload.WriteF32(message.item_slot_cooldown_remaining[i]);
+    }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.item_slot_cooldown_total.size(), 65535)));
+    for (size_t i = 0; i < message.item_slot_cooldown_total.size() && i < 65535; ++i) {
+        payload.WriteF32(message.item_slot_cooldown_total[i]);
+    }
     return MakePacket(PacketType::ClientAction, payload.Bytes());
 }
 
@@ -181,8 +203,49 @@ std::optional<ClientActionMessage> DecodeClientActionPayload(const uint8_t* payl
     ClientActionMessage out;
     if (!reader.ReadI32(out.player_id) || !reader.ReadI32(out.seq) || !reader.ReadI32(out.last_received_snapshot_id) ||
         !reader.ReadBool(out.primary_pressed) || !reader.ReadBool(out.grappling_pressed) ||
-        !reader.ReadI32(out.request_rune_type) ||
-        !reader.ReadString(out.request_item_id) || !reader.ReadBool(out.toggle_inventory_mode) || !reader.End()) {
+        !reader.ReadI32(out.request_rune_type) || !reader.ReadString(out.request_item_id) ||
+        !reader.ReadBool(out.toggle_inventory_mode) || !reader.ReadBool(out.has_inventory_layout_sync) ||
+        !reader.ReadI32(out.selected_rune_slot)) {
+        return std::nullopt;
+    }
+
+    uint16_t count = 0;
+    if (!reader.ReadU16(count)) return std::nullopt;
+    out.rune_slots.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        int32_t value = 0;
+        if (!reader.ReadI32(value)) return std::nullopt;
+        out.rune_slots.push_back(value);
+    }
+    if (!reader.ReadU16(count)) return std::nullopt;
+    out.item_slots.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        std::string value;
+        if (!reader.ReadString(value)) return std::nullopt;
+        out.item_slots.push_back(value);
+    }
+    if (!reader.ReadU16(count)) return std::nullopt;
+    out.item_slot_counts.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        int32_t value = 0;
+        if (!reader.ReadI32(value)) return std::nullopt;
+        out.item_slot_counts.push_back(value);
+    }
+    if (!reader.ReadU16(count)) return std::nullopt;
+    out.item_slot_cooldown_remaining.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        float value = 0.0f;
+        if (!reader.ReadF32(value)) return std::nullopt;
+        out.item_slot_cooldown_remaining.push_back(value);
+    }
+    if (!reader.ReadU16(count)) return std::nullopt;
+    out.item_slot_cooldown_total.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        float value = 0.0f;
+        if (!reader.ReadF32(value)) return std::nullopt;
+        out.item_slot_cooldown_total.push_back(value);
+    }
+    if (!reader.End()) {
         return std::nullopt;
     }
     return out;

@@ -104,3 +104,16 @@ heal effect
 
 
 
+--- 2026-06-06
++ indicator for mana insufficient for volatile cast
++ cast effect for volatile cast
+- two users colliding sticks 
+- two weapons on top of each other prevent picking if user already has one (easy temp fix: drops from a destructible will have a random offset, so their centroids don't ever collide)
+- death by roots seem to not attribute kill to caster
+- no good way to cancel chosen rune
+- infinity sign on runes should be removed and implicitly inferred if number is missing
+
+content:
+- water + earth should cast ice wall
+- water + water should cast a freeze wave
+- a console-like output chat at the bottom left (y coord enough to fit the hud), that displays text, with substrings allowed to be colored

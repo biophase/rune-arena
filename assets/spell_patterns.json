@@ -15,6 +15,10 @@
         "fire_storm" :{
             "old":"s",
             "latest":"S"
+        },
+        "earth_rune" :{
+            "old":"e",
+            "latest":"E"
         }
     },
 
@@ -64,21 +68,57 @@
                 ]
             }
         },
+        "ice_wave":{
+            "order_relevent" : true,
+            "directions":{
+                "right":[
+                    [
+                        ["W","w"]
+                    ]
+
+                ],
+                "left":
+                [
+                    [
+                        ["w","W"]
+                    ]
+
+                ],
+                "top":
+                [
+                    [
+                        ["w"],
+                        ["W"]
+                    ]
+                    
+                ],
+                "bot":
+                [
+                    [
+                        ["W"],
+                        ["w"]
+                    ]
+                ]
+            }
+        },
         "ice_wall":{
             "order_relevent" : true,
             "directions":{
                 "horizontal":[
                     [
-                        [["W","w","w"]],
-                        [["w","W","w"]],
-                        [["w","w","W"]]
+                        [["W","e"]],
+                        [["w","E"]],
+                        [["e","W"]],
+                        [["E","w"]]
+                        
                     ]
                 ],
                 "vertical":[
                     [
-                        [["W"],["w"],["w"]],
-                        [["w"],["W"],["w"]],
-                        [["w"],["w"],["W"]]
+                        [["W"],["e"]],
+                        [["w"],["E"]],
+                        [["e"],["W"]],
+                        [["E"],["w"]]
                     ]
                 ]
 

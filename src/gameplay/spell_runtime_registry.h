@@ -15,6 +15,7 @@ struct SpellRuntimeMatch {
     int caster_team = 0;
     SpellDirection direction = SpellDirection::Right;
     GridCoord cast_origin;
+    std::vector<GridCoord> matched_cells;
     bool static_fire_bolt = false;
 };
 

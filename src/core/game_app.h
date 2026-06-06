@@ -120,6 +120,7 @@ class GameApp {
     void HandleMeleeHit(Player& attacker);
     void HandleEventsHost();
     void UpdateProjectileEmitters();
+    void UpdateSnowParticleEmitters(float dt);
     void UpdateParticles(float dt);
     void UpdateHammerImpactEffects(float dt);
     void SpawnDamageHitParticles(Vector2 target_pos, std::optional<Vector2> damage_world_pos);
@@ -138,6 +139,11 @@ class GameApp {
 
     bool TryPlaceRune(Player& player, Vector2 world_mouse);
     bool TryPlaceFireStormDummy(Player& player, const GridCoord& cell);
+    bool IsVolatileCastCellForPlayer(const Player& player, const GridCoord& cell) const;
+    float GetRunePlacementManaCost(const Player& player, RuneType rune_type, const GridCoord& cell,
+                                   bool* out_volatile_cast = nullptr) const;
+    void SpawnVolatileCastCasterFx(int player_id);
+    void UpdateVolatileCastCasterFx(float dt);
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
                                    float idle_lifetime_seconds);
     int SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell);
@@ -177,10 +183,17 @@ class GameApp {
     void CancelInventoryDrag(Player& player);
     void BeginInventoryDrag(Player& player, SlotFamily family, int slot_index);
     void DropInventoryDrag(Player& player, SlotFamily family, int slot_index);
+    void QueueLocalInventorySync(const Player& player);
+    void ApplyInventoryLayoutSync(Player& player, const ClientActionMessage& action);
+    bool PendingLocalInventorySyncMatches(const Player& player) const;
     void AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddManaRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddStunnedStatus(Player& player, float duration_seconds);
+    void AddFrozenStatus(Player& player, float duration_seconds);
     void RefreshOrAddRootedStatus(Player& player, int source_id);
+    void SpawnIceShardDeathParticle(Vector2 position, Vector2 travel_velocity);
+    void SpawnIceWaveShardSnowParticle(const Projectile& projectile);
+    void SpawnFrozenStatusSnowParticle(const Player& player);
     void RebuildInfluenceZones();
     int SpawnCompositeEffect(const std::string& effect_id, Vector2 origin_world);
     float GetCompositeEffectDurationSeconds(const std::string& effect_id) const;
@@ -268,6 +281,7 @@ class GameApp {
     bool CastRuntimeSpell(const SpellRuntimeMatch& match);
     Rectangle GetPlayerSpriteRect(Vector2 draw_pos, const std::string& layer_name = "main") const;
     void RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) const;
+    void RenderVolatileCastCasterFx(const Player& player, Vector2 draw_pos) const;
     std::string GetClientLobbyStatusText() const;
 
     ConfigManager config_manager_;
@@ -325,6 +339,11 @@ class GameApp {
     };
     std::vector<HammerImpactEffect> hammer_impact_effects_;
     std::unordered_map<int, PlayerActionState> previous_player_action_states_;
+    struct VolatileCastCasterFx {
+        float age_seconds = 0.0f;
+        float duration_seconds = 0.0f;
+    };
+    std::unordered_map<int, VolatileCastCasterFx> volatile_cast_caster_fx_;
     std::unordered_map<int, int> previous_player_hp_;
     std::unordered_map<int, float> player_damage_flash_remaining_;
     std::unordered_map<int, int> previous_object_hp_;
@@ -409,6 +428,8 @@ class GameApp {
     int pending_select_rune_slot_ = -1;
     int pending_activate_item_slot_ = -1;
     bool pending_toggle_inventory_mode_ = false;
+    std::optional<Player> pending_local_inventory_sync_;
+    bool pending_local_inventory_sync_dirty_ = false;
     struct PendingObjectSpawn {
         std::string prototype_id;
         GridCoord cell;
@@ -556,6 +577,7 @@ class GameApp {
     LoadedSfx sfx_fireball_created_;
     LoadedSfx sfx_melee_attack_;
     LoadedSfx sfx_create_rune_;
+    LoadedSfx sfx_volatile_cast_;
     LoadedSfx sfx_explosion_;
     LoadedSfx sfx_vase_breaking_;
     LoadedSfx sfx_ice_wall_freeze_;
@@ -572,6 +594,8 @@ class GameApp {
     LoadedSfx sfx_grappling_latch_;
     LoadedSfx sfx_earth_rune_launch_;
     LoadedSfx sfx_earth_rune_impact_;
+    std::array<LoadedSfx, 3> sfx_ice_wave_cast_{};
+    std::array<LoadedSfx, 3> sfx_ice_wave_impact_{};
     std::array<LoadedSfx, 2> sfx_hammer_swing_{};
     std::array<LoadedSfx, 3> sfx_hammer_impact_{};
     std::array<LoadedSfx, 3> sfx_zone_damage_{};
