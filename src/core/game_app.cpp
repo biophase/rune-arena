@@ -1545,6 +1545,12 @@ bool GameApp::RenderModularTreeShadow(const MapObjectInstance& object, const Obj
     }
 
     const Rectangle dst = GetModularTreeSpriteRect(object, "shadow");
+    if (proto.masked_occluder) {
+        const float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
+        if (DrawMaskedOccluder(dst, *shadow_texture, src, sort_y)) {
+            return true;
+        }
+    }
     if (!has_tree_wind_shader_) {
         DrawTexturePro(*shadow_texture, src, dst, {0, 0}, 0.0f, WHITE);
         return true;
@@ -1683,9 +1689,13 @@ bool GameApp::RenderModularTreeObject(const MapObjectInstance& object, const Obj
                         SHADER_UNIFORM_VEC4, circle_count);
     }
 
+    // The tree composite shader samples multiple textures; flush batching so later draws
+    // cannot reuse stale texture bindings for these sampler uniforms.
+    rlDrawRenderBatchActive();
     BeginShaderMode(tree_composite_shader_);
     DrawTexturePro(*canopy_background_texture, canopy_background_src, dst, {0, 0}, 0.0f, WHITE);
     EndShaderMode();
+    rlDrawRenderBatchActive();
     return true;
 }
 
@@ -6872,18 +6882,20 @@ void GameApp::ResolvePlayerCollisions() {
                 continue;
             }
 
-            const Vector2 separation = Vector2Scale(normal, penetration * 0.5f);
-            a.pos = Vector2Subtract(a.pos, separation);
-            b.pos = Vector2Add(b.pos, separation);
+            // AabbVsAabb returns a normal that pushes the first box out of the second.
+            const Vector2 push_dir_a = normal;
+            const Vector2 push_dir_b = Vector2Negate(normal);
+            a.pos = Vector2Add(a.pos, Vector2Scale(push_dir_a, penetration * 0.5f));
+            b.pos = Vector2Add(b.pos, Vector2Scale(push_dir_b, penetration * 0.5f));
 
-            const float a_dot = Vector2DotProduct(a.vel, normal);
-            if (a_dot > 0.0f) {
-                a.vel = Vector2Subtract(a.vel, Vector2Scale(normal, a_dot));
+            const float a_dot = Vector2DotProduct(a.vel, push_dir_a);
+            if (a_dot < 0.0f) {
+                a.vel = Vector2Subtract(a.vel, Vector2Scale(push_dir_a, a_dot));
             }
 
-            const float b_dot = Vector2DotProduct(b.vel, normal);
+            const float b_dot = Vector2DotProduct(b.vel, push_dir_b);
             if (b_dot < 0.0f) {
-                b.vel = Vector2Subtract(b.vel, Vector2Scale(normal, b_dot));
+                b.vel = Vector2Subtract(b.vel, Vector2Scale(push_dir_b, b_dot));
             }
         }
     }
