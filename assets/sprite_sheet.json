@@ -614,6 +614,30 @@
         }
       }
     },
+    "spark_particle_born":{
+      "facings":{
+        "default":{
+          "frames": [[104,1],[104,2],[104,3]],
+          "fps": 20
+        }
+      }
+    },
+    "spark_particle_idle":{
+      "facings":{
+        "default":{
+          "frames": [[105,1]],
+          "fps": 10
+        }
+      }
+    },
+    "spark_particle_death":{
+      "facings":{
+        "default":{
+          "frames": [[105,3],[106,0],[106,1],[106,2],[106,3],[107,0]],
+          "fps": 20
+        }
+      }
+    },
     "lightning_magic_idle":{
       "facings":{
         "default":{
@@ -762,6 +786,38 @@
       "facings":{
         "default":{
           "frames": [[55,0]], 
+          "fps": 8
+        }
+      }
+    },
+    "storm_particle_born":{
+      "facings":{
+        "default":{
+          "frames": [[107,2],[107,3]],
+          "fps": 16
+        }
+      }
+    },
+    "storm_particle_idle":{
+      "facings":{
+        "default":{
+          "frames": [[108,1],[108,2],[108,3],[109,0],[109,1]],
+          "fps": 10
+        }
+      }
+    },
+    "storm_particle_death":{
+      "facings":{
+        "default":{
+          "frames": [[109,3],[110,0]],
+          "fps": 16
+        }
+      }
+    },
+    "fire_rune_background":{
+      "facings":{
+        "default":{
+          "frames": [[103,3]],
           "fps": 8
         }
       }

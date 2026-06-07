@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include <raylib.h>
+
 struct LobbyUiResult {
     bool request_start_match = false;
     bool request_leave = false;
@@ -17,9 +19,15 @@ struct LobbyUiResult {
     bool request_increase_shrink_start = false;
     bool request_decrease_min_radius = false;
     bool request_increase_min_radius = false;
+    bool selected_map_changed = false;
+    int selected_map_index = 0;
+    bool map_dropdown_edit_mode = false;
 };
 
 LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_host, const std::string& host_display_ip,
                         int mode_type, int round_time_seconds, int best_of_target_kills,
                         float shrink_tiles_per_second, float shrink_start_seconds, float min_arena_radius_tiles,
-                        const std::string& mode_name, const std::string& connection_status);
+                        const std::string& mode_name, const std::string& connection_status,
+                        const std::string& selected_map_label, const std::string& map_options_text,
+                        int selected_map_index, bool map_dropdown_edit_mode, const Texture2D* preview_texture,
+                        bool has_preview_texture, const std::string& preview_status_text);

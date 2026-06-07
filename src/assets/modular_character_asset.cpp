@@ -264,7 +264,6 @@ bool ModularCharacterAsset::LoadLayer(const std::string& layer_name, const std::
         return false;
     }
     layer_asset.source_team_index = options.source_team_index;
-
     if (options.generate_team_variants) {
         TeamPaletteRemap remap;
         if (BuildTeamPaletteRemap(options.palette_map_path, options.team_count, options.source_team_index, &remap)) {

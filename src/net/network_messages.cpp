@@ -198,6 +198,17 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"earth_state_duration", Quantize2(rune.earth_state_duration)},
             {"earth_roots_spawned", rune.earth_roots_spawned},
             {"earth_roots_group_id", rune.earth_roots_group_id},
+            {"fire_storm_original_owner_player_id", rune.fire_storm_original_owner_player_id},
+            {"fire_storm_original_owner_team", rune.fire_storm_original_owner_team},
+            {"fire_storm_original_rune_type", rune.fire_storm_original_rune_type},
+            {"fire_storm_temporary", rune.fire_storm_temporary},
+            {"fire_storm_source_rune", rune.fire_storm_source_rune},
+            {"fire_storm_remaining_seconds", Quantize2(rune.fire_storm_remaining_seconds)},
+            {"fire_storm_visual_state", rune.fire_storm_visual_state},
+            {"fire_storm_visual_state_time", Quantize2(rune.fire_storm_visual_state_time)},
+            {"fire_storm_visual_state_duration", Quantize2(rune.fire_storm_visual_state_duration)},
+            {"fire_storm_revert_after_death", rune.fire_storm_revert_after_death},
+            {"fire_storm_pending_removal", rune.fire_storm_pending_removal},
         });
     }
 
@@ -276,6 +287,10 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"owner_team", cast.owner_team},
             {"center_cell_x", cast.center_cell_x},
             {"center_cell_y", cast.center_cell_y},
+            {"source_cell_x", cast.source_cell_x},
+            {"source_cell_y", cast.source_cell_y},
+            {"target_cell_x", cast.target_cell_x},
+            {"target_cell_y", cast.target_cell_y},
             {"elapsed_seconds", Quantize2(cast.elapsed_seconds)},
             {"duration_seconds", Quantize2(cast.duration_seconds)},
             {"alive", cast.alive},
@@ -644,6 +659,13 @@ nlohmann::json ToJson(const LobbyStateMessage& message) {
     out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
     out["shrink_start_seconds"] = message.shrink_start_seconds;
     out["min_arena_radius_tiles"] = message.min_arena_radius_tiles;
+    out["selected_map_key"] = message.selected_map_key;
+    out["selected_map_label"] = message.selected_map_label;
+    out["preview_generation"] = message.preview_generation;
+    out["preview_png_bytes"] = nlohmann::json::array();
+    for (uint8_t byte : message.preview_png_bytes) {
+        out["preview_png_bytes"].push_back(byte);
+    }
     out["players"] = nlohmann::json::array();
     for (const auto& player : message.players) {
         out["players"].push_back({{"player_id", player.player_id}, {"name", player.name}});
@@ -660,6 +682,9 @@ std::optional<LobbyStateMessage> LobbyStateFromJson(const nlohmann::json& json) 
     out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
     out.shrink_start_seconds = json.value("shrink_start_seconds", 0.0f);
     out.min_arena_radius_tiles = json.value("min_arena_radius_tiles", 0.0f);
+    out.selected_map_key = json.value("selected_map_key", std::string{});
+    out.selected_map_label = json.value("selected_map_label", std::string{});
+    out.preview_generation = json.value("preview_generation", 0);
 
     const auto players_it = json.find("players");
     if (players_it != json.end() && players_it->is_array()) {
@@ -670,14 +695,79 @@ std::optional<LobbyStateMessage> LobbyStateFromJson(const nlohmann::json& json) 
             out.players.push_back(info);
         }
     }
+    const auto preview_it = json.find("preview_png_bytes");
+    if (preview_it != json.end() && preview_it->is_array()) {
+        out.preview_png_bytes.reserve(preview_it->size());
+        for (const auto& item : *preview_it) {
+            out.preview_png_bytes.push_back(item.get<uint8_t>());
+        }
+    }
 
     return out;
 }
 
-nlohmann::json ToJson(const MatchStartMessage& message) { return {{"start", message.start}}; }
+nlohmann::json ToJson(const MatchStartMessage& message) {
+    return {{"start", message.start}, {"transfer_id", message.transfer_id}, {"map_key", message.map_key}};
+}
 
 std::optional<MatchStartMessage> MatchStartFromJson(const nlohmann::json& json) {
     MatchStartMessage out;
     out.start = json.value("start", true);
+    out.transfer_id = json.value("transfer_id", 0);
+    out.map_key = json.value("map_key", std::string{});
+    return out;
+}
+
+nlohmann::json ToJson(const MapTransferBeginMessage& message) {
+    return {{"transfer_id", message.transfer_id},
+            {"map_key", message.map_key},
+            {"map_filename", message.map_filename},
+            {"total_bytes", message.total_bytes},
+            {"chunk_count", message.chunk_count},
+            {"checksum", message.checksum}};
+}
+
+std::optional<MapTransferBeginMessage> MapTransferBeginFromJson(const nlohmann::json& json) {
+    MapTransferBeginMessage out;
+    out.transfer_id = json.value("transfer_id", 0);
+    out.map_key = json.value("map_key", std::string{});
+    out.map_filename = json.value("map_filename", std::string{});
+    out.total_bytes = json.value("total_bytes", 0u);
+    out.chunk_count = json.value("chunk_count", 0u);
+    out.checksum = json.value("checksum", 0u);
+    return out;
+}
+
+nlohmann::json ToJson(const MapTransferChunkMessage& message) {
+    nlohmann::json out = {{"transfer_id", message.transfer_id}, {"chunk_index", message.chunk_index}};
+    out["bytes"] = nlohmann::json::array();
+    for (uint8_t byte : message.bytes) {
+        out["bytes"].push_back(byte);
+    }
+    return out;
+}
+
+std::optional<MapTransferChunkMessage> MapTransferChunkFromJson(const nlohmann::json& json) {
+    MapTransferChunkMessage out;
+    out.transfer_id = json.value("transfer_id", 0);
+    out.chunk_index = json.value("chunk_index", 0u);
+    const auto bytes_it = json.find("bytes");
+    if (bytes_it != json.end() && bytes_it->is_array()) {
+        out.bytes.reserve(bytes_it->size());
+        for (const auto& item : *bytes_it) {
+            out.bytes.push_back(item.get<uint8_t>());
+        }
+    }
+    return out;
+}
+
+nlohmann::json ToJson(const MapTransferCompleteMessage& message) {
+    return {{"transfer_id", message.transfer_id}, {"checksum", message.checksum}};
+}
+
+std::optional<MapTransferCompleteMessage> MapTransferCompleteFromJson(const nlohmann::json& json) {
+    MapTransferCompleteMessage out;
+    out.transfer_id = json.value("transfer_id", 0);
+    out.checksum = json.value("checksum", 0u);
     return out;
 }

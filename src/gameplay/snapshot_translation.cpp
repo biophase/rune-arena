@@ -146,6 +146,17 @@ RuneSnapshot BuildRuneSnapshot(const Rune& rune) {
     snapshot.earth_state_duration = rune.earth_state_duration;
     snapshot.earth_roots_spawned = rune.earth_roots_spawned;
     snapshot.earth_roots_group_id = rune.earth_roots_group_id;
+    snapshot.fire_storm_original_owner_player_id = rune.fire_storm_original_owner_player_id;
+    snapshot.fire_storm_original_owner_team = rune.fire_storm_original_owner_team;
+    snapshot.fire_storm_original_rune_type = static_cast<int>(rune.fire_storm_original_rune_type);
+    snapshot.fire_storm_temporary = rune.fire_storm_temporary;
+    snapshot.fire_storm_source_rune = rune.fire_storm_source_rune;
+    snapshot.fire_storm_remaining_seconds = rune.fire_storm_remaining_seconds;
+    snapshot.fire_storm_visual_state = static_cast<int>(rune.fire_storm_visual_state);
+    snapshot.fire_storm_visual_state_time = rune.fire_storm_visual_state_time;
+    snapshot.fire_storm_visual_state_duration = rune.fire_storm_visual_state_duration;
+    snapshot.fire_storm_revert_after_death = rune.fire_storm_revert_after_death;
+    snapshot.fire_storm_pending_removal = rune.fire_storm_pending_removal;
     return snapshot;
 }
 
@@ -220,6 +231,18 @@ FireStormCastSnapshot BuildFireStormCastSnapshot(const FireStormCast& cast) {
     snapshot.owner_team = cast.owner_team;
     snapshot.center_cell_x = cast.center_cell.x;
     snapshot.center_cell_y = cast.center_cell.y;
+    snapshot.source_cell_x.reserve(cast.source_cells.size());
+    snapshot.source_cell_y.reserve(cast.source_cells.size());
+    for (const GridCoord& cell : cast.source_cells) {
+        snapshot.source_cell_x.push_back(cell.x);
+        snapshot.source_cell_y.push_back(cell.y);
+    }
+    snapshot.target_cell_x.reserve(cast.target_cells.size());
+    snapshot.target_cell_y.reserve(cast.target_cells.size());
+    for (const GridCoord& cell : cast.target_cells) {
+        snapshot.target_cell_x.push_back(cell.x);
+        snapshot.target_cell_y.push_back(cell.y);
+    }
     snapshot.elapsed_seconds = cast.elapsed_seconds;
     snapshot.duration_seconds = cast.duration_seconds;
     snapshot.alive = cast.alive;

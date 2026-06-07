@@ -34,6 +34,7 @@ enum class AppScreen {
     MainMenu,
     Connecting,
     Lobby,
+    LoadingMatchMap,
     InMatch,
     PostMatch,
 };
@@ -77,6 +78,7 @@ class GameApp {
     void UpdateMainMenu(float dt);
     void UpdateConnecting(float dt);
     void UpdateLobby(float dt);
+    void UpdateLoadingMatchMap(float dt);
     void UpdateMatch(float dt);
     void UpdatePostMatch(float dt);
     void UpdateClientVisualSmoothing(float dt);
@@ -88,6 +90,18 @@ class GameApp {
     void StartAsHost();
     void StartAsClient(const std::string& ip, int port);
     void ReturnToMainMenu();
+    void RefreshLobbyMapCatalog();
+    void SetSelectedLobbyMapIndex(int index);
+    std::string BuildLobbyMapOptionsText() const;
+    std::string GetSelectedLobbyMapLabel() const;
+    bool RebuildLobbyMapPreview();
+    void ClearLobbyMapPreviewTexture();
+    void ApplyLobbyPreviewTextureFromPngBytes(const std::vector<uint8_t>& png_bytes);
+    void PumpMapTransferMessages();
+    void BeginClientMatchMapLoading(const MatchStartMessage& message);
+    bool FinalizeClientTransferredMap();
+    bool SendSelectedMapToClients(int transfer_id, const std::vector<uint8_t>& file_bytes);
+    bool LoadMapOrFallback(const std::string& preferred_map_path);
 
     void StartMatchAsHost();
     void ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot);
@@ -121,6 +135,7 @@ class GameApp {
     void HandleEventsHost();
     void UpdateProjectileEmitters();
     void UpdateSnowParticleEmitters(float dt);
+    void UpdateFireStormArcVisuals(float dt);
     void UpdateParticles(float dt);
     void UpdateHammerImpactEffects(float dt);
     void SpawnDamageHitParticles(Vector2 target_pos, std::optional<Vector2> damage_world_pos);
@@ -144,6 +159,12 @@ class GameApp {
                                    bool* out_volatile_cast = nullptr) const;
     void SpawnVolatileCastCasterFx(int player_id);
     void UpdateVolatileCastCasterFx(float dt);
+    void ConvertRuneToFireStorm(Rune& rune, int caster_player_id, int caster_team, bool temporary, bool source_rune);
+    void BeginFireStormRuneRevert(Rune& rune, bool restore_after_death);
+    void FinalizeFireStormRuneDeath(Rune& rune);
+    void SpawnFireStormConvertedRuneAtCell(int owner_player_id, int owner_team, const GridCoord& cell, bool source_rune);
+    void SpawnStormArcVisuals(const FireStormCast& cast);
+    void SpawnStormArcSparkParticle(Vector2 world_pos, float visual_z);
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
                                    float idle_lifetime_seconds);
     int SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell);
@@ -213,6 +234,7 @@ class GameApp {
     void RenderNonTerrainDepthSorted(DepthSortedRenderPass pass);
     void RenderInfluenceZoneOverlay();
     void RenderInfluenceZoneAnimatedTiles();
+    bool ShouldRenderInfluenceTeam(int team) const;
     void RenderRunes();
     void RenderIceWalls();
     void RenderPlayers();
@@ -231,6 +253,7 @@ class GameApp {
     void RenderFpsCounter();
     void RenderNetworkDebugPanel();
     void RenderInGameMenu();
+    void RenderMapLoadingScreen() const;
     void UpdateCameraTarget();
     Vector2 GetRenderPlayerPosition(int player_id) const;
     bool IsWorldPointInsideCameraView(Vector2 world_pos) const;
@@ -253,6 +276,7 @@ class GameApp {
     bool RenderModularTreeShadow(const MapObjectInstance& object, const ObjectPrototype& proto);
     bool DrawWindAnimatedMapObject(const MapObjectInstance& object, const ObjectPrototype& proto, const Texture2D& texture,
                                    Rectangle src, Rectangle dst);
+    Rectangle GetMapObjectCollisionAabb(const MapObjectInstance& object, const ObjectPrototype* proto) const;
 
     static FacingDirection AimToFacing(Vector2 aim);
     static const char* FacingToSpriteFacing(FacingDirection facing);
@@ -274,6 +298,7 @@ class GameApp {
     Rectangle GetPlayerCollisionRect(const Player& player) const;
     Rectangle GetPlayerCollisionRect(Vector2 center) const;
     float GetPlayerCollisionSupportDistance(Vector2 direction) const;
+    bool LoadModularTreeAssetMetadata();
     Rectangle GetModularTreeSpriteRect(const MapObjectInstance& object, const char* layer_name = "trunk") const;
     float GetMapObjectWindPhaseOffset(const MapObjectInstance& object) const;
     bool TryEquipItem(Player& player, const std::string& item_id, const MapObjectInstance* source_object = nullptr);
@@ -337,7 +362,22 @@ class GameApp {
         float duration_seconds = 0.0f;
         bool alive = true;
     };
+    struct StormArcVisual {
+        int cast_id = -1;
+        Vector2 start_world = {0.0f, 0.0f};
+        Vector2 end_world = {0.0f, 0.0f};
+        float elapsed_seconds = 0.0f;
+        float duration_seconds = 0.0f;
+        float peak_height = 0.0f;
+        float rotation_degrees = 0.0f;
+        float next_spark_emit_seconds = 0.0f;
+        bool alive = true;
+    };
     std::vector<HammerImpactEffect> hammer_impact_effects_;
+    std::vector<StormArcVisual> storm_arc_visuals_;
+    std::unordered_map<int, bool> fire_storm_cast_impact_triggered_;
+    std::unordered_map<int, bool> fire_storm_cast_arcs_spawned_;
+    std::unordered_map<int, bool> fire_storm_cast_conversion_sfx_triggered_;
     std::unordered_map<int, PlayerActionState> previous_player_action_states_;
     struct VolatileCastCasterFx {
         float age_seconds = 0.0f;
@@ -369,7 +409,27 @@ class GameApp {
     char join_ip_buffer_[64] = "127.0.0.1";
     std::vector<std::string> lobby_player_names_;
     std::string host_display_ip_ = "127.0.0.1";
+    struct LobbyMapEntry {
+        std::string key;
+        std::string label;
+        std::string resolved_path;
+    };
+    std::vector<LobbyMapEntry> lobby_map_catalog_;
+    int lobby_selected_map_index_ = 0;
+    bool lobby_map_dropdown_edit_mode_ = false;
+    int lobby_preview_generation_ = 0;
+    int applied_lobby_preview_generation_ = -1;
+    std::string lobby_selected_map_key_;
+    std::string lobby_selected_map_label_ = "(no maps)";
+    std::string applied_lobby_preview_map_key_;
+    std::vector<uint8_t> lobby_preview_png_bytes_;
+    std::string lobby_preview_status_text_ = "Preview unavailable";
+    Texture2D lobby_map_preview_texture_ = {};
+    bool has_lobby_map_preview_texture_ = false;
     std::string resolved_map_path_;
+    std::string resolved_default_map_path_;
+    std::string resolved_host_selected_map_path_;
+    std::string resolved_client_cached_map_path_;
     std::string resolved_objects_config_path_;
     std::string resolved_composite_effects_path_;
     std::string resolved_sprite_metadata_path_;
@@ -383,6 +443,7 @@ class GameApp {
     std::string resolved_modular_tree_canopy_foreground_path_;
     std::string resolved_modular_tree_shadow_path_;
     std::string resolved_modular_tree_outline_mask_path_;
+    std::string resolved_modular_tree_asset_metadata_path_;
     std::string resolved_spell_pattern_path_;
     std::string resolved_equipment_profiles_path_;
     std::string resolved_hit_shapes_path_;
@@ -407,8 +468,27 @@ class GameApp {
     float lobby_shrink_tiles_per_second_ = Constants::kDefaultShrinkTilesPerSecond;
     float lobby_shrink_start_seconds_ = Constants::kDefaultShrinkStartSeconds;
     float lobby_min_arena_radius_tiles_ = Constants::kDefaultMinArenaRadiusTiles;
+    struct PendingMapTransfer {
+        int transfer_id = 0;
+        std::string map_key;
+        std::string map_filename;
+        uint32_t total_bytes = 0;
+        uint32_t chunk_count = 0;
+        uint32_t checksum = 0;
+        std::vector<std::vector<uint8_t>> chunks;
+        std::vector<bool> received_chunks;
+        size_t received_bytes = 0;
+        bool complete_received = false;
+    };
+    std::optional<PendingMapTransfer> pending_client_map_transfer_;
+    int next_map_transfer_id_ = 1;
+    int expected_match_transfer_id_ = 0;
+    std::string expected_match_map_key_;
+    std::string map_loading_status_text_ = "Waiting for map transfer...";
 
     float render_time_seconds_ = 0.0f;
+    Vector2 modular_tree_anchor_pixels_ = {0.0f, 0.0f};
+    bool has_modular_tree_anchor_pixels_ = false;
     bool force_windowed_launch_ = false;
     bool initial_fullscreen_setting_ = true;
     bool request_app_exit_ = false;

@@ -85,7 +85,13 @@ class NetworkManager {
     std::optional<LobbyStateMessage> ConsumeLobbyState();
 
     void BroadcastMatchStart(const MatchStartMessage& message);
-    bool ConsumeMatchStart();
+    std::optional<MatchStartMessage> ConsumeMatchStart();
+    void BroadcastMapTransferBegin(const MapTransferBeginMessage& message);
+    void BroadcastMapTransferChunk(const MapTransferChunkMessage& message);
+    void BroadcastMapTransferComplete(const MapTransferCompleteMessage& message);
+    std::optional<MapTransferBeginMessage> ConsumeMapTransferBegin();
+    std::vector<MapTransferChunkMessage> ConsumeMapTransferChunks();
+    std::optional<MapTransferCompleteMessage> ConsumeMapTransferComplete();
 
     int GetAssignedLocalPlayerId() const;
     std::vector<RemotePlayerInfo> GetRemotePlayers() const;
@@ -128,7 +134,10 @@ class NetworkManager {
     std::vector<ClientActionMessage> pending_host_actions_;
     std::optional<ServerSnapshotMessage> latest_snapshot_;
     std::optional<LobbyStateMessage> latest_lobby_state_;
-    bool pending_match_start_ = false;
+    std::optional<MatchStartMessage> pending_match_start_;
+    std::optional<MapTransferBeginMessage> latest_map_transfer_begin_;
+    std::vector<MapTransferChunkMessage> pending_map_transfer_chunks_;
+    std::optional<MapTransferCompleteMessage> latest_map_transfer_complete_;
     bool client_received_lobby_state_ = false;
     ClientConnectionState client_connection_state_ = ClientConnectionState::Idle;
     std::string last_debug_message_ = "idle";

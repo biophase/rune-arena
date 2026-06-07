@@ -9,6 +9,11 @@ constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
 constexpr int kDefaultPort = 7967;
 constexpr int kDiscoveryPort = 7968;
+constexpr int kLobbyMapPreviewWidth = 192;
+constexpr int kLobbyMapPreviewHeight = 192;
+constexpr int kLobbyMapPreviewSupersampleFactor = 4;
+constexpr int kLobbyMapPreviewGaussianBlurSize = 2;
+constexpr size_t kMapTransferChunkBytes = 24 * 1024;
 
 constexpr double kFixedDt = 1.0 / 60.0;
 constexpr float kNetworkSnapshotIntervalSeconds = 1.0f / 40.0f;
@@ -155,6 +160,16 @@ constexpr int kFireStormDummyLightningMinFrames = 3;
 constexpr int kFireStormDummyLightningMaxFrames = 8;
 constexpr int kFireStormDummyLightningCooldownFrames = 8;
 constexpr float kFireStormLifetimeSeconds = 30.0f;
+constexpr float kFireStormConversionRadiusTiles = 16.0f;
+constexpr float kFireStormStormProjectileTravelSeconds = 1.0f;
+constexpr float kFireStormStormArcPeakHeight = 128.0f;
+constexpr float kFireStormSparkSpawnRatePerSecond = 42.0f;
+constexpr float kFireStormSparkFallSpeed = 160.0f;
+constexpr float kFireStormSparkSwayAmplitude = 1.75f;
+constexpr float kFireStormSparkSwayFrequencyHz = 1.4f;
+constexpr float kFireStormStormProjectileSize = 40.0f;
+constexpr float kFireStormSparkSizeMin = 10.0f;
+constexpr float kFireStormSparkSizeMax = 16.0f;
 constexpr float kRuneVolatileManaMultiplier = 3.0f;
 constexpr float kRuneVolatileActivationMultiplier = 2.0f;
 constexpr float kHudVolatileLowManaBlinkHz = 4.0f / 3.0f;
@@ -284,6 +299,7 @@ constexpr const char* kModularTreeShadowMetadataPath =
     "assets/128x128_tree_modular/exports/128x128_tree_modular-shadow.json";
 constexpr const char* kModularTreeOutlineMaskMetadataPath =
     "assets/128x128_tree_modular/exports/128x128_tree_modular-layer_2.json";
+constexpr const char* kModularTreeAssetMetadataPath = "assets/128x128_tree_modular/metadata.json";
 constexpr const char* kSpellPatternPath = "assets/spell_patterns.json";
 constexpr const char* kEquipmentProfilesPath = "assets/equipment_profiles.json";
 constexpr const char* kHitShapesPath = "assets/hit_shapes.json";

@@ -76,7 +76,18 @@ bool AreEqual(const RuneSnapshot& a, const RuneSnapshot& b) {
            a.earth_state_time == b.earth_state_time &&
            a.earth_state_duration == b.earth_state_duration &&
            a.earth_roots_spawned == b.earth_roots_spawned &&
-           a.earth_roots_group_id == b.earth_roots_group_id;
+           a.earth_roots_group_id == b.earth_roots_group_id &&
+           a.fire_storm_original_owner_player_id == b.fire_storm_original_owner_player_id &&
+           a.fire_storm_original_owner_team == b.fire_storm_original_owner_team &&
+           a.fire_storm_original_rune_type == b.fire_storm_original_rune_type &&
+           a.fire_storm_temporary == b.fire_storm_temporary &&
+           a.fire_storm_source_rune == b.fire_storm_source_rune &&
+           a.fire_storm_remaining_seconds == b.fire_storm_remaining_seconds &&
+           a.fire_storm_visual_state == b.fire_storm_visual_state &&
+           a.fire_storm_visual_state_time == b.fire_storm_visual_state_time &&
+           a.fire_storm_visual_state_duration == b.fire_storm_visual_state_duration &&
+           a.fire_storm_revert_after_death == b.fire_storm_revert_after_death &&
+           a.fire_storm_pending_removal == b.fire_storm_pending_removal;
 }
 
 bool AreEqual(const ProjectileSnapshot& a, const ProjectileSnapshot& b) {
@@ -110,6 +121,8 @@ bool AreEqual(const FireStormDummySnapshot& a, const FireStormDummySnapshot& b) 
 bool AreEqual(const FireStormCastSnapshot& a, const FireStormCastSnapshot& b) {
     return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
            a.center_cell_x == b.center_cell_x && a.center_cell_y == b.center_cell_y &&
+           a.source_cell_x == b.source_cell_x && a.source_cell_y == b.source_cell_y &&
+           a.target_cell_x == b.target_cell_x && a.target_cell_y == b.target_cell_y &&
            a.elapsed_seconds == b.elapsed_seconds && a.duration_seconds == b.duration_seconds && a.alive == b.alive;
 }
 
@@ -483,7 +496,10 @@ bool NetworkManager::ConnectToHost(const std::string& ip, int port) {
     client_snapshot_history_.clear();
     last_client_applied_snapshot_id_ = 0;
     client_received_lobby_state_ = false;
-    pending_match_start_ = false;
+    pending_match_start_.reset();
+    latest_map_transfer_begin_.reset();
+    pending_map_transfer_chunks_.clear();
+    latest_map_transfer_complete_.reset();
     client_connection_state_ = ClientConnectionState::ConnectingTransport;
     last_debug_message_ = "connecting transport";
 
@@ -513,7 +529,10 @@ void NetworkManager::Stop() {
     pending_host_actions_.clear();
     latest_snapshot_.reset();
     latest_lobby_state_.reset();
-    pending_match_start_ = false;
+    pending_match_start_.reset();
+    latest_map_transfer_begin_.reset();
+    pending_map_transfer_chunks_.clear();
+    latest_map_transfer_complete_.reset();
     client_received_lobby_state_ = false;
 
     is_host_ = false;
@@ -699,9 +718,26 @@ void NetworkManager::Poll() {
                             const auto match_start =
                                 binary::DecodeMatchStartPayload(header.payload, header.payload_size);
                             if (match_start.has_value() && match_start->start) {
-                                pending_match_start_ = true;
+                                pending_match_start_ = *match_start;
                                 NetLog("[NET] Client received match_start");
                             }
+                            break;
+                        }
+                        case binary::PacketType::MapTransferBegin: {
+                            latest_map_transfer_begin_ =
+                                binary::DecodeMapTransferBeginPayload(header.payload, header.payload_size);
+                            break;
+                        }
+                        case binary::PacketType::MapTransferChunk: {
+                            auto chunk = binary::DecodeMapTransferChunkPayload(header.payload, header.payload_size);
+                            if (chunk.has_value()) {
+                                pending_map_transfer_chunks_.push_back(std::move(*chunk));
+                            }
+                            break;
+                        }
+                        case binary::PacketType::MapTransferComplete: {
+                            latest_map_transfer_complete_ =
+                                binary::DecodeMapTransferCompletePayload(header.payload, header.payload_size);
                             break;
                         }
                         default:
@@ -858,9 +894,48 @@ void NetworkManager::BroadcastMatchStart(const MatchStartMessage& message) {
     BroadcastPacket(binary::EncodeMatchStartPacket(message), true, kChannelReliable, false);
 }
 
-bool NetworkManager::ConsumeMatchStart() {
-    const bool out = pending_match_start_;
-    pending_match_start_ = false;
+std::optional<MatchStartMessage> NetworkManager::ConsumeMatchStart() {
+    auto out = pending_match_start_;
+    pending_match_start_.reset();
+    return out;
+}
+
+void NetworkManager::BroadcastMapTransferBegin(const MapTransferBeginMessage& message) {
+    if (!is_host_) {
+        return;
+    }
+    BroadcastPacket(binary::EncodeMapTransferBeginPacket(message), true, kChannelReliable, false);
+}
+
+void NetworkManager::BroadcastMapTransferChunk(const MapTransferChunkMessage& message) {
+    if (!is_host_) {
+        return;
+    }
+    BroadcastPacket(binary::EncodeMapTransferChunkPacket(message), true, kChannelReliable, false);
+}
+
+void NetworkManager::BroadcastMapTransferComplete(const MapTransferCompleteMessage& message) {
+    if (!is_host_) {
+        return;
+    }
+    BroadcastPacket(binary::EncodeMapTransferCompletePacket(message), true, kChannelReliable, false);
+}
+
+std::optional<MapTransferBeginMessage> NetworkManager::ConsumeMapTransferBegin() {
+    auto out = latest_map_transfer_begin_;
+    latest_map_transfer_begin_.reset();
+    return out;
+}
+
+std::vector<MapTransferChunkMessage> NetworkManager::ConsumeMapTransferChunks() {
+    std::vector<MapTransferChunkMessage> out;
+    out.swap(pending_map_transfer_chunks_);
+    return out;
+}
+
+std::optional<MapTransferCompleteMessage> NetworkManager::ConsumeMapTransferComplete() {
+    auto out = latest_map_transfer_complete_;
+    latest_map_transfer_complete_.reset();
     return out;
 }
 

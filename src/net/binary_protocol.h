@@ -18,6 +18,9 @@ enum class PacketType : uint8_t {
     Snapshot = 5,
     LobbyState = 6,
     MatchStart = 7,
+    MapTransferBegin = 8,
+    MapTransferChunk = 9,
+    MapTransferComplete = 10,
 };
 
 struct DecodedPacketHeader {
@@ -47,6 +50,15 @@ std::optional<LobbyStateMessage> DecodeLobbyStatePayload(const uint8_t* payload,
 
 std::vector<uint8_t> EncodeMatchStartPacket(const MatchStartMessage& message);
 std::optional<MatchStartMessage> DecodeMatchStartPayload(const uint8_t* payload, size_t payload_size);
+
+std::vector<uint8_t> EncodeMapTransferBeginPacket(const MapTransferBeginMessage& message);
+std::optional<MapTransferBeginMessage> DecodeMapTransferBeginPayload(const uint8_t* payload, size_t payload_size);
+
+std::vector<uint8_t> EncodeMapTransferChunkPacket(const MapTransferChunkMessage& message);
+std::optional<MapTransferChunkMessage> DecodeMapTransferChunkPayload(const uint8_t* payload, size_t payload_size);
+
+std::vector<uint8_t> EncodeMapTransferCompletePacket(const MapTransferCompleteMessage& message);
+std::optional<MapTransferCompleteMessage> DecodeMapTransferCompletePayload(const uint8_t* payload, size_t payload_size);
 
 bool DecodePacketHeader(const uint8_t* data, size_t data_size, DecodedPacketHeader& out_header);
 

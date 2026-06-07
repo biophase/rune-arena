@@ -130,6 +130,17 @@ struct RuneSnapshot {
     float earth_state_duration = 0.0f;
     bool earth_roots_spawned = false;
     int earth_roots_group_id = -1;
+    int fire_storm_original_owner_player_id = -1;
+    int fire_storm_original_owner_team = 0;
+    int fire_storm_original_rune_type = -1;
+    bool fire_storm_temporary = false;
+    bool fire_storm_source_rune = false;
+    float fire_storm_remaining_seconds = 0.0f;
+    int fire_storm_visual_state = 0;
+    float fire_storm_visual_state_time = 0.0f;
+    float fire_storm_visual_state_duration = 0.0f;
+    bool fire_storm_revert_after_death = false;
+    bool fire_storm_pending_removal = false;
 };
 
 struct ProjectileSnapshot {
@@ -194,6 +205,10 @@ struct FireStormCastSnapshot {
     int owner_team = 0;
     int center_cell_x = 0;
     int center_cell_y = 0;
+    std::vector<int> source_cell_x;
+    std::vector<int> source_cell_y;
+    std::vector<int> target_cell_x;
+    std::vector<int> target_cell_y;
     float elapsed_seconds = 0.0f;
     float duration_seconds = 0.0f;
     bool alive = true;
@@ -288,10 +303,36 @@ struct LobbyStateMessage {
     float shrink_tiles_per_second = 0.0f;
     float shrink_start_seconds = 0.0f;
     float min_arena_radius_tiles = 0.0f;
+    std::string selected_map_key;
+    std::string selected_map_label;
+    int preview_generation = 0;
+    std::vector<uint8_t> preview_png_bytes;
 };
 
 struct MatchStartMessage {
     bool start = true;
+    int transfer_id = 0;
+    std::string map_key;
+};
+
+struct MapTransferBeginMessage {
+    int transfer_id = 0;
+    std::string map_key;
+    std::string map_filename;
+    uint32_t total_bytes = 0;
+    uint32_t chunk_count = 0;
+    uint32_t checksum = 0;
+};
+
+struct MapTransferChunkMessage {
+    int transfer_id = 0;
+    uint32_t chunk_index = 0;
+    std::vector<uint8_t> bytes;
+};
+
+struct MapTransferCompleteMessage {
+    int transfer_id = 0;
+    uint32_t checksum = 0;
 };
 
 nlohmann::json ToJson(const ClientInputMessage& message);
@@ -309,3 +350,10 @@ std::optional<LobbyStateMessage> LobbyStateFromJson(const nlohmann::json& json);
 
 nlohmann::json ToJson(const MatchStartMessage& message);
 std::optional<MatchStartMessage> MatchStartFromJson(const nlohmann::json& json);
+
+nlohmann::json ToJson(const MapTransferBeginMessage& message);
+std::optional<MapTransferBeginMessage> MapTransferBeginFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const MapTransferChunkMessage& message);
+std::optional<MapTransferChunkMessage> MapTransferChunkFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const MapTransferCompleteMessage& message);
+std::optional<MapTransferCompleteMessage> MapTransferCompleteFromJson(const nlohmann::json& json);

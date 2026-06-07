@@ -7,7 +7,7 @@ namespace binary {
 namespace {
 
 constexpr uint32_t kMagic = 0x524E4152;  // RNAR
-constexpr uint16_t kVersion = 2;
+constexpr uint16_t kVersion = 3;
 constexpr size_t kHeaderSize = 12;
 
 class BufferWriter {
@@ -34,6 +34,10 @@ class BufferWriter {
         const auto size = static_cast<uint16_t>(std::min<size_t>(value.size(), 65535));
         WriteU16(size);
         bytes_.insert(bytes_.end(), value.begin(), value.begin() + size);
+    }
+    void WriteBytes(const std::vector<uint8_t>& value) {
+        WriteU32(static_cast<uint32_t>(value.size()));
+        bytes_.insert(bytes_.end(), value.begin(), value.end());
     }
 
     const std::vector<uint8_t>& Bytes() const { return bytes_; }
@@ -87,6 +91,14 @@ class BufferReader {
         if (!ReadU16(size)) return false;
         if (offset_ + size > this->size_) return false;
         out.assign(reinterpret_cast<const char*>(data_ + offset_), size);
+        offset_ += size;
+        return true;
+    }
+    bool ReadBytes(std::vector<uint8_t>& out) {
+        uint32_t size = 0;
+        if (!ReadU32(size)) return false;
+        if (offset_ + size > this->size_) return false;
+        out.assign(data_ + offset_, data_ + offset_ + size);
         offset_ += size;
         return true;
     }
@@ -365,6 +377,17 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteF32(rune.earth_state_duration);
         payload.WriteBool(rune.earth_roots_spawned);
         payload.WriteI32(rune.earth_roots_group_id);
+        payload.WriteI32(rune.fire_storm_original_owner_player_id);
+        payload.WriteI32(rune.fire_storm_original_owner_team);
+        payload.WriteI32(rune.fire_storm_original_rune_type);
+        payload.WriteBool(rune.fire_storm_temporary);
+        payload.WriteBool(rune.fire_storm_source_rune);
+        payload.WriteF32(rune.fire_storm_remaining_seconds);
+        payload.WriteI32(rune.fire_storm_visual_state);
+        payload.WriteF32(rune.fire_storm_visual_state_time);
+        payload.WriteF32(rune.fire_storm_visual_state_duration);
+        payload.WriteBool(rune.fire_storm_revert_after_death);
+        payload.WriteBool(rune.fire_storm_pending_removal);
     }
 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.projectiles.size(), 65535)));
@@ -439,6 +462,18 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteI32(cast.owner_team);
         payload.WriteI32(cast.center_cell_x);
         payload.WriteI32(cast.center_cell_y);
+        const uint16_t source_count = static_cast<uint16_t>(std::min<size_t>(cast.source_cell_x.size(), 65535));
+        payload.WriteU16(source_count);
+        for (uint16_t j = 0; j < source_count; ++j) {
+            payload.WriteI32(cast.source_cell_x[j]);
+            payload.WriteI32(cast.source_cell_y[j]);
+        }
+        const uint16_t target_count = static_cast<uint16_t>(std::min<size_t>(cast.target_cell_x.size(), 65535));
+        payload.WriteU16(target_count);
+        for (uint16_t j = 0; j < target_count; ++j) {
+            payload.WriteI32(cast.target_cell_x[j]);
+            payload.WriteI32(cast.target_cell_y[j]);
+        }
         payload.WriteF32(cast.elapsed_seconds);
         payload.WriteF32(cast.duration_seconds);
         payload.WriteBool(cast.alive);
@@ -647,7 +682,18 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             !reader.ReadF32(rune.activation_remaining_seconds) || !reader.ReadBool(rune.creates_influence_zone) ||
             !reader.ReadI32(rune.earth_trap_state) || !reader.ReadF32(rune.earth_state_time) ||
             !reader.ReadF32(rune.earth_state_duration) || !reader.ReadBool(rune.earth_roots_spawned) ||
-            !reader.ReadI32(rune.earth_roots_group_id)) {
+            !reader.ReadI32(rune.earth_roots_group_id) ||
+            !reader.ReadI32(rune.fire_storm_original_owner_player_id) ||
+            !reader.ReadI32(rune.fire_storm_original_owner_team) ||
+            !reader.ReadI32(rune.fire_storm_original_rune_type) ||
+            !reader.ReadBool(rune.fire_storm_temporary) ||
+            !reader.ReadBool(rune.fire_storm_source_rune) ||
+            !reader.ReadF32(rune.fire_storm_remaining_seconds) ||
+            !reader.ReadI32(rune.fire_storm_visual_state) ||
+            !reader.ReadF32(rune.fire_storm_visual_state_time) ||
+            !reader.ReadF32(rune.fire_storm_visual_state_duration) ||
+            !reader.ReadBool(rune.fire_storm_revert_after_death) ||
+            !reader.ReadBool(rune.fire_storm_pending_removal)) {
             return std::nullopt;
         }
         out.runes.push_back(rune);
@@ -719,7 +765,40 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
     for (uint16_t i = 0; i < cast_count; ++i) {
         FireStormCastSnapshot cast;
         if (!reader.ReadI32(cast.id) || !reader.ReadI32(cast.owner_player_id) || !reader.ReadI32(cast.owner_team) ||
-            !reader.ReadI32(cast.center_cell_x) || !reader.ReadI32(cast.center_cell_y) ||
+            !reader.ReadI32(cast.center_cell_x) || !reader.ReadI32(cast.center_cell_y)) {
+            return std::nullopt;
+        }
+        uint16_t source_count = 0;
+        if (!reader.ReadU16(source_count)) {
+            return std::nullopt;
+        }
+        cast.source_cell_x.reserve(source_count);
+        cast.source_cell_y.reserve(source_count);
+        for (uint16_t j = 0; j < source_count; ++j) {
+            int32_t x = 0;
+            int32_t y = 0;
+            if (!reader.ReadI32(x) || !reader.ReadI32(y)) {
+                return std::nullopt;
+            }
+            cast.source_cell_x.push_back(x);
+            cast.source_cell_y.push_back(y);
+        }
+        uint16_t target_count = 0;
+        if (!reader.ReadU16(target_count)) {
+            return std::nullopt;
+        }
+        cast.target_cell_x.reserve(target_count);
+        cast.target_cell_y.reserve(target_count);
+        for (uint16_t j = 0; j < target_count; ++j) {
+            int32_t x = 0;
+            int32_t y = 0;
+            if (!reader.ReadI32(x) || !reader.ReadI32(y)) {
+                return std::nullopt;
+            }
+            cast.target_cell_x.push_back(x);
+            cast.target_cell_y.push_back(y);
+        }
+        if (
             !reader.ReadF32(cast.elapsed_seconds) || !reader.ReadF32(cast.duration_seconds) ||
             !reader.ReadBool(cast.alive)) {
             return std::nullopt;
@@ -856,6 +935,10 @@ std::vector<uint8_t> EncodeLobbyStatePacket(const LobbyStateMessage& message) {
     payload.WriteF32(message.shrink_tiles_per_second);
     payload.WriteF32(message.shrink_start_seconds);
     payload.WriteF32(message.min_arena_radius_tiles);
+    payload.WriteString(message.selected_map_key);
+    payload.WriteString(message.selected_map_label);
+    payload.WriteI32(message.preview_generation);
+    payload.WriteBytes(message.preview_png_bytes);
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.players.size(), 65535)));
     for (size_t i = 0; i < message.players.size() && i < 65535; ++i) {
         payload.WriteI32(message.players[i].player_id);
@@ -870,7 +953,9 @@ std::optional<LobbyStateMessage> DecodeLobbyStatePayload(const uint8_t* payload_
     if (!reader.ReadBool(out.host_can_start) || !reader.ReadI32(out.mode_type) ||
         !reader.ReadI32(out.round_time_seconds) || !reader.ReadI32(out.best_of_target_kills) ||
         !reader.ReadF32(out.shrink_tiles_per_second) || !reader.ReadF32(out.shrink_start_seconds) ||
-        !reader.ReadF32(out.min_arena_radius_tiles)) {
+        !reader.ReadF32(out.min_arena_radius_tiles) || !reader.ReadString(out.selected_map_key) ||
+        !reader.ReadString(out.selected_map_label) || !reader.ReadI32(out.preview_generation) ||
+        !reader.ReadBytes(out.preview_png_bytes)) {
         return std::nullopt;
     }
     uint16_t player_count = 0;
@@ -890,13 +975,75 @@ std::optional<LobbyStateMessage> DecodeLobbyStatePayload(const uint8_t* payload_
 std::vector<uint8_t> EncodeMatchStartPacket(const MatchStartMessage& message) {
     BufferWriter payload;
     payload.WriteBool(message.start);
+    payload.WriteI32(message.transfer_id);
+    payload.WriteString(message.map_key);
     return MakePacket(PacketType::MatchStart, payload.Bytes());
 }
 
 std::optional<MatchStartMessage> DecodeMatchStartPayload(const uint8_t* payload_data, size_t payload_size) {
     BufferReader reader(payload_data, payload_size);
     MatchStartMessage out;
-    if (!reader.ReadBool(out.start) || !reader.End()) return std::nullopt;
+    if (!reader.ReadBool(out.start) || !reader.ReadI32(out.transfer_id) || !reader.ReadString(out.map_key) ||
+        !reader.End()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::vector<uint8_t> EncodeMapTransferBeginPacket(const MapTransferBeginMessage& message) {
+    BufferWriter payload;
+    payload.WriteI32(message.transfer_id);
+    payload.WriteString(message.map_key);
+    payload.WriteString(message.map_filename);
+    payload.WriteU32(message.total_bytes);
+    payload.WriteU32(message.chunk_count);
+    payload.WriteU32(message.checksum);
+    return MakePacket(PacketType::MapTransferBegin, payload.Bytes());
+}
+
+std::optional<MapTransferBeginMessage> DecodeMapTransferBeginPayload(const uint8_t* payload_data, size_t payload_size) {
+    BufferReader reader(payload_data, payload_size);
+    MapTransferBeginMessage out;
+    if (!reader.ReadI32(out.transfer_id) || !reader.ReadString(out.map_key) || !reader.ReadString(out.map_filename) ||
+        !reader.ReadU32(out.total_bytes) || !reader.ReadU32(out.chunk_count) || !reader.ReadU32(out.checksum) ||
+        !reader.End()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::vector<uint8_t> EncodeMapTransferChunkPacket(const MapTransferChunkMessage& message) {
+    BufferWriter payload;
+    payload.WriteI32(message.transfer_id);
+    payload.WriteU32(message.chunk_index);
+    payload.WriteBytes(message.bytes);
+    return MakePacket(PacketType::MapTransferChunk, payload.Bytes());
+}
+
+std::optional<MapTransferChunkMessage> DecodeMapTransferChunkPayload(const uint8_t* payload_data, size_t payload_size) {
+    BufferReader reader(payload_data, payload_size);
+    MapTransferChunkMessage out;
+    if (!reader.ReadI32(out.transfer_id) || !reader.ReadU32(out.chunk_index) || !reader.ReadBytes(out.bytes) ||
+        !reader.End()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::vector<uint8_t> EncodeMapTransferCompletePacket(const MapTransferCompleteMessage& message) {
+    BufferWriter payload;
+    payload.WriteI32(message.transfer_id);
+    payload.WriteU32(message.checksum);
+    return MakePacket(PacketType::MapTransferComplete, payload.Bytes());
+}
+
+std::optional<MapTransferCompleteMessage> DecodeMapTransferCompletePayload(const uint8_t* payload_data,
+                                                                           size_t payload_size) {
+    BufferReader reader(payload_data, payload_size);
+    MapTransferCompleteMessage out;
+    if (!reader.ReadI32(out.transfer_id) || !reader.ReadU32(out.checksum) || !reader.End()) {
+        return std::nullopt;
+    }
     return out;
 }
 
