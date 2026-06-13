@@ -86,6 +86,11 @@ class NetworkManager {
 
     void BroadcastMatchStart(const MatchStartMessage& message);
     std::optional<MatchStartMessage> ConsumeMatchStart();
+    void SendChatSubmit(const ChatSubmitMessage& message);
+    std::vector<ChatSubmitMessage> ConsumeHostChatSubmits();
+    void BroadcastConsoleMessage(const ConsoleMessageNet& message);
+    void SendConsoleMessageToPlayer(int player_id, const ConsoleMessageNet& message);
+    std::vector<ConsoleMessageNet> ConsumeConsoleMessages();
     void BroadcastMapTransferBegin(const MapTransferBeginMessage& message);
     void BroadcastMapTransferChunk(const MapTransferChunkMessage& message);
     void BroadcastMapTransferComplete(const MapTransferCompleteMessage& message);
@@ -95,6 +100,7 @@ class NetworkManager {
 
     int GetAssignedLocalPlayerId() const;
     std::vector<RemotePlayerInfo> GetRemotePlayers() const;
+    std::vector<RemotePlayerInfo> ConsumeDisconnectedRemotePlayers();
     const NetTelemetry& GetTelemetry() const;
     void AddReconciliationCorrection();
 
@@ -132,9 +138,12 @@ class NetworkManager {
 
     std::vector<ClientMoveMessage> pending_host_moves_;
     std::vector<ClientActionMessage> pending_host_actions_;
+    std::vector<ChatSubmitMessage> pending_host_chat_submits_;
     std::optional<ServerSnapshotMessage> latest_snapshot_;
     std::optional<LobbyStateMessage> latest_lobby_state_;
     std::optional<MatchStartMessage> pending_match_start_;
+    std::vector<ConsoleMessageNet> pending_console_messages_;
+    std::vector<RemotePlayerInfo> disconnected_remote_players_;
     std::optional<MapTransferBeginMessage> latest_map_transfer_begin_;
     std::vector<MapTransferChunkMessage> pending_map_transfer_chunks_;
     std::optional<MapTransferCompleteMessage> latest_map_transfer_complete_;

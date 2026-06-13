@@ -104,6 +104,75 @@ std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& js
     return out;
 }
 
+nlohmann::json ToJson(const ChatSubmitMessage& message) {
+    return {
+        {"sender_player_id", message.sender_player_id},
+        {"channel", static_cast<int>(message.channel)},
+        {"target_player_id", message.target_player_id},
+        {"text", message.text},
+    };
+}
+
+std::optional<ChatSubmitMessage> ChatSubmitFromJson(const nlohmann::json& json) {
+    ChatSubmitMessage out;
+    out.sender_player_id = json.value("sender_player_id", -1);
+    out.channel = static_cast<ChatChannel>(json.value("channel", 0));
+    out.target_player_id = json.value("target_player_id", -1);
+    out.text = json.value("text", std::string{});
+    return out;
+}
+
+nlohmann::json ToJson(const ConsoleMessage& message) {
+    nlohmann::json out;
+    out["lifetime_seconds"] = Quantize2(message.lifetime_seconds);
+    out["spans"] = nlohmann::json::array();
+    for (const auto& span : message.spans) {
+        out["spans"].push_back({
+            {"text", span.text},
+            {"r", span.r},
+            {"g", span.g},
+            {"b", span.b},
+            {"a", span.a},
+        });
+    }
+    return out;
+}
+
+std::optional<ConsoleMessage> ConsoleMessageFromJson(const nlohmann::json& json) {
+    ConsoleMessage out;
+    out.lifetime_seconds = json.value("lifetime_seconds", 5.0f);
+    if (const auto it = json.find("spans"); it != json.end() && it->is_array()) {
+        for (const auto& span_json : *it) {
+            ConsoleTextSpanMessage span;
+            span.text = span_json.value("text", std::string{});
+            span.r = span_json.value("r", 255);
+            span.g = span_json.value("g", 255);
+            span.b = span_json.value("b", 255);
+            span.a = span_json.value("a", 255);
+            out.spans.push_back(std::move(span));
+        }
+    }
+    return out;
+}
+
+nlohmann::json ToJson(const ConsoleMessageNet& message) {
+    return {{"message", ToJson(message.message)}};
+}
+
+std::optional<ConsoleMessageNet> ConsoleMessageNetFromJson(const nlohmann::json& json) {
+    ConsoleMessageNet out;
+    const auto it = json.find("message");
+    if (it == json.end()) {
+        return std::nullopt;
+    }
+    auto decoded = ConsoleMessageFromJson(*it);
+    if (!decoded.has_value()) {
+        return std::nullopt;
+    }
+    out.message = std::move(*decoded);
+    return out;
+}
+
 nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     nlohmann::json out;
     out["server_tick"] = message.server_tick;
@@ -121,6 +190,14 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["match_finished"] = message.match_finished;
     out["red_team_kills"] = message.red_team_kills;
     out["blue_team_kills"] = message.blue_team_kills;
+    out["kill_timeline"] = nlohmann::json::array();
+    for (const auto& point : message.kill_timeline) {
+        out["kill_timeline"].push_back({
+            {"elapsed_seconds", Quantize2(point.elapsed_seconds)},
+            {"red_team_kills", point.red_team_kills},
+            {"blue_team_kills", point.blue_team_kills},
+        });
+    }
 
     out["players"] = nlohmann::json::array();
     for (const auto& player : message.players) {
@@ -369,6 +446,15 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     out.match_finished = json.value("match_finished", false);
     out.red_team_kills = json.value("red_team_kills", 0);
     out.blue_team_kills = json.value("blue_team_kills", 0);
+    if (const auto timeline_it = json.find("kill_timeline"); timeline_it != json.end() && timeline_it->is_array()) {
+        for (const auto& point_item : *timeline_it) {
+            KillTimelinePoint point;
+            point.elapsed_seconds = point_item.value("elapsed_seconds", 0.0f);
+            point.red_team_kills = point_item.value("red_team_kills", 0);
+            point.blue_team_kills = point_item.value("blue_team_kills", 0);
+            out.kill_timeline.push_back(point);
+        }
+    }
 
     const auto players_it = json.find("players");
     if (players_it != json.end() && players_it->is_array()) {

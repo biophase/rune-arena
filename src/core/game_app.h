@@ -107,6 +107,21 @@ class GameApp {
     void ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot);
     ServerSnapshotMessage BuildHostSnapshot();
     void ClearInfluenceZoneVisuals();
+    void DrainIncomingConsoleMessages();
+    void UpdateConsoleMessages(float dt);
+    void AddConsoleMessage(const ConsoleMessage& message);
+    void BroadcastConsoleMessageToAll(const ConsoleMessage& message);
+    void SendConsoleMessageToPlayer(int player_id, const ConsoleMessage& message);
+    void SendConsoleMessageToTeam(int team, const ConsoleMessage& message);
+    void HandleHostChatSubmit(const ChatSubmitMessage& message);
+    void HandleDisconnectedRemotePlayers();
+    void MaybeBroadcastMatchCountdown();
+    void RecordKillTimelinePoint();
+    bool TryOpenChatInput();
+    void UpdateChatInput();
+    void CancelChatInput();
+    void SubmitChatInput(bool team_only);
+    bool TryBuildPrivateChatSubmit(const std::string& text, ChatSubmitMessage* out_message) const;
 
     ClientInputMessage BuildLocalInput(int local_player_id);
     void SimulateHostGameplay(float dt);
@@ -250,6 +265,8 @@ class GameApp {
     void RenderZoneBorderOverlay();
     void RenderMapBoundsFadeOverlay();
     void RenderBottomHud();
+    void RenderConsoleLog() const;
+    void RenderChatInput() const;
     void RenderFpsCounter();
     void RenderNetworkDebugPanel();
     void RenderInGameMenu();
@@ -308,6 +325,7 @@ class GameApp {
     void RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) const;
     void RenderVolatileCastCasterFx(const Player& player, Vector2 draw_pos) const;
     std::string GetClientLobbyStatusText() const;
+    std::string GetPlayerDisplayName(int player_id) const;
 
     ConfigManager config_manager_;
     ControlsManager controls_manager_;
@@ -378,6 +396,11 @@ class GameApp {
     std::unordered_map<int, bool> fire_storm_cast_impact_triggered_;
     std::unordered_map<int, bool> fire_storm_cast_arcs_spawned_;
     std::unordered_map<int, bool> fire_storm_cast_conversion_sfx_triggered_;
+    struct ConsoleEntry {
+        ConsoleMessage message;
+        float age_seconds = 0.0f;
+    };
+    std::vector<ConsoleEntry> console_entries_;
     std::unordered_map<int, PlayerActionState> previous_player_action_states_;
     struct VolatileCastCasterFx {
         float age_seconds = 0.0f;
@@ -504,7 +527,18 @@ class GameApp {
     bool pending_primary_pressed_ = false;
     bool pending_grappling_pressed_ = false;
     bool pending_escape_pressed_ = false;
+    bool pending_enter_pressed_ = false;
+    bool pending_enter_shift_down_ = false;
+    bool pending_backspace_pressed_ = false;
+    std::string pending_text_input_;
     bool escape_pressed_this_update_ = false;
+    bool enter_pressed_this_update_ = false;
+    bool enter_shift_down_this_update_ = false;
+    bool backspace_pressed_this_update_ = false;
+    std::string text_input_this_update_;
+    bool chat_input_active_ = false;
+    std::string chat_input_buffer_;
+    int last_match_countdown_announcement_seconds_ = 11;
     int pending_select_rune_slot_ = -1;
     int pending_activate_item_slot_ = -1;
     bool pending_toggle_inventory_mode_ = false;

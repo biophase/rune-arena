@@ -1,10 +1,13 @@
 #pragma once
 
 #include <optional>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "game/match_state.h"
 
 struct ClientInputMessage {
     int player_id = -1;
@@ -49,6 +52,32 @@ struct ClientActionMessage {
     std::vector<int> item_slot_counts;
     std::vector<float> item_slot_cooldown_remaining;
     std::vector<float> item_slot_cooldown_total;
+};
+
+enum class ChatChannel : int {
+    Global = 0,
+    Team = 1,
+    Private = 2,
+};
+
+struct ChatSubmitMessage {
+    int sender_player_id = -1;
+    ChatChannel channel = ChatChannel::Global;
+    int target_player_id = -1;
+    std::string text;
+};
+
+struct ConsoleTextSpanMessage {
+    std::string text;
+    uint8_t r = 255;
+    uint8_t g = 255;
+    uint8_t b = 255;
+    uint8_t a = 255;
+};
+
+struct ConsoleMessage {
+    std::vector<ConsoleTextSpanMessage> spans;
+    float lifetime_seconds = 5.0f;
 };
 
 struct PlayerSnapshot {
@@ -268,6 +297,7 @@ struct ServerSnapshotMessage {
     bool match_finished = false;
     int red_team_kills = 0;
     int blue_team_kills = 0;
+    std::vector<KillTimelinePoint> kill_timeline;
 
     std::vector<PlayerSnapshot> players;
     std::vector<int> removed_player_ids;
@@ -335,12 +365,22 @@ struct MapTransferCompleteMessage {
     uint32_t checksum = 0;
 };
 
+struct ConsoleMessageNet {
+    ConsoleMessage message;
+};
+
 nlohmann::json ToJson(const ClientInputMessage& message);
 std::optional<ClientInputMessage> ClientInputFromJson(const nlohmann::json& json);
 nlohmann::json ToJson(const ClientMoveMessage& message);
 std::optional<ClientMoveMessage> ClientMoveFromJson(const nlohmann::json& json);
 nlohmann::json ToJson(const ClientActionMessage& message);
 std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const ChatSubmitMessage& message);
+std::optional<ChatSubmitMessage> ChatSubmitFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const ConsoleMessage& message);
+std::optional<ConsoleMessage> ConsoleMessageFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const ConsoleMessageNet& message);
+std::optional<ConsoleMessageNet> ConsoleMessageNetFromJson(const nlohmann::json& json);
 
 nlohmann::json ToJson(const ServerSnapshotMessage& message);
 std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json& json);

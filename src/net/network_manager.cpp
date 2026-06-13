@@ -527,9 +527,12 @@ void NetworkManager::Stop() {
     last_client_applied_snapshot_id_ = 0;
     pending_host_moves_.clear();
     pending_host_actions_.clear();
+    pending_host_chat_submits_.clear();
     latest_snapshot_.reset();
     latest_lobby_state_.reset();
     pending_match_start_.reset();
+    pending_console_messages_.clear();
+    disconnected_remote_players_.clear();
     latest_map_transfer_begin_.reset();
     pending_map_transfer_chunks_.clear();
     latest_map_transfer_complete_.reset();
@@ -637,6 +640,13 @@ void NetworkManager::Poll() {
                             }
                             break;
                         }
+                        case binary::PacketType::ChatSubmit: {
+                            auto message = binary::DecodeChatSubmitPayload(header.payload, header.payload_size);
+                            if (message.has_value()) {
+                                pending_host_chat_submits_.push_back(std::move(*message));
+                            }
+                            break;
+                        }
                         default:
                             break;
                     }
@@ -740,6 +750,13 @@ void NetworkManager::Poll() {
                                 binary::DecodeMapTransferCompletePayload(header.payload, header.payload_size);
                             break;
                         }
+                        case binary::PacketType::ConsoleMessage: {
+                            auto message = binary::DecodeConsoleMessagePayload(header.payload, header.payload_size);
+                            if (message.has_value()) {
+                                pending_console_messages_.push_back(std::move(*message));
+                            }
+                            break;
+                        }
                         default:
                             break;
                     }
@@ -754,7 +771,11 @@ void NetworkManager::Poll() {
                 if (is_host_) {
                     NetLog("[NET] Host disconnect from %s:%u", AddressToString(event.peer->address).c_str(),
                            event.peer->address.port);
-                    peers_.erase(event.peer);
+                    const auto it = peers_.find(event.peer);
+                    if (it != peers_.end()) {
+                        disconnected_remote_players_.push_back({it->second.player_id, it->second.name});
+                        peers_.erase(it);
+                    }
                 } else {
                     connected_ = false;
                     server_peer_ = nullptr;
@@ -900,6 +921,44 @@ std::optional<MatchStartMessage> NetworkManager::ConsumeMatchStart() {
     return out;
 }
 
+void NetworkManager::SendChatSubmit(const ChatSubmitMessage& message) {
+    if (is_host_ || !connected_ || server_peer_ == nullptr) {
+        return;
+    }
+    SendPacketToPeer(server_peer_, binary::EncodeChatSubmitPacket(message), true, kChannelReliable, false);
+}
+
+std::vector<ChatSubmitMessage> NetworkManager::ConsumeHostChatSubmits() {
+    std::vector<ChatSubmitMessage> out;
+    out.swap(pending_host_chat_submits_);
+    return out;
+}
+
+void NetworkManager::BroadcastConsoleMessage(const ConsoleMessageNet& message) {
+    if (!is_host_) {
+        return;
+    }
+    BroadcastPacket(binary::EncodeConsoleMessagePacket(message), true, kChannelReliable, false);
+}
+
+void NetworkManager::SendConsoleMessageToPlayer(int player_id, const ConsoleMessageNet& message) {
+    if (!is_host_) {
+        return;
+    }
+    for (const auto& [peer, info] : peers_) {
+        if (info.player_id == player_id) {
+            SendPacketToPeer(peer, binary::EncodeConsoleMessagePacket(message), true, kChannelReliable, false);
+            return;
+        }
+    }
+}
+
+std::vector<ConsoleMessageNet> NetworkManager::ConsumeConsoleMessages() {
+    std::vector<ConsoleMessageNet> out;
+    out.swap(pending_console_messages_);
+    return out;
+}
+
 void NetworkManager::BroadcastMapTransferBegin(const MapTransferBeginMessage& message) {
     if (!is_host_) {
         return;
@@ -946,6 +1005,12 @@ std::vector<RemotePlayerInfo> NetworkManager::GetRemotePlayers() const {
     for (const auto& [_, peer] : peers_) {
         result.push_back({peer.player_id, peer.name});
     }
+    return result;
+}
+
+std::vector<RemotePlayerInfo> NetworkManager::ConsumeDisconnectedRemotePlayers() {
+    std::vector<RemotePlayerInfo> result;
+    result.swap(disconnected_remote_players_);
     return result;
 }
 

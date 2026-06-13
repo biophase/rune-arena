@@ -1,8 +1,17 @@
 #pragma once
 
+#include <vector>
+
 #include <raylib.h>
 
 #include "core/constants.h"
+#include "game/game_types.h"
+
+struct KillTimelinePoint {
+    float elapsed_seconds = 0.0f;
+    int red_team_kills = 0;
+    int blue_team_kills = 0;
+};
 
 struct MatchState {
     int round_time_seconds = Constants::kDefaultMatchDurationSeconds;
@@ -22,4 +31,5 @@ struct MatchState {
 
     int red_team_kills = 0;
     int blue_team_kills = 0;
+    std::vector<KillTimelinePoint> kill_timeline;
 };

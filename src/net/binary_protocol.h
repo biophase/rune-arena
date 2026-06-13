@@ -21,6 +21,8 @@ enum class PacketType : uint8_t {
     MapTransferBegin = 8,
     MapTransferChunk = 9,
     MapTransferComplete = 10,
+    ChatSubmit = 11,
+    ConsoleMessage = 12,
 };
 
 struct DecodedPacketHeader {
@@ -59,6 +61,12 @@ std::optional<MapTransferChunkMessage> DecodeMapTransferChunkPayload(const uint8
 
 std::vector<uint8_t> EncodeMapTransferCompletePacket(const MapTransferCompleteMessage& message);
 std::optional<MapTransferCompleteMessage> DecodeMapTransferCompletePayload(const uint8_t* payload, size_t payload_size);
+
+std::vector<uint8_t> EncodeChatSubmitPacket(const ChatSubmitMessage& message);
+std::optional<ChatSubmitMessage> DecodeChatSubmitPayload(const uint8_t* payload, size_t payload_size);
+
+std::vector<uint8_t> EncodeConsoleMessagePacket(const ConsoleMessageNet& message);
+std::optional<ConsoleMessageNet> DecodeConsoleMessagePayload(const uint8_t* payload, size_t payload_size);
 
 bool DecodePacketHeader(const uint8_t* data, size_t data_size, DecodedPacketHeader& out_header);
 

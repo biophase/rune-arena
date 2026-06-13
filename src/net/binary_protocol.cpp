@@ -7,7 +7,7 @@ namespace binary {
 namespace {
 
 constexpr uint32_t kMagic = 0x524E4152;  // RNAR
-constexpr uint16_t kVersion = 3;
+constexpr uint16_t kVersion = 4;
 constexpr size_t kHeaderSize = 12;
 
 class BufferWriter {
@@ -263,6 +263,67 @@ std::optional<ClientActionMessage> DecodeClientActionPayload(const uint8_t* payl
     return out;
 }
 
+std::vector<uint8_t> EncodeChatSubmitPacket(const ChatSubmitMessage& message) {
+    BufferWriter payload;
+    payload.WriteI32(message.sender_player_id);
+    payload.WriteI32(static_cast<int>(message.channel));
+    payload.WriteI32(message.target_player_id);
+    payload.WriteString(message.text);
+    return MakePacket(PacketType::ChatSubmit, payload.Bytes());
+}
+
+std::optional<ChatSubmitMessage> DecodeChatSubmitPayload(const uint8_t* payload, size_t payload_size) {
+    BufferReader reader(payload, payload_size);
+    ChatSubmitMessage out;
+    int32_t channel = 0;
+    if (!reader.ReadI32(out.sender_player_id) || !reader.ReadI32(channel) || !reader.ReadI32(out.target_player_id) ||
+        !reader.ReadString(out.text) || !reader.End()) {
+        return std::nullopt;
+    }
+    out.channel = static_cast<ChatChannel>(channel);
+    return out;
+}
+
+std::vector<uint8_t> EncodeConsoleMessagePacket(const ConsoleMessageNet& message) {
+    BufferWriter payload;
+    payload.WriteF32(message.message.lifetime_seconds);
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.message.spans.size(), 65535)));
+    for (size_t i = 0; i < message.message.spans.size() && i < 65535; ++i) {
+        const auto& span = message.message.spans[i];
+        payload.WriteString(span.text);
+        payload.WriteU8(span.r);
+        payload.WriteU8(span.g);
+        payload.WriteU8(span.b);
+        payload.WriteU8(span.a);
+    }
+    return MakePacket(PacketType::ConsoleMessage, payload.Bytes());
+}
+
+std::optional<ConsoleMessageNet> DecodeConsoleMessagePayload(const uint8_t* payload, size_t payload_size) {
+    BufferReader reader(payload, payload_size);
+    ConsoleMessageNet out;
+    if (!reader.ReadF32(out.message.lifetime_seconds)) {
+        return std::nullopt;
+    }
+    uint16_t count = 0;
+    if (!reader.ReadU16(count)) {
+        return std::nullopt;
+    }
+    out.message.spans.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        ConsoleTextSpanMessage span;
+        if (!reader.ReadString(span.text) || !reader.ReadU8(span.r) || !reader.ReadU8(span.g) ||
+            !reader.ReadU8(span.b) || !reader.ReadU8(span.a)) {
+            return std::nullopt;
+        }
+        out.message.spans.push_back(std::move(span));
+    }
+    if (!reader.End()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
 std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) {
     BufferWriter payload;
     payload.WriteI32(message.server_tick);
@@ -280,6 +341,12 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
     payload.WriteBool(message.match_finished);
     payload.WriteI32(message.red_team_kills);
     payload.WriteI32(message.blue_team_kills);
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.kill_timeline.size(), 65535)));
+    for (size_t i = 0; i < message.kill_timeline.size() && i < 65535; ++i) {
+        payload.WriteF32(message.kill_timeline[i].elapsed_seconds);
+        payload.WriteI32(message.kill_timeline[i].red_team_kills);
+        payload.WriteI32(message.kill_timeline[i].blue_team_kills);
+    }
 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.players.size(), 65535)));
     for (size_t i = 0; i < message.players.size() && i < 65535; ++i) {
@@ -573,6 +640,18 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         !reader.ReadBool(out.match_finished) || !reader.ReadI32(out.red_team_kills) ||
         !reader.ReadI32(out.blue_team_kills)) {
         return std::nullopt;
+    }
+
+    uint16_t kill_timeline_count = 0;
+    if (!reader.ReadU16(kill_timeline_count)) return std::nullopt;
+    out.kill_timeline.reserve(kill_timeline_count);
+    for (uint16_t i = 0; i < kill_timeline_count; ++i) {
+        KillTimelinePoint point;
+        if (!reader.ReadF32(point.elapsed_seconds) || !reader.ReadI32(point.red_team_kills) ||
+            !reader.ReadI32(point.blue_team_kills)) {
+            return std::nullopt;
+        }
+        out.kill_timeline.push_back(point);
     }
 
     uint16_t player_count = 0;

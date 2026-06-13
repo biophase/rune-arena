@@ -249,6 +249,20 @@ struct OccluderRevealCircle {
 constexpr int kInfluenceDistanceSamplesPerTile = 2;
 constexpr float kInfluenceDistanceOuterTailPx = 6.0f;
 constexpr float kInfluenceDistanceInnerTailPx = 22.0f;
+constexpr int kConsoleMaxVisibleLines = 5;
+constexpr int kConsoleCharsPerLine = 48;
+constexpr float kConsoleLifetimeSeconds = 5.0f;
+constexpr int kChatMaxChars = 180;
+
+Color TeamUiColor(int team) {
+    return team == Constants::kTeamRed ? Color{255, 120, 120, 255} : Color{120, 170, 255, 255};
+}
+
+ConsoleTextSpanMessage MakeConsoleSpan(std::string text, Color color) {
+    return {std::move(text), color.r, color.g, color.b, color.a};
+}
+
+Color SpanColor(const ConsoleTextSpanMessage& span) { return Color{span.r, span.g, span.b, span.a}; }
 
 std::unordered_set<int64_t> CollectInfluenceZoneCells(const std::vector<InfluenceZoneCell>& zones, int team) {
     std::unordered_set<int64_t> active_cells;
@@ -1169,6 +1183,16 @@ void GameApp::CaptureFrameInputEdges() {
     pending_primary_pressed_ = pending_primary_pressed_ || IsBindingPressed(controls_bindings_.primary_action);
     pending_grappling_pressed_ = pending_grappling_pressed_ || IsBindingPressed(controls_bindings_.grappling_hook_action);
     pending_escape_pressed_ = pending_escape_pressed_ || IsKeyPressed(KEY_ESCAPE);
+    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+        pending_enter_pressed_ = true;
+        pending_enter_shift_down_ = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    }
+    pending_backspace_pressed_ = pending_backspace_pressed_ || IsKeyPressed(KEY_BACKSPACE);
+    for (int ch = GetCharPressed(); ch > 0; ch = GetCharPressed()) {
+        if (ch >= 32 && ch <= 126) {
+            pending_text_input_.push_back(static_cast<char>(ch));
+        }
+    }
     if (IsBindingPressed(controls_bindings_.select_rune_slot_1)) pending_select_rune_slot_ = 0;
     if (IsBindingPressed(controls_bindings_.select_rune_slot_2)) pending_select_rune_slot_ = 1;
     if (IsBindingPressed(controls_bindings_.select_rune_slot_3)) pending_select_rune_slot_ = 2;
@@ -1858,6 +1882,14 @@ void GameApp::Update(float dt) {
     dt = ClampDt(dt);
     escape_pressed_this_update_ = pending_escape_pressed_;
     pending_escape_pressed_ = false;
+    enter_pressed_this_update_ = pending_enter_pressed_;
+    pending_enter_pressed_ = false;
+    enter_shift_down_this_update_ = pending_enter_shift_down_;
+    pending_enter_shift_down_ = false;
+    backspace_pressed_this_update_ = pending_backspace_pressed_;
+    pending_backspace_pressed_ = false;
+    text_input_this_update_.swap(pending_text_input_);
+    pending_text_input_.clear();
     PumpInfluenceFieldBuilds();
     switch (app_screen_) {
         case AppScreen::MainMenu:
@@ -2863,8 +2895,11 @@ void GameApp::UpdateLobby(float dt) {
 void GameApp::UpdateMatch(float dt) {
     influence_zone_transition_elapsed_seconds_ =
         std::min(Constants::kInfluenceZoneTransitionSeconds, influence_zone_transition_elapsed_seconds_ + dt);
+    DrainIncomingConsoleMessages();
+    UpdateConsoleMessages(dt);
+    UpdateChatInput();
 
-    if (escape_pressed_this_update_) {
+    if (escape_pressed_this_update_ && !chat_input_active_) {
         if (Player* local_player = FindPlayerById(state_.local_player_id);
             local_player != nullptr && local_player->inventory_mode) {
             CancelInventoryDrag(*local_player);
@@ -2891,11 +2926,20 @@ void GameApp::UpdateMatch(float dt) {
     }
 
     if (network_manager_.IsHost()) {
+        HandleDisconnectedRemotePlayers();
+        for (const auto& chat_submit : network_manager_.ConsumeHostChatSubmits()) {
+            HandleHostChatSubmit(chat_submit);
+        }
+        const bool match_finished_before = state_.match.match_finished;
         SimulateHostGameplay(dt);
+        MaybeBroadcastMatchCountdown();
         snapshot_accumulator_ += dt;
         const double snapshot_interval = static_cast<double>(Constants::kNetworkSnapshotIntervalSeconds);
         while (snapshot_accumulator_ >= snapshot_interval) {
             snapshot_accumulator_ -= snapshot_interval;
+            network_manager_.BroadcastSnapshot(BuildHostSnapshot());
+        }
+        if (!match_finished_before && state_.match.match_finished) {
             network_manager_.BroadcastSnapshot(BuildHostSnapshot());
         }
         UpdateClientVisualSmoothing(dt);
@@ -2973,8 +3017,23 @@ void GameApp::UpdateMatch(float dt) {
     UpdateCameraTarget();
 }
 
-void GameApp::UpdatePostMatch(float /*dt*/) {
-    if (IsKeyPressed(KEY_ENTER) || escape_pressed_this_update_) {
+void GameApp::UpdatePostMatch(float dt) {
+    DrainIncomingConsoleMessages();
+    UpdateConsoleMessages(dt);
+    if (network_manager_.IsHost()) {
+        HandleDisconnectedRemotePlayers();
+        for (const auto& chat_submit : network_manager_.ConsumeHostChatSubmits()) {
+            HandleHostChatSubmit(chat_submit);
+        }
+    }
+    if (escape_pressed_this_update_) {
+        ReturnToMainMenu();
+        return;
+    }
+    const Rectangle leave_button = {static_cast<float>(GetScreenWidth() / 2 - 80), static_cast<float>(GetScreenHeight() - 92),
+                                    160.0f, 42.0f};
+    if ((enter_pressed_this_update_ || (CheckCollisionPointRec(GetMousePosition(), leave_button) &&
+                                        IsMouseButtonPressed(MOUSE_LEFT_BUTTON)))) {
         ReturnToMainMenu();
     }
 }
@@ -3410,6 +3469,8 @@ void GameApp::Render() {
             }
             DrawMatchHud(state_, state_.local_player_id);
             RenderBottomHud();
+            RenderConsoleLog();
+            RenderChatInput();
             RenderFpsCounter();
             RenderNetworkDebugPanel();
             RenderInGameMenu();
@@ -3417,6 +3478,7 @@ void GameApp::Render() {
 
         case AppScreen::PostMatch:
             DrawPostMatch(state_, winning_team_);
+            RenderConsoleLog();
             break;
     }
 
@@ -3544,6 +3606,9 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = GetTime();
     volatile_cast_caster_fx_.clear();
+    console_entries_.clear();
+    chat_input_active_ = false;
+    chat_input_buffer_.clear();
     pending_local_inventory_sync_.reset();
     pending_local_inventory_sync_dirty_ = false;
     pending_client_map_transfer_.reset();
@@ -3572,6 +3637,9 @@ void GameApp::ReturnToMainMenu() {
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
     volatile_cast_caster_fx_.clear();
+    console_entries_.clear();
+    chat_input_active_ = false;
+    chat_input_buffer_.clear();
     known_player_names_.clear();
     pending_primary_pressed_ = false;
     pending_select_rune_slot_ = -1;
@@ -3590,6 +3658,7 @@ void GameApp::ReturnToMainMenu() {
     expected_match_transfer_id_ = 0;
     expected_match_map_key_.clear();
     winning_team_ = -1;
+    last_match_countdown_announcement_seconds_ = 11;
     host_server_tick_ = 0;
     local_input_seq_ = 0;
     main_menu_status_message_.clear();
@@ -3641,6 +3710,8 @@ void GameApp::StartMatchAsHost() {
     state_.match.min_arena_radius_tiles = std::clamp(lobby_min_arena_radius_tiles_, 0.0f, map_radius_tiles);
     state_.match.arena_radius_tiles = map_radius_tiles;
     state_.match.arena_radius_world = state_.match.arena_radius_tiles * static_cast<float>(state_.map.cell_size);
+    state_.match.kill_timeline.clear();
+    state_.match.kill_timeline.push_back({0.0f, 0, 0});
 
     state_.players.clear();
     state_.runes.clear();
@@ -3657,6 +3728,10 @@ void GameApp::StartMatchAsHost() {
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
     volatile_cast_caster_fx_.clear();
+    console_entries_.clear();
+    chat_input_active_ = false;
+    chat_input_buffer_.clear();
+    last_match_countdown_announcement_seconds_ = 11;
     host_server_tick_ = 0;
     snapshot_accumulator_ = 0.0;
     pending_primary_pressed_ = false;
@@ -3747,6 +3822,237 @@ void GameApp::ClearInfluenceZoneVisuals() {
     influence_zone_transition_elapsed_seconds_ = Constants::kInfluenceZoneTransitionSeconds;
     influence_zone_signature_ = 0;
     has_influence_zone_signature_ = false;
+}
+
+void GameApp::AddConsoleMessage(const ConsoleMessage& message) {
+    if (message.spans.empty()) {
+        return;
+    }
+    console_entries_.push_back(ConsoleEntry{message, 0.0f});
+}
+
+void GameApp::BroadcastConsoleMessageToAll(const ConsoleMessage& message) {
+    AddConsoleMessage(message);
+    network_manager_.BroadcastConsoleMessage(ConsoleMessageNet{message});
+}
+
+void GameApp::SendConsoleMessageToPlayer(int player_id, const ConsoleMessage& message) {
+    if (player_id == state_.local_player_id || (network_manager_.IsHost() && player_id == 0)) {
+        AddConsoleMessage(message);
+    }
+    network_manager_.SendConsoleMessageToPlayer(player_id, ConsoleMessageNet{message});
+}
+
+void GameApp::SendConsoleMessageToTeam(int team, const ConsoleMessage& message) {
+    if (const Player* local_player = FindPlayerById(state_.local_player_id);
+        local_player != nullptr && local_player->team == team) {
+        AddConsoleMessage(message);
+    }
+    for (const auto& player : state_.players) {
+        if (player.id == 0 || player.team != team) {
+            continue;
+        }
+        network_manager_.SendConsoleMessageToPlayer(player.id, ConsoleMessageNet{message});
+    }
+}
+
+void GameApp::DrainIncomingConsoleMessages() {
+    for (const auto& message : network_manager_.ConsumeConsoleMessages()) {
+        AddConsoleMessage(message.message);
+    }
+}
+
+void GameApp::UpdateConsoleMessages(float dt) {
+    for (auto& entry : console_entries_) {
+        entry.age_seconds += dt;
+    }
+    console_entries_.erase(std::remove_if(console_entries_.begin(), console_entries_.end(),
+                                          [](const ConsoleEntry& entry) {
+                                              return entry.age_seconds >= entry.message.lifetime_seconds;
+                                          }),
+                           console_entries_.end());
+}
+
+std::string GameApp::GetPlayerDisplayName(int player_id) const {
+    const auto known_name_it = known_player_names_.find(player_id);
+    if (known_name_it != known_player_names_.end() && !known_name_it->second.empty()) {
+        return known_name_it->second;
+    }
+    if (const Player* player = FindPlayerById(player_id); player != nullptr && !player->name.empty()) {
+        return player->name;
+    }
+    return TextFormat("Player%d", player_id);
+}
+
+void GameApp::RecordKillTimelinePoint() {
+    state_.match.kill_timeline.push_back(
+        {state_.match.elapsed_seconds, state_.match.red_team_kills, state_.match.blue_team_kills});
+}
+
+void GameApp::HandleHostChatSubmit(const ChatSubmitMessage& message) {
+    if (message.text.empty()) {
+        return;
+    }
+    const Player* sender = FindPlayerById(message.sender_player_id);
+    if (sender == nullptr) {
+        return;
+    }
+
+    ConsoleMessage console;
+    console.lifetime_seconds = kConsoleLifetimeSeconds;
+    if (message.channel == ChatChannel::Team) {
+        console.spans.push_back(MakeConsoleSpan("[Team] ", Color{190, 220, 255, 255}));
+    } else if (message.channel == ChatChannel::Private) {
+        console.spans.push_back(MakeConsoleSpan("[Whisper] ", Color{255, 210, 160, 255}));
+    }
+    console.spans.push_back(MakeConsoleSpan(GetPlayerDisplayName(sender->id), TeamUiColor(sender->team)));
+    console.spans.push_back(MakeConsoleSpan(": ", RAYWHITE));
+    console.spans.push_back(MakeConsoleSpan(message.text, RAYWHITE));
+
+    switch (message.channel) {
+        case ChatChannel::Global:
+            BroadcastConsoleMessageToAll(console);
+            break;
+        case ChatChannel::Team:
+            SendConsoleMessageToTeam(sender->team, console);
+            break;
+        case ChatChannel::Private:
+            SendConsoleMessageToPlayer(sender->id, console);
+            if (message.target_player_id != sender->id) {
+                SendConsoleMessageToPlayer(message.target_player_id, console);
+            }
+            break;
+    }
+}
+
+void GameApp::HandleDisconnectedRemotePlayers() {
+    for (const auto& remote : network_manager_.ConsumeDisconnectedRemotePlayers()) {
+        int team = Constants::kTeamBlue;
+        if (const Player* player = FindPlayerById(remote.player_id); player != nullptr) {
+            team = player->team;
+        }
+        ConsoleMessage console;
+        console.lifetime_seconds = kConsoleLifetimeSeconds;
+        console.spans.push_back(MakeConsoleSpan(remote.name, TeamUiColor(team)));
+        console.spans.push_back(MakeConsoleSpan(" has left the game", RAYWHITE));
+        BroadcastConsoleMessageToAll(console);
+    }
+}
+
+void GameApp::MaybeBroadcastMatchCountdown() {
+    if (!network_manager_.IsHost() || state_.match.mode_type != MatchModeType::MostKillsTimed || state_.match.match_finished) {
+        return;
+    }
+    const int seconds_remaining = static_cast<int>(std::ceil(state_.match.time_remaining));
+    if (seconds_remaining > 10 || seconds_remaining < 1 || seconds_remaining >= last_match_countdown_announcement_seconds_) {
+        return;
+    }
+    last_match_countdown_announcement_seconds_ = seconds_remaining;
+    ConsoleMessage console;
+    console.lifetime_seconds = 1.2f;
+    console.spans.push_back(MakeConsoleSpan("Match ends in ", RAYWHITE));
+    console.spans.push_back(MakeConsoleSpan(std::to_string(seconds_remaining), Color{255, 100, 100, 255}));
+    console.spans.push_back(MakeConsoleSpan(" seconds!", RAYWHITE));
+    BroadcastConsoleMessageToAll(console);
+}
+
+bool GameApp::TryOpenChatInput() {
+    if (chat_input_active_ || in_game_menu_open_) {
+        return false;
+    }
+    if (const Player* local_player = FindPlayerById(state_.local_player_id);
+        local_player != nullptr && local_player->inventory_mode) {
+        return false;
+    }
+    chat_input_active_ = true;
+    chat_input_buffer_.clear();
+    return true;
+}
+
+void GameApp::CancelChatInput() {
+    chat_input_active_ = false;
+    chat_input_buffer_.clear();
+}
+
+bool GameApp::TryBuildPrivateChatSubmit(const std::string& text, ChatSubmitMessage* out_message) const {
+    if (out_message == nullptr) {
+        return false;
+    }
+    const bool is_whisper = text.rfind("/w ", 0) == 0;
+    const bool is_pm = text.rfind("/pm ", 0) == 0;
+    if (!is_whisper && !is_pm) {
+        return false;
+    }
+    const std::string payload = text.substr(is_whisper ? 3 : 4);
+    const size_t split = payload.find(' ');
+    if (split == std::string::npos || split == 0 || split + 1 >= payload.size()) {
+        return false;
+    }
+    const std::string target_name = payload.substr(0, split);
+    for (const auto& player : state_.players) {
+        if (GetPlayerDisplayName(player.id) == target_name) {
+            out_message->channel = ChatChannel::Private;
+            out_message->target_player_id = player.id;
+            out_message->text = payload.substr(split + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+void GameApp::SubmitChatInput(bool team_only) {
+    const std::string text = chat_input_buffer_;
+    CancelChatInput();
+    if (text.empty()) {
+        return;
+    }
+
+    ChatSubmitMessage message;
+    message.sender_player_id = state_.local_player_id;
+    message.channel = team_only ? ChatChannel::Team : ChatChannel::Global;
+    message.target_player_id = -1;
+    message.text = text;
+    if (!team_only) {
+        ChatSubmitMessage private_message = message;
+        if (TryBuildPrivateChatSubmit(text, &private_message)) {
+            message = std::move(private_message);
+        }
+    }
+
+    if (network_manager_.IsHost()) {
+        HandleHostChatSubmit(message);
+    } else {
+        network_manager_.SendChatSubmit(message);
+    }
+}
+
+void GameApp::UpdateChatInput() {
+    if (!chat_input_active_) {
+        if (enter_pressed_this_update_) {
+            TryOpenChatInput();
+            enter_pressed_this_update_ = false;
+        }
+        return;
+    }
+
+    if (!text_input_this_update_.empty()) {
+        chat_input_buffer_.append(text_input_this_update_);
+        if (static_cast<int>(chat_input_buffer_.size()) > kChatMaxChars) {
+            chat_input_buffer_.resize(kChatMaxChars);
+        }
+    }
+    if (backspace_pressed_this_update_ && !chat_input_buffer_.empty()) {
+        chat_input_buffer_.pop_back();
+    }
+    if (escape_pressed_this_update_) {
+        CancelChatInput();
+        escape_pressed_this_update_ = false;
+        return;
+    }
+    if (enter_pressed_this_update_) {
+        SubmitChatInput(enter_shift_down_this_update_);
+        enter_pressed_this_update_ = false;
+    }
 }
 
 void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) {
@@ -3869,6 +4175,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     state_.match.match_finished = snapshot.match_finished;
     state_.match.red_team_kills = snapshot.red_team_kills;
     state_.match.blue_team_kills = snapshot.blue_team_kills;
+    state_.match.kill_timeline = snapshot.kill_timeline;
 
     const double now_seconds = GetTime();
     std::unordered_map<int, Vector2> updated_render_positions;
@@ -4589,6 +4896,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
     snapshot.match_finished = state_.match.match_finished;
     snapshot.red_team_kills = state_.match.red_team_kills;
     snapshot.blue_team_kills = state_.match.blue_team_kills;
+    snapshot.kill_timeline = state_.match.kill_timeline;
 
     for (const auto& player : state_.players) {
         snapshot.players.push_back(SnapshotTranslation::BuildPlayerSnapshot(player));
@@ -4644,6 +4952,17 @@ ClientInputMessage GameApp::BuildLocalInput(int local_player_id) {
     input.aim_y = mouse_world.y;
 
     if (app_screen_ == AppScreen::InMatch && in_game_menu_open_) {
+        input.move_x = 0.0f;
+        input.move_y = 0.0f;
+        pending_primary_pressed_ = false;
+        pending_grappling_pressed_ = false;
+        pending_select_rune_slot_ = -1;
+        pending_activate_item_slot_ = -1;
+        pending_toggle_inventory_mode_ = false;
+        return input;
+    }
+
+    if (app_screen_ == AppScreen::InMatch && chat_input_active_) {
         input.move_x = 0.0f;
         input.move_y = 0.0f;
         pending_primary_pressed_ = false;
@@ -6026,6 +6345,14 @@ void GameApp::HandlePlayerDeath(Player& victim, int killer_player_id, bool count
         } else {
             state_.match.blue_team_kills += 1;
         }
+        RecordKillTimelinePoint();
+
+        ConsoleMessage console;
+        console.lifetime_seconds = kConsoleLifetimeSeconds;
+        console.spans.push_back(MakeConsoleSpan(GetPlayerDisplayName(killer->id), TeamUiColor(killer->team)));
+        console.spans.push_back(MakeConsoleSpan(" killed ", RAYWHITE));
+        console.spans.push_back(MakeConsoleSpan(GetPlayerDisplayName(victim.id), TeamUiColor(victim.team)));
+        BroadcastConsoleMessageToAll(console);
     }
 }
 
@@ -7887,6 +8214,10 @@ void GameApp::HandleEventsHost() {
             CheckSpellPatterns(std::get<RunePlacedEvent>(event));
         } else if (std::holds_alternative<MatchEndedEvent>(event)) {
             winning_team_ = std::get<MatchEndedEvent>(event).winning_team;
+            if (state_.match.kill_timeline.empty() ||
+                std::fabs(state_.match.kill_timeline.back().elapsed_seconds - state_.match.elapsed_seconds) > 0.001f) {
+                RecordKillTimelinePoint();
+            }
         }
         ++index;
     }
@@ -7933,6 +8264,14 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
         activation_seconds *= Constants::kRuneVolatileActivationMultiplier;
     }
     if (player.mana < mana_cost) {
+        ConsoleMessage console;
+        console.lifetime_seconds = kConsoleLifetimeSeconds;
+        console.spans.push_back(MakeConsoleSpan("Not enough mana", Color{255, 140, 140, 255}));
+        if (network_manager_.IsHost() && player.id != 0) {
+            network_manager_.SendConsoleMessageToPlayer(player.id, ConsoleMessageNet{console});
+        } else if (player.id == state_.local_player_id) {
+            AddConsoleMessage(console);
+        }
         return false;
     }
     if (GetPlayerRuneCooldownRemaining(player, player.selected_rune_type) > 0.0f) {
@@ -9030,6 +9369,90 @@ void GameApp::RenderMapBoundsFadeOverlay() {
     BeginShaderMode(map_bounds_fade_shader_);
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), WHITE);
     EndShaderMode();
+}
+
+void GameApp::RenderConsoleLog() const {
+    struct ConsoleRenderLine {
+        std::vector<ConsoleTextSpanMessage> spans;
+    };
+
+    std::vector<ConsoleRenderLine> lines;
+    lines.reserve(console_entries_.size() * 2);
+    for (const auto& entry : console_entries_) {
+        ConsoleRenderLine current_line;
+        int chars_in_line = 0;
+        auto flush_line = [&]() {
+            if (!current_line.spans.empty()) {
+                lines.push_back(std::move(current_line));
+                current_line = ConsoleRenderLine{};
+                chars_in_line = 0;
+            }
+        };
+        for (const auto& span : entry.message.spans) {
+            std::string chunk;
+            for (char ch : span.text) {
+                if (ch == '\n' || chars_in_line >= kConsoleCharsPerLine) {
+                    if (!chunk.empty()) {
+                        current_line.spans.push_back({chunk, span.r, span.g, span.b, span.a});
+                        chunk.clear();
+                    }
+                    flush_line();
+                    if (ch == '\n') {
+                        continue;
+                    }
+                }
+                chunk.push_back(ch);
+                chars_in_line += 1;
+            }
+            if (!chunk.empty()) {
+                current_line.spans.push_back({chunk, span.r, span.g, span.b, span.a});
+            }
+        }
+        flush_line();
+    }
+
+    if (lines.empty()) {
+        return;
+    }
+    if (static_cast<int>(lines.size()) > kConsoleMaxVisibleLines) {
+        lines.erase(lines.begin(), lines.end() - kConsoleMaxVisibleLines);
+    }
+
+    const float scale = Constants::kHudScale;
+    const float panel_height = (Constants::kHudPanelHeight - 28.0f) * scale;
+    const float hud_y = static_cast<float>(GetScreenHeight()) - panel_height - 4.0f;
+    const int font_size = 18;
+    const int line_height = 20;
+    const int x = 16;
+    const int y = static_cast<int>(hud_y) - 12 - static_cast<int>(lines.size()) * line_height;
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        int line_x = x;
+        const int line_y = y + static_cast<int>(i) * line_height;
+        for (const auto& span : lines[i].spans) {
+            if (span.text.empty()) {
+                continue;
+            }
+            DrawText(span.text.c_str(), line_x + 1, line_y + 1, font_size, Color{0, 0, 0, 180});
+            DrawText(span.text.c_str(), line_x, line_y, font_size, SpanColor(span));
+            line_x += MeasureText(span.text.c_str(), font_size);
+        }
+    }
+}
+
+void GameApp::RenderChatInput() const {
+    if (!chat_input_active_) {
+        return;
+    }
+    const float scale = Constants::kHudScale;
+    const float panel_height = (Constants::kHudPanelHeight - 28.0f) * scale;
+    const float hud_y = static_cast<float>(GetScreenHeight()) - panel_height - 4.0f;
+    const Rectangle box = {12.0f, hud_y - 42.0f, 480.0f, 28.0f};
+    DrawRectangleRec(box, Color{16, 18, 24, 230});
+    DrawRectangleLinesEx(box, 1.0f, Color{88, 96, 112, 255});
+    DrawText("> ", static_cast<int>(box.x + 8.0f), static_cast<int>(box.y + 6.0f), 18, Color{220, 220, 220, 255});
+    DrawText(chat_input_buffer_.c_str(), static_cast<int>(box.x + 26.0f), static_cast<int>(box.y + 6.0f), 18,
+             RAYWHITE);
 }
 
 void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
