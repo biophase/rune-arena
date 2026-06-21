@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <exception>
 #include <future>
 #include <limits>
 #include <random>
@@ -23,6 +24,7 @@
 #include "gameplay/action_intent.h"
 #include "gameplay/snapshot_translation.h"
 #include "spells/fire_bolt_spell.h"
+#include "spells/fire_flower_spell.h"
 #include "spells/ice_wave_spell.h"
 #include "spells/ice_wall_spell.h"
 #include "ui/ui_lobby.h"
@@ -82,6 +84,122 @@ int DetermineWinningTeam(const MatchState& match) {
         return Constants::kTeamBlue;
     }
     return -1;
+}
+
+using ColorKey = uint32_t;
+
+ColorKey PackColorKey(const Color& color) {
+    return static_cast<ColorKey>(color.r) | (static_cast<ColorKey>(color.g) << 8u) |
+           (static_cast<ColorKey>(color.b) << 16u) | (static_cast<ColorKey>(color.a) << 24u);
+}
+
+bool BuildPaletteReplacementMaps(const std::string& palette_map_path, int team_count, int source_team_index,
+                                 std::vector<std::unordered_map<ColorKey, Color>>* out_maps) {
+    if (out_maps == nullptr || team_count <= 0 || source_team_index < 0 || source_team_index >= team_count ||
+        palette_map_path.empty() || !FileExists(palette_map_path.c_str())) {
+        return false;
+    }
+
+    Image palette_image = LoadImage(palette_map_path.c_str());
+    if (palette_image.data == nullptr) {
+        return false;
+    }
+    ImageFormat(&palette_image, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+    bool valid = false;
+    if (palette_image.width >= team_count && palette_image.width > source_team_index) {
+        const Color* pixels = static_cast<const Color*>(palette_image.data);
+        out_maps->assign(static_cast<size_t>(team_count), {});
+        for (int y = 0; y < palette_image.height; ++y) {
+            const Color source_color = pixels[y * palette_image.width + source_team_index];
+            if (source_color.a == 0) {
+                continue;
+            }
+            valid = true;
+            const ColorKey source_key = PackColorKey(source_color);
+            for (int team_index = 0; team_index < team_count; ++team_index) {
+                (*out_maps)[static_cast<size_t>(team_index)][source_key] =
+                    pixels[y * palette_image.width + team_index];
+            }
+        }
+    }
+
+    UnloadImage(palette_image);
+    return valid;
+}
+
+Texture2D CreateRemappedTextureVariant(const std::string& texture_path,
+                                       const std::unordered_map<ColorKey, Color>& replacement_map) {
+    if (texture_path.empty() || !FileExists(texture_path.c_str())) {
+        return {};
+    }
+
+    Image variant_image = LoadImage(texture_path.c_str());
+    if (variant_image.data == nullptr) {
+        return {};
+    }
+    ImageFormat(&variant_image, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    Color* pixels = static_cast<Color*>(variant_image.data);
+    const int pixel_count = variant_image.width * variant_image.height;
+    for (int i = 0; i < pixel_count; ++i) {
+        const auto replacement_it = replacement_map.find(PackColorKey(pixels[i]));
+        if (replacement_it != replacement_map.end()) {
+            pixels[i] = replacement_it->second;
+        }
+    }
+
+    Texture2D texture = LoadTextureFromImage(variant_image);
+    if (texture.id != 0) {
+        SetTextureFilter(texture, TEXTURE_FILTER_POINT);
+    }
+    UnloadImage(variant_image);
+    return texture;
+}
+
+void UnloadTextureVector(std::vector<Texture2D>* textures) {
+    if (textures == nullptr) {
+        return;
+    }
+    for (Texture2D& texture : *textures) {
+        if (texture.id != 0) {
+            UnloadTexture(texture);
+            texture = {};
+        }
+    }
+    textures->clear();
+}
+
+std::vector<float> LoadCastleLevelRequirementsOrDefault(const std::string& json_path,
+                                                        const std::vector<float>& fallback) {
+    std::ifstream input(json_path);
+    if (!input.is_open()) {
+        return fallback;
+    }
+
+    try {
+        nlohmann::json root;
+        input >> root;
+        const nlohmann::json* values = root.contains("level_energy_requirements")
+                                           ? &root.at("level_energy_requirements")
+                                           : (root.is_array() ? &root : nullptr);
+        if (values == nullptr || !values->is_array()) {
+            return fallback;
+        }
+
+        std::vector<float> loaded;
+        loaded.reserve(values->size());
+        for (const auto& entry : *values) {
+            if (!entry.is_number()) {
+                continue;
+            }
+            loaded.push_back(std::max(0.0f, entry.get<float>()));
+        }
+        if (!loaded.empty()) {
+            return loaded;
+        }
+    } catch (const std::exception&) {
+    }
+    return fallback;
 }
 
 int64_t MakeGridKey(const GridCoord& cell) {
@@ -708,11 +826,26 @@ int GetPlayerRuneChargeCount(const Player& player, RuneType rune_type) {
     return player.rune_charge_counts[GetRuneCooldownIndex(rune_type)];
 }
 
+int GetMaxRuneCharges(RuneType rune_type) {
+    switch (rune_type) {
+        case RuneType::Catalyst:
+            return Constants::kCatalystChargeMaxHeld;
+        case RuneType::Fire:
+        case RuneType::Water:
+        case RuneType::Earth:
+        case RuneType::FireStormDummy:
+        case RuneType::None:
+            return 0;
+    }
+    return 0;
+}
+
 void SetPlayerRuneChargeCount(Player& player, RuneType rune_type, int count) {
     if (rune_type == RuneType::None || !RuneUsesCharges(rune_type)) {
         return;
     }
-    player.rune_charge_counts[GetRuneCooldownIndex(rune_type)] = std::max(0, count);
+    player.rune_charge_counts[GetRuneCooldownIndex(rune_type)] =
+        std::clamp(count, 0, std::max(0, GetMaxRuneCharges(rune_type)));
 }
 
 float GetPlayerRuneCooldownRemaining(const Player& player, RuneType rune_type) {
@@ -958,6 +1091,14 @@ bool BlocksRunePlacementAtCell(const MapObjectInstance& object, const GridCoord&
         return false;
     }
 
+    if (!proto->blocked_tiles.empty()) {
+        return std::any_of(proto->blocked_tiles.begin(), proto->blocked_tiles.end(),
+                           [&](const GridCoord& blocked_offset) {
+                               return cell.x == object.cell.x + blocked_offset.x &&
+                                      cell.y == object.cell.y + blocked_offset.y;
+                           });
+    }
+
     if (object.prototype_id == "tree_1") {
         return cell.y == object.cell.y && (cell.x == object.cell.x + 1 || cell.x == object.cell.x + 2);
     }
@@ -975,6 +1116,18 @@ int GetSpriteSheetHeight(SpriteSheetType sheet_type) {
             return 32;
         case SpriteSheetType::Tall32x64:
             return 64;
+        case SpriteSheetType::Large128x128:
+            return 128;
+    }
+    return 32;
+}
+
+int GetSpriteSheetWidth(SpriteSheetType sheet_type) {
+    switch (sheet_type) {
+        case SpriteSheetType::Base32:
+            return 32;
+        case SpriteSheetType::Tall32x64:
+            return 32;
         case SpriteSheetType::Large128x128:
             return 128;
     }
@@ -1016,6 +1169,7 @@ bool GameApp::Initialize() {
     lobby_mode_type_ = static_cast<MatchModeType>(settings_.lobby_mode_type);
     lobby_round_time_seconds_ = settings_.lobby_match_length_seconds;
     lobby_best_of_target_kills_ = settings_.lobby_best_of_target_kills;
+    lobby_zone_enabled_ = settings_.lobby_zone_enabled;
     lobby_shrink_tiles_per_second_ = settings_.lobby_shrink_tiles_per_second;
     lobby_shrink_start_seconds_ = settings_.lobby_shrink_start_seconds;
     lobby_min_arena_radius_tiles_ = settings_.lobby_min_arena_radius_tiles;
@@ -1068,6 +1222,7 @@ bool GameApp::Initialize() {
     resolved_modular_tree_outline_mask_path_ = ResolveRuntimePath(Constants::kModularTreeOutlineMaskMetadataPath);
     resolved_modular_tree_asset_metadata_path_ = ResolveRuntimePath(Constants::kModularTreeAssetMetadataPath);
     resolved_spell_pattern_path_ = ResolveRuntimePath(Constants::kSpellPatternPath);
+    resolved_castle_level_requirements_path_ = ResolveRuntimePath(Constants::kCastleLevelRequirementsPath);
     resolved_equipment_profiles_path_ = ResolveRuntimePath(Constants::kEquipmentProfilesPath);
     resolved_hit_shapes_path_ = ResolveRuntimePath(Constants::kHitShapesPath);
     resolved_loot_tables_path_ = ResolveRuntimePath(Constants::kLootTablesPath);
@@ -1103,6 +1258,17 @@ bool GameApp::Initialize() {
     sprite_metadata_tall_.LoadFromFile(resolved_sprite_metadata_tall_path_);
     sprite_metadata_96x96_.LoadFromFile(resolved_sprite_metadata_96x96_path_);
     sprite_metadata_128x128_.LoadFromFile(resolved_sprite_metadata_128x128_path_);
+    UnloadTextureVector(&sprite_sheet_128x128_team_variants_);
+    std::vector<std::unordered_map<ColorKey, Color>> castle_palette_maps;
+    if (BuildPaletteReplacementMaps(ResolveRuntimePath(Constants::kPlayerColorsMapPath), Constants::kTeamCount,
+                                    Constants::kTeamBlue, &castle_palette_maps)) {
+        const std::string castle_texture_path = ResolveRuntimePath(Constants::kSpriteSheet128x128TexturePath);
+        sprite_sheet_128x128_team_variants_.resize(static_cast<size_t>(Constants::kTeamCount));
+        for (int team_index = 0; team_index < Constants::kTeamCount; ++team_index) {
+            sprite_sheet_128x128_team_variants_[static_cast<size_t>(team_index)] =
+                CreateRemappedTextureVariant(castle_texture_path, castle_palette_maps[static_cast<size_t>(team_index)]);
+        }
+    }
     ModularLayerLoadOptions modular_player_main_options;
     modular_player_main_options.generate_team_variants = true;
     modular_player_main_options.palette_map_path = ResolveRuntimePath(Constants::kPlayerColorsMapPath);
@@ -1126,6 +1292,8 @@ bool GameApp::Initialize() {
         modular_tree_asset_.LoadLayer("outline_mask", resolved_modular_tree_outline_mask_path_);
     }
     LoadModularTreeAssetMetadata();
+    castle_level_energy_requirements_ =
+        LoadCastleLevelRequirementsOrDefault(resolved_castle_level_requirements_path_, castle_level_energy_requirements_);
     spell_patterns_.LoadFromFile(resolved_spell_pattern_path_);
     equipment_registry_.LoadFromFile(resolved_equipment_profiles_path_);
     hit_shape_library_.LoadFromFile(resolved_hit_shapes_path_);
@@ -1221,6 +1389,7 @@ void GameApp::Shutdown() {
     settings_.lobby_mode_type = static_cast<int>(lobby_mode_type_);
     settings_.lobby_match_length_seconds = lobby_round_time_seconds_;
     settings_.lobby_best_of_target_kills = lobby_best_of_target_kills_;
+    settings_.lobby_zone_enabled = lobby_zone_enabled_;
     settings_.lobby_shrink_start_seconds = lobby_shrink_start_seconds_;
     settings_.lobby_min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
     settings_.show_network_debug_panel = show_network_debug_panel_;
@@ -1234,6 +1403,7 @@ void GameApp::Shutdown() {
     sprite_metadata_tall_.Unload();
     sprite_metadata_96x96_.Unload();
     sprite_metadata_128x128_.Unload();
+    UnloadTextureVector(&sprite_sheet_128x128_team_variants_);
     modular_player_asset_.Unload();
     modular_tree_asset_.Unload();
     if (has_menu_background_texture_) {
@@ -1629,14 +1799,11 @@ Rectangle GameApp::GetMapObjectCollisionAabb(const MapObjectInstance& object, co
     Rectangle aabb = {static_cast<float>(object.cell.x * cell_size), static_cast<float>(object.cell.y * cell_size),
                       static_cast<float>(cell_size), static_cast<float>(cell_size)};
     if (proto != nullptr && proto->has_collision_box_override) {
-        float sprite_x = static_cast<float>(object.cell.x * cell_size);
-        float sprite_y =
-            static_cast<float>(object.cell.y * cell_size) - (static_cast<float>(GetSpriteSheetHeight(proto->sprite_sheet)) -
-                                                             static_cast<float>(cell_size));
-        if (IsModularTreePrototypeId(object.prototype_id) && has_modular_tree_anchor_pixels_) {
-            sprite_x = static_cast<float>(object.cell.x * cell_size) - modular_tree_anchor_pixels_.x;
-            sprite_y = static_cast<float>(object.cell.y * cell_size) - modular_tree_anchor_pixels_.y;
-        }
+        const Rectangle sprite_rect =
+            GetMapObjectSpriteRect(object, proto, static_cast<float>(GetSpriteSheetWidth(proto->sprite_sheet)),
+                                   static_cast<float>(GetSpriteSheetHeight(proto->sprite_sheet)), 1.0f, false);
+        const float sprite_x = sprite_rect.x;
+        const float sprite_y = sprite_rect.y;
         return {sprite_x + static_cast<float>(proto->collision_box_x), sprite_y + static_cast<float>(proto->collision_box_y),
                 static_cast<float>(proto->collision_box_w), static_cast<float>(proto->collision_box_h)};
     }
@@ -1652,6 +1819,85 @@ Rectangle GameApp::GetMapObjectCollisionAabb(const MapObjectInstance& object, co
     aabb.width *= scale;
     aabb.height *= scale;
     return aabb;
+}
+
+Rectangle GameApp::GetMapObjectSpriteRect(const MapObjectInstance& object, const ObjectPrototype* proto, float sprite_width,
+                                          float sprite_height, float visual_scale, bool snap) const {
+    const float cell_size = static_cast<float>(state_.map.cell_size);
+    const float base_w = std::max(sprite_width, cell_size);
+    const float base_h = std::max(sprite_height, cell_size);
+    const float draw_w = base_w * visual_scale;
+    const float draw_h = base_h * visual_scale;
+
+    Rectangle dst = {};
+    if (proto != nullptr && IsModularTreePrototypeId(object.prototype_id) && has_modular_tree_anchor_pixels_) {
+        dst = {static_cast<float>(object.cell.x * state_.map.cell_size) - modular_tree_anchor_pixels_.x,
+               static_cast<float>(object.cell.y * state_.map.cell_size) - modular_tree_anchor_pixels_.y, draw_w, draw_h};
+    } else if (proto != nullptr && proto->sprite_anchor == MapObjectSpriteAnchor::CellCenter) {
+        const Vector2 center = CellToWorldCenter(object.cell);
+        dst = {center.x - draw_w * 0.5f, center.y - draw_h * 0.5f, draw_w, draw_h};
+    } else {
+        dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
+               static_cast<float>(object.cell.y * state_.map.cell_size) - (base_h - cell_size), draw_w, draw_h};
+        dst.x += (base_w - draw_w) * 0.5f;
+        dst.y += (base_h - draw_h) * 0.5f;
+    }
+    if (proto != nullptr) {
+        dst.x += static_cast<float>(proto->sprite_offset_x) * visual_scale;
+        dst.y += static_cast<float>(proto->sprite_offset_y) * visual_scale;
+    }
+    return snap ? SnapRect(dst) : dst;
+}
+
+std::string GameApp::ResolveMapObjectAnimation(const MapObjectInstance& object, const ObjectPrototype& proto,
+                                               const SpriteMetadataLoader& metadata, float* out_anim_time) const {
+    float anim_time = render_time_seconds_;
+    std::string animation = proto.idle_animation;
+    if (object.state == MapObjectState::Spawning && !proto.born_animation.empty() && metadata.HasAnimation(proto.born_animation)) {
+        animation = proto.born_animation;
+        anim_time = object.state_time;
+    } else if (!proto.charging_animation.empty() && metadata.HasAnimation(proto.charging_animation)) {
+        const auto castle_it =
+            std::find_if(state_.castles.begin(), state_.castles.end(),
+                         [&](const CastleState& castle) { return castle.map_object_id == object.id; });
+        if (castle_it != state_.castles.end() && IsCastleCharging(castle_it->id)) {
+            animation = proto.charging_animation;
+        }
+    } else if (object.state == MapObjectState::Dying && !proto.death_animation.empty() &&
+               metadata.HasAnimation(proto.death_animation)) {
+        animation = proto.death_animation;
+        anim_time = object.state_time;
+    }
+    if (out_anim_time != nullptr) {
+        *out_anim_time = anim_time;
+    }
+    return animation;
+}
+
+float GameApp::GetMapObjectAnimationDurationSeconds(const ObjectPrototype& proto, const std::string& animation_name) const {
+    if (animation_name.empty()) {
+        return 0.0f;
+    }
+
+    const SpriteMetadataLoader* metadata = &sprite_metadata_;
+    switch (proto.sprite_sheet) {
+        case SpriteSheetType::Base32:
+            metadata = &sprite_metadata_;
+            break;
+        case SpriteSheetType::Tall32x64:
+            metadata = &sprite_metadata_tall_;
+            break;
+        case SpriteSheetType::Large128x128:
+            metadata = &sprite_metadata_128x128_;
+            break;
+    }
+
+    int frame_count = 0;
+    float fps = 1.0f;
+    if (metadata != nullptr && metadata->GetAnimationStats(animation_name, "default", frame_count, fps) && frame_count > 0) {
+        return static_cast<float>(frame_count) / std::max(0.001f, fps);
+    }
+    return 0.0f;
 }
 
 Rectangle GameApp::GetModularTreeSpriteRect(const MapObjectInstance& object, const char* layer_name) const {
@@ -2391,6 +2637,7 @@ void GameApp::UpdateConnecting(float /*dt*/) {
         lobby_mode_type_ = static_cast<MatchModeType>(lobby_update->mode_type);
         lobby_round_time_seconds_ = lobby_update->round_time_seconds;
         lobby_best_of_target_kills_ = lobby_update->best_of_target_kills;
+        lobby_zone_enabled_ = lobby_update->zone_enabled;
         lobby_shrink_tiles_per_second_ = lobby_update->shrink_tiles_per_second;
         lobby_shrink_start_seconds_ = lobby_update->shrink_start_seconds;
         lobby_min_arena_radius_tiles_ = lobby_update->min_arena_radius_tiles;
@@ -2766,12 +3013,17 @@ bool GameApp::FinalizeClientTransferredMap() {
     ClearInfluenceZoneVisuals();
     state_.match.match_running = true;
     state_.match.match_finished = false;
+    state_.match.zone_enabled = lobby_zone_enabled_;
     state_.match.time_remaining = static_cast<float>(lobby_round_time_seconds_);
     state_.local_player_id = network_manager_.GetAssignedLocalPlayerId();
     pending_primary_pressed_ = false;
     pending_select_rune_slot_ = -1;
     pending_activate_item_slot_ = -1;
     pending_toggle_inventory_mode_ = false;
+    pending_local_inventory_sync_.reset();
+    pending_local_inventory_sync_dirty_ = false;
+    local_inventory_ui_mode_ = InventoryUiMode::Closed;
+    pending_open_initial_loadout_ui_ = true;
     in_game_menu_open_ = false;
     in_game_menu_page_ = InGameMenuPage::Home;
     render_player_positions_.clear();
@@ -2840,6 +3092,7 @@ void GameApp::UpdateLobby(float dt) {
         lobby_state.shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
         lobby_state.min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
         lobby_state.shrink_start_seconds = lobby_shrink_start_seconds_;
+        lobby_state.zone_enabled = lobby_zone_enabled_;
         lobby_state.selected_map_key = lobby_selected_map_key_;
         lobby_state.selected_map_label = lobby_selected_map_label_;
         lobby_state.preview_generation = lobby_preview_generation_;
@@ -2870,6 +3123,7 @@ void GameApp::UpdateLobby(float dt) {
             lobby_mode_type_ = static_cast<MatchModeType>(lobby_update->mode_type);
             lobby_round_time_seconds_ = lobby_update->round_time_seconds;
             lobby_best_of_target_kills_ = lobby_update->best_of_target_kills;
+            lobby_zone_enabled_ = lobby_update->zone_enabled;
             lobby_shrink_tiles_per_second_ = lobby_update->shrink_tiles_per_second;
             lobby_shrink_start_seconds_ = lobby_update->shrink_start_seconds;
             lobby_min_arena_radius_tiles_ = lobby_update->min_arena_radius_tiles;
@@ -2898,12 +3152,15 @@ void GameApp::UpdateMatch(float dt) {
     DrainIncomingConsoleMessages();
     UpdateConsoleMessages(dt);
     UpdateChatInput();
+    if (pending_open_initial_loadout_ui_ && state_.local_player_id >= 0) {
+        OpenLocalInventoryUiForCurrentContext();
+        pending_open_initial_loadout_ui_ = false;
+    }
 
     if (escape_pressed_this_update_ && !chat_input_active_) {
         if (Player* local_player = FindPlayerById(state_.local_player_id);
             local_player != nullptr && local_player->inventory_mode) {
-            CancelInventoryDrag(*local_player);
-            local_player->inventory_mode = false;
+            CloseLocalInventoryUi();
         } else if (Player* local_player = FindPlayerById(state_.local_player_id);
                    local_player != nullptr && local_player->rune_placing_mode) {
             local_player->rune_placing_mode = false;
@@ -2917,9 +3174,7 @@ void GameApp::UpdateMatch(float dt) {
                 in_game_menu_open_ = false;
             }
         } else {
-            if (Player* local_player = FindPlayerById(state_.local_player_id); local_player != nullptr) {
-                local_player->inventory_mode = false;
-            }
+            CloseLocalInventoryUi();
             in_game_menu_open_ = true;
             in_game_menu_page_ = InGameMenuPage::Home;
         }
@@ -3206,25 +3461,30 @@ void GameApp::ApplyClientLocalInputPreview(const ClientInputMessage& input, floa
     }
 
     if (!is_stunned && !is_pulled && intent.toggle_inventory_mode) {
-        local_player->inventory_mode = !local_player->inventory_mode;
-        if (!local_player->inventory_mode) {
-            CancelInventoryDrag(*local_player);
+        if (local_player->inventory_mode) {
+            CloseLocalInventoryUi();
+        } else {
+            OpenLocalInventoryUiForCurrentContext();
         }
         inventory_editing = local_player->inventory_mode;
     }
     if (!is_stunned && !is_pulled && !inventory_editing && intent.request_rune_type != static_cast<int>(RuneType::None)) {
         const RuneType rune_type = static_cast<RuneType>(intent.request_rune_type);
-        const float mana_cost = GetRuneManaCost(rune_type);
-        for (size_t i = 0; i < local_player->rune_slots.size(); ++i) {
-            if (local_player->rune_slots[i] == rune_type) {
-                local_player->selected_rune_slot = static_cast<int>(i);
-                break;
+        if (IsRuneAvailableToPlayer(*local_player, rune_type)) {
+            const float mana_cost = GetRuneManaCost(rune_type);
+            for (size_t i = 0; i < local_player->rune_slots.size(); ++i) {
+                if (local_player->rune_slots[i] == rune_type) {
+                    local_player->selected_rune_slot = static_cast<int>(i);
+                    break;
+                }
             }
+            local_player->selected_rune_type = rune_type;
+            local_player->rune_placing_mode = (rune_type != RuneType::None) &&
+                                              (GetPlayerRuneCooldownRemaining(*local_player, rune_type) <= 0.0f) &&
+                                              (local_player->mana >= mana_cost);
+        } else {
+            local_player->rune_placing_mode = false;
         }
-        local_player->selected_rune_type = rune_type;
-        local_player->rune_placing_mode = (rune_type != RuneType::None) &&
-                                          (GetPlayerRuneCooldownRemaining(*local_player, rune_type) <= 0.0f) &&
-                                          (local_player->mana >= mana_cost);
     }
 
     Vector2 aim_vector = {intent.aim_world.x - local_player->pos.x, intent.aim_world.y - local_player->pos.y};
@@ -3343,8 +3603,8 @@ void GameApp::Render() {
                 (lobby_mode_type_ == MatchModeType::BestOfKills) ? "Best Of" : most_kills_mode_.GetUiName();
             const LobbyUiResult lobby_ui =
                 DrawLobby(lobby_player_names_, false, host_display_ip_, static_cast<int>(lobby_mode_type_),
-                          lobby_round_time_seconds_, lobby_best_of_target_kills_, lobby_shrink_tiles_per_second_,
-                          lobby_shrink_start_seconds_, lobby_min_arena_radius_tiles_,
+                          lobby_round_time_seconds_, lobby_best_of_target_kills_, lobby_zone_enabled_,
+                          lobby_shrink_tiles_per_second_, lobby_shrink_start_seconds_, lobby_min_arena_radius_tiles_,
                           lobby_mode_name, GetClientLobbyStatusText(), GetSelectedLobbyMapLabel(), BuildLobbyMapOptionsText(),
                           lobby_selected_map_index_, lobby_map_dropdown_edit_mode_, &lobby_map_preview_texture_,
                           has_lobby_map_preview_texture_, lobby_preview_status_text_);
@@ -3359,8 +3619,9 @@ void GameApp::Render() {
                 (lobby_mode_type_ == MatchModeType::BestOfKills) ? "Best Of" : most_kills_mode_.GetUiName();
             const LobbyUiResult lobby_ui = DrawLobby(lobby_player_names_, network_manager_.IsHost(), host_display_ip_,
                                                      static_cast<int>(lobby_mode_type_), lobby_round_time_seconds_,
-                                                     lobby_best_of_target_kills_, lobby_shrink_tiles_per_second_,
-                                                     lobby_shrink_start_seconds_, lobby_min_arena_radius_tiles_,
+                                                     lobby_best_of_target_kills_, lobby_zone_enabled_,
+                                                     lobby_shrink_tiles_per_second_, lobby_shrink_start_seconds_,
+                                                     lobby_min_arena_radius_tiles_,
                                                      lobby_mode_name,
                                                      network_manager_.IsHost() ? "hosting/listening"
                                                                               : GetClientLobbyStatusText(),
@@ -3380,6 +3641,10 @@ void GameApp::Render() {
             if (network_manager_.IsHost() && lobby_ui.request_toggle_mode_type) {
                 lobby_mode_type_ = (lobby_mode_type_ == MatchModeType::MostKillsTimed) ? MatchModeType::BestOfKills
                                                                                        : MatchModeType::MostKillsTimed;
+                mode_settings_changed = true;
+            }
+            if (network_manager_.IsHost() && lobby_ui.request_toggle_zone_enabled) {
+                lobby_zone_enabled_ = !lobby_zone_enabled_;
                 mode_settings_changed = true;
             }
             if (network_manager_.IsHost() && lobby_ui.request_decrease_round_time) {
@@ -3441,6 +3706,7 @@ void GameApp::Render() {
                 settings_.lobby_mode_type = static_cast<int>(lobby_mode_type_);
                 settings_.lobby_match_length_seconds = lobby_round_time_seconds_;
                 settings_.lobby_best_of_target_kills = lobby_best_of_target_kills_;
+                settings_.lobby_zone_enabled = lobby_zone_enabled_;
                 settings_.lobby_shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
                 settings_.lobby_shrink_start_seconds = lobby_shrink_start_seconds_;
                 settings_.lobby_min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
@@ -3667,6 +3933,7 @@ void GameApp::ReturnToMainMenu() {
     lobby_mode_type_ = static_cast<MatchModeType>(settings_.lobby_mode_type);
     lobby_round_time_seconds_ = settings_.lobby_match_length_seconds;
     lobby_best_of_target_kills_ = settings_.lobby_best_of_target_kills;
+    lobby_zone_enabled_ = settings_.lobby_zone_enabled;
     lobby_shrink_start_seconds_ = settings_.lobby_shrink_start_seconds;
     lobby_min_arena_radius_tiles_ = settings_.lobby_min_arena_radius_tiles;
     in_game_menu_open_ = false;
@@ -3701,6 +3968,7 @@ void GameApp::StartMatchAsHost() {
     state_.match.match_finished = false;
     state_.match.time_remaining = static_cast<float>(lobby_round_time_seconds_);
     state_.match.best_of_target_kills = lobby_best_of_target_kills_;
+    state_.match.zone_enabled = lobby_zone_enabled_;
     state_.match.shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
     state_.match.shrink_start_seconds = lobby_shrink_start_seconds_;
     state_.match.arena_center_world = {static_cast<float>(state_.map.width * state_.map.cell_size) * 0.5f,
@@ -3721,6 +3989,7 @@ void GameApp::StartMatchAsHost() {
     state_.ice_walls.clear();
     state_.map_objects.clear();
     state_.particles.clear();
+    state_.castles.clear();
     state_.next_entity_id = 1;
     state_.next_rune_placement_order = 1;
     latest_remote_inputs_.clear();
@@ -3740,8 +4009,11 @@ void GameApp::StartMatchAsHost() {
     pending_toggle_inventory_mode_ = false;
     pending_local_inventory_sync_.reset();
     pending_local_inventory_sync_dirty_ = false;
+    local_inventory_ui_mode_ = InventoryUiMode::Closed;
+    pending_open_initial_loadout_ui_ = false;
     pending_object_spawns_.clear();
     dropped_item_pickup_blocks_.clear();
+    castle_charge_lightning_cooldowns_.clear();
 
     Player host_player;
     host_player.id = 0;
@@ -3757,17 +4029,13 @@ void GameApp::StartMatchAsHost() {
         state_.players.push_back(player);
     }
 
-    std::vector<GridCoord> spawns = state_.map.spawn_points;
-    if (spawns.empty()) {
-        spawns.push_back({2, 2});
-        spawns.push_back({state_.map.width - 3, state_.map.height - 3});
-    }
-
-    std::mt19937 rng(static_cast<unsigned int>(GetTime() * 1000.0));
-    std::shuffle(spawns.begin(), spawns.end(), rng);
+    RebuildMapObjectsFromSeeds();
+    InitializeCastlesFromSpawnPoints();
 
     for (size_t i = 0; i < state_.players.size(); ++i) {
-        const GridCoord spawn = spawns[i % spawns.size()];
+        const CastleState* team_castle = FindCastleByTeam(state_.players[i].team);
+        const GridCoord spawn = team_castle != nullptr ? team_castle->cell
+                                                       : GridCoord{2 + static_cast<int>(i), 2 + static_cast<int>(i)};
         state_.players[i].spawn_cell = spawn;
         state_.players[i].pos = CellToWorldCenter(spawn);
         state_.players[i].alive = true;
@@ -3777,15 +4045,15 @@ void GameApp::StartMatchAsHost() {
         for (RuneType rune_type : GetAllCastableRuneTypes()) {
             SetPlayerRuneChargeCount(state_.players[i], rune_type, GetInitialRuneCharges(rune_type));
         }
+        NormalizePlayerRuneLoadout(state_.players[i]);
         render_player_positions_[state_.players[i].id] = state_.players[i].pos;
     }
 
     loot_quota_remaining_ =
         loot_table_library_.BuildMatchQuotaPlan(static_cast<int>(state_.players.size())).guaranteed_counts;
 
-    RebuildMapObjectsFromSeeds();
-
     state_.local_player_id = 0;
+    pending_open_initial_loadout_ui_ = true;
 
     network_manager_.BroadcastMatchStart(MatchStartMessage{true, transfer_id, lobby_selected_map_key_});
     if (!SendSelectedMapToClients(transfer_id, map_transfer_precheck)) {
@@ -4166,6 +4434,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     }
 
     state_.match.time_remaining = snapshot.time_remaining;
+    state_.match.zone_enabled = snapshot.zone_enabled;
     state_.match.shrink_tiles_per_second = snapshot.shrink_tiles_per_second;
     state_.match.min_arena_radius_tiles = snapshot.min_arena_radius_tiles;
     state_.match.arena_radius_tiles = snapshot.arena_radius_tiles;
@@ -4283,6 +4552,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         rune.fire_storm_visual_state_duration = rune_snapshot.fire_storm_visual_state_duration;
         rune.fire_storm_revert_after_death = rune_snapshot.fire_storm_revert_after_death;
         rune.fire_storm_pending_removal = rune_snapshot.fire_storm_pending_removal;
+        rune.castle_charging = rune_snapshot.castle_charging;
+        rune.castle_id = rune_snapshot.castle_id;
+        rune.castle_charge_elapsed_seconds = rune_snapshot.castle_charge_elapsed_seconds;
         state_.runes.push_back(rune);
     }
     RebuildInfluenceZones();
@@ -4489,6 +4761,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     for (const auto& object_snapshot : snapshot.map_objects) {
         MapObjectInstance object;
         object.id = object_snapshot.id;
+        object.owner_player_id = object_snapshot.owner_player_id;
+        object.owner_team = object_snapshot.owner_team;
         object.prototype_id = object_snapshot.prototype_id;
         object.cell = {object_snapshot.cell_x, object_snapshot.cell_y};
         object.type = static_cast<ObjectType>(object_snapshot.object_type);
@@ -4505,6 +4779,21 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         state_.map_objects.push_back(object);
     }
     RebuildAltarsFromMapObjects();
+    state_.castles.clear();
+    for (const auto& castle_snapshot : snapshot.castles) {
+        CastleState castle;
+        castle.id = castle_snapshot.id;
+        castle.team = castle_snapshot.team;
+        castle.cell = {castle_snapshot.cell_x, castle_snapshot.cell_y};
+        castle.map_object_id = castle_snapshot.map_object_id;
+        castle.level = castle_snapshot.level;
+        castle.total_energy = castle_snapshot.total_energy;
+        castle.energy_into_current_level = castle_snapshot.energy_into_current_level;
+        castle.energy_needed_for_next_level = castle_snapshot.energy_needed_for_next_level;
+        castle.charge_port_offset_x = castle_snapshot.charge_port_offset_x;
+        castle.charge_port_offset_y = castle_snapshot.charge_port_offset_y;
+        state_.castles.push_back(castle);
+    }
     if (!network_manager_.IsHost()) {
         std::unordered_set<int> current_object_ids;
         current_object_ids.reserve(state_.map_objects.size());
@@ -4886,6 +5175,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
     snapshot.base_snapshot_id = 0;
     snapshot.is_delta = false;
     snapshot.time_remaining = state_.match.time_remaining;
+    snapshot.zone_enabled = state_.match.zone_enabled;
     snapshot.shrink_tiles_per_second = state_.match.shrink_tiles_per_second;
     snapshot.min_arena_radius_tiles = state_.match.min_arena_radius_tiles;
     snapshot.arena_radius_tiles = state_.match.arena_radius_tiles;
@@ -4916,6 +5206,9 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
 
     for (const auto& object : state_.map_objects) {
         snapshot.map_objects.push_back(SnapshotTranslation::BuildMapObjectSnapshot(object));
+    }
+    for (const auto& castle : state_.castles) {
+        snapshot.castles.push_back(SnapshotTranslation::BuildCastleSnapshot(castle));
     }
 
     for (const auto& dummy : state_.fire_storm_dummies) {
@@ -5067,6 +5360,7 @@ void GameApp::SimulateHostGameplay(float dt) {
     ResolvePlayerCollisions();
     UpdateIceWalls(dt);
     UpdateRunes(dt);
+    UpdateCastles(dt);
     UpdateAltars(dt);
     UpdateEarthRootsGroups(dt);
     UpdateArena(dt);
@@ -5112,22 +5406,35 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
         player.inventory_mode = !player.inventory_mode;
         if (!player.inventory_mode) {
             CancelInventoryDrag(player);
+            if (player.id == state_.local_player_id) {
+                local_inventory_ui_mode_ = InventoryUiMode::Closed;
+            }
+        } else if (player.id == state_.local_player_id) {
+            const CastleState* allied_castle = GetAlliedCastleForPlayer(player);
+            local_inventory_ui_mode_ =
+                (allied_castle != nullptr && IsPlayerWithinCastleRange(player, *allied_castle))
+                    ? InventoryUiMode::CastleLoadout
+                    : InventoryUiMode::Inventory;
         }
         inventory_editing = player.inventory_mode;
     }
     if (!is_stunned && !is_pulled && !inventory_editing && intent.request_rune_type != static_cast<int>(RuneType::None)) {
         const RuneType rune_type = static_cast<RuneType>(intent.request_rune_type);
-        const float mana_cost = GetRuneManaCost(rune_type);
-        for (size_t i = 0; i < player.rune_slots.size(); ++i) {
-            if (player.rune_slots[i] == rune_type) {
-                player.selected_rune_slot = static_cast<int>(i);
-                break;
+        if (IsRuneAvailableToPlayer(player, rune_type)) {
+            const float mana_cost = GetRuneManaCost(rune_type);
+            for (size_t i = 0; i < player.rune_slots.size(); ++i) {
+                if (player.rune_slots[i] == rune_type) {
+                    player.selected_rune_slot = static_cast<int>(i);
+                    break;
+                }
             }
+            player.selected_rune_type = rune_type;
+            player.rune_placing_mode = (rune_type != RuneType::None) &&
+                                       (GetPlayerRuneCooldownRemaining(player, rune_type) <= 0.0f) &&
+                                       (player.mana >= mana_cost);
+        } else {
+            player.rune_placing_mode = false;
         }
-        player.selected_rune_type = rune_type;
-        player.rune_placing_mode = (rune_type != RuneType::None) &&
-                                   (GetPlayerRuneCooldownRemaining(player, rune_type) <= 0.0f) &&
-                                   (player.mana >= mana_cost);
     }
     Vector2 aim_vector = {intent.aim_world.x - player.pos.x, intent.aim_world.y - player.pos.y};
     if (player.melee_active_remaining <= 0.0f && Vector2LengthSqr(aim_vector) > 0.0001f) {
@@ -5222,6 +5529,15 @@ void GameApp::UpdateArena(float dt) {
         return;
     }
     if (state_.map.cell_size <= 0) {
+        return;
+    }
+    if (!IsZoneEnabled()) {
+        const float map_diameter_tiles = static_cast<float>(std::max(state_.map.width, state_.map.height));
+        state_.match.arena_radius_tiles = map_diameter_tiles * 0.5f;
+        state_.match.arena_radius_world = state_.match.arena_radius_tiles * static_cast<float>(state_.map.cell_size);
+        for (auto& player : state_.players) {
+            player.outside_zone_damage_accumulator = 0.0f;
+        }
         return;
     }
 
@@ -5385,7 +5701,9 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
 }
 
 float GameApp::GetPlayerMovementSpeedMultiplier(const Player& player) const {
-    float multiplier = 1.0f;
+    const int catalyst_charges = GetPlayerRuneChargeCount(player, RuneType::Catalyst);
+    float multiplier = std::clamp(
+        1.0f - static_cast<float>(catalyst_charges) * Constants::kCatalystChargeMovementPenaltyPerStack, 0.0f, 1.0f);
     for (const auto& status : player.status_effects) {
         if (status.remaining_seconds <= 0.0f) {
             continue;
@@ -5476,6 +5794,8 @@ int GameApp::SpawnObjectInstanceAtCell(const std::string& prototype_id, const Gr
 
     MapObjectInstance object;
     object.id = forced_id > 0 ? forced_id : state_.next_entity_id++;
+    object.owner_player_id = -1;
+    object.owner_team = 0;
     if (forced_id > 0) {
         state_.next_entity_id = std::max(state_.next_entity_id, forced_id + 1);
     }
@@ -5733,6 +6053,9 @@ bool GameApp::ApplyObjectDamage(int object_instance_id, int amount, int /*source
     if (object == nullptr || !object->alive || amount <= 0 || object->hp <= 0) {
         return false;
     }
+    if (object->state == MapObjectState::Spawning) {
+        return false;
+    }
 
     const ObjectPrototype* proto = FindObjectPrototype(object->prototype_id);
     if (proto == nullptr || (proto->type != ObjectType::Destructible && proto->type != ObjectType::Unit)) {
@@ -5817,6 +6140,9 @@ bool GameApp::TryConsumeObject(int object_instance_id, int player_id) {
 
     if (const std::optional<RuneType> charge_rune_type = GetRuneTypeForChargePickupPrototype(object->prototype_id);
         charge_rune_type.has_value()) {
+        if (GetPlayerRuneChargeCount(*player, *charge_rune_type) >= GetMaxRuneCharges(*charge_rune_type)) {
+            return false;
+        }
         SetPlayerRuneChargeCount(*player, *charge_rune_type, GetPlayerRuneChargeCount(*player, *charge_rune_type) + 1);
         object->collision_enabled = false;
         object->alive = false;
@@ -6082,9 +6408,23 @@ void GameApp::ApplyInventoryLayoutSync(Player& player, const ClientActionMessage
     for (size_t i = 0; i < player.rune_slots.size(); ++i) {
         player.rune_slots[i] = static_cast<RuneType>(action.rune_slots[i]);
     }
-    player.selected_rune_slot =
-        std::clamp(action.selected_rune_slot, 0, static_cast<int>(player.rune_slots.size()) - 1);
-    player.selected_rune_type = player.rune_slots[player.selected_rune_slot];
+    player.rune_slots[2] = RuneType::Catalyst;
+    if (const CastleState* castle = GetAlliedCastleForPlayer(player)) {
+        const int capacity = GetCastleLoadoutCapacity(castle->level);
+        int equipped_count = 0;
+        for (RuneType& rune_type : player.rune_slots) {
+            if (!IsCastleEquippableRune(rune_type)) {
+                continue;
+            }
+            if (castle->level < GetRuneRequiredCastleLevel(rune_type) || equipped_count >= capacity) {
+                rune_type = RuneType::None;
+                continue;
+            }
+            ++equipped_count;
+        }
+    }
+    player.selected_rune_slot = std::clamp(action.selected_rune_slot, 0, static_cast<int>(player.rune_slots.size()) - 1);
+    NormalizePlayerRuneLoadout(player);
 
     for (size_t i = 0; i < player.item_slots.size(); ++i) {
         player.item_slots[i] = action.item_slots[i];
@@ -6217,6 +6557,19 @@ void GameApp::UpdateMapObjects(float dt) {
 
     for (auto& object : state_.map_objects) {
         if (!object.alive) {
+            continue;
+        }
+
+        if (object.state == MapObjectState::Spawning) {
+            object.state_time += dt;
+            const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+            const float spawn_duration =
+                (proto != nullptr) ? GetMapObjectAnimationDurationSeconds(*proto, proto->born_animation) : 0.0f;
+            if (spawn_duration <= 0.0f || object.state_time >= spawn_duration) {
+                object.state = MapObjectState::Active;
+                object.state_time = 0.0f;
+                object.collision_enabled = (!object.walkable || object.stops_projectiles);
+            }
             continue;
         }
 
@@ -6357,6 +6710,9 @@ void GameApp::HandlePlayerDeath(Player& victim, int killer_player_id, bool count
 }
 
 bool GameApp::IsOutsideArena(Vector2 world_pos) const {
+    if (!IsZoneEnabled()) {
+        return false;
+    }
     if (state_.match.arena_radius_world <= 0.0f) {
         return false;
     }
@@ -6365,6 +6721,9 @@ bool GameApp::IsOutsideArena(Vector2 world_pos) const {
 }
 
 Vector2 GameApp::ClampToArenaWithBuffer(Vector2 world_pos, float buffer_tiles) const {
+    if (!IsZoneEnabled()) {
+        return world_pos;
+    }
     const float buffer_world = std::max(0.0f, buffer_tiles) * static_cast<float>(state_.map.cell_size);
     const float allowed_radius = std::max(0.0f, state_.match.arena_radius_world + buffer_world);
     const Vector2 center = state_.match.arena_center_world;
@@ -6532,7 +6891,9 @@ void GameApp::UpdateRunes(float dt) {
                 }
                 if (!enemy_in_range) {
                     for (const auto& object : state_.map_objects) {
-                        if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit) {
+                        if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit ||
+                            object.state != MapObjectState::Active || object.owner_player_id < 0 ||
+                            object.owner_team == rune.owner_team) {
                             continue;
                         }
                         if (Vector2Distance(CellToWorldCenter(object.cell), rune_center) <= trigger_radius) {
@@ -6622,6 +6983,59 @@ void GameApp::UpdateRunes(float dt) {
     }
 }
 
+void GameApp::UpdateCastles(float dt) {
+    for (auto& castle : state_.castles) {
+        RefreshCastleDerivedState(castle);
+    }
+
+    const float charge_radius_world = Constants::kCastleInteractionRangeTiles * static_cast<float>(state_.map.cell_size);
+    const float energy_per_second = Constants::kCastleChargeEnergyPerRune /
+                                    std::max(0.001f, Constants::kCastleChargeDurationSeconds);
+
+    for (auto& rune : state_.runes) {
+        if (!rune.active || rune.rune_type != RuneType::Catalyst) {
+            rune.castle_charging = false;
+            rune.castle_id = -1;
+            rune.castle_charge_elapsed_seconds = 0.0f;
+            continue;
+        }
+
+        CastleState* bound_castle = FindCastleById(rune.castle_id);
+        if (!rune.castle_charging || bound_castle == nullptr) {
+            rune.castle_charging = false;
+            rune.castle_id = -1;
+            rune.castle_charge_elapsed_seconds = 0.0f;
+            const Vector2 rune_world = CellToWorldCenter(rune.cell);
+            for (auto& castle : state_.castles) {
+                if (Vector2Distance(rune_world, CellToWorldCenter(castle.cell)) <= charge_radius_world) {
+                    rune.castle_charging = true;
+                    rune.castle_id = castle.id;
+                    bound_castle = &castle;
+                    break;
+                }
+            }
+        }
+
+        if (!rune.castle_charging || bound_castle == nullptr) {
+            continue;
+        }
+
+        rune.castle_charge_elapsed_seconds += dt;
+        bound_castle->total_energy += energy_per_second * dt;
+        RefreshCastleDerivedState(*bound_castle);
+
+        if (rune.castle_charge_elapsed_seconds >= Constants::kCastleChargeDurationSeconds) {
+            rune.active = false;
+            rune.activation_total_seconds = 0.0f;
+            rune.activation_remaining_seconds = 0.0f;
+            rune.creates_influence_zone = false;
+            rune.castle_charging = false;
+            rune.castle_id = -1;
+            rune.castle_charge_elapsed_seconds = 0.0f;
+        }
+    }
+}
+
 int GameApp::SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell) {
     EarthRootsGroup group;
     group.id = state_.next_entity_id++;
@@ -6669,7 +7083,9 @@ void GameApp::UpdateEarthRootsGroups(float dt) {
             }
 
             for (auto& object : state_.map_objects) {
-                if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit) {
+                if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit ||
+                    object.state != MapObjectState::Active || object.owner_player_id < 0 ||
+                    object.owner_team == group.owner_team) {
                     continue;
                 }
                 if (std::abs(object.cell.x - group.center_cell.x) <= 1 &&
@@ -6760,7 +7176,8 @@ void GameApp::UpdateEarthRootsGroups(float dt) {
 
     for (auto it = rooted_unit_damage_accumulators_.begin(); it != rooted_unit_damage_accumulators_.end();) {
         const MapObjectInstance* object = FindMapObjectById(it->first);
-        if (object == nullptr || !object->alive || object->type != ObjectType::Unit || object->hp <= 0) {
+        if (object == nullptr || !object->alive || object->type != ObjectType::Unit || object->hp <= 0 ||
+            object->state != MapObjectState::Active) {
             it = rooted_unit_damage_accumulators_.erase(it);
         } else {
             ++it;
@@ -7223,7 +7640,9 @@ void GameApp::UpdateExplosions(float dt) {
         state_.explosions.end());
 }
 
-void GameApp::SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds, bool volatile_variant) {
+void GameApp::SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds, bool volatile_variant,
+                                   const char* born_animation_key, const char* idle_animation_key,
+                                   const char* death_animation_key) {
     const float half_tile = 0.5f * static_cast<float>(std::max(1, state_.map.cell_size));
     const Vector2 half_tile_offset = {0.0f, half_tile};
 
@@ -7233,7 +7652,19 @@ void GameApp::SpawnLightningEffect(Vector2 start, Vector2 end, float idle_durati
     effect.end = Vector2Add(end, half_tile_offset);
     effect.idle_duration = std::max(0.0f, idle_duration_seconds);
     effect.volatile_variant = volatile_variant;
+    effect.born_animation_key = born_animation_key != nullptr ? born_animation_key : "";
+    effect.idle_animation_key =
+        idle_animation_key != nullptr
+            ? idle_animation_key
+            : (volatile_variant ? "lightning_volatile_magic_idle" : "lightning_magic_idle");
+    effect.death_animation_key =
+        death_animation_key != nullptr
+            ? death_animation_key
+            : (volatile_variant ? "lightning_volatile_magic_death" : "lightning_magic_death");
     effect.elapsed = 0.0f;
+    effect.born_elapsed = 0.0f;
+    effect.born_duration = 0.0f;
+    effect.birthing = false;
     effect.dying = false;
     effect.death_elapsed = 0.0f;
     effect.death_duration = 0.25f;
@@ -7247,9 +7678,17 @@ void GameApp::SpawnLightningEffect(Vector2 start, Vector2 end, float idle_durati
     int idle_frame_count = 0;
     float idle_fps = 1.0f;
     float cycle_seconds = 0.25f;
-    const char* idle_key = volatile_variant ? "lightning_volatile_magic_idle" : "lightning_magic_idle";
-    const char* death_key = volatile_variant ? "lightning_volatile_magic_death" : "lightning_magic_death";
-    if (sprite_metadata_.GetAnimationStats(idle_key, "default", idle_frame_count, idle_fps) &&
+    if (!effect.born_animation_key.empty()) {
+        int born_frame_count = 0;
+        float born_fps = 1.0f;
+        if (sprite_metadata_.GetAnimationStats(effect.born_animation_key, "default", born_frame_count, born_fps) &&
+            born_frame_count > 0) {
+            effect.born_duration = static_cast<float>(born_frame_count) / std::max(0.001f, born_fps);
+            effect.birthing = true;
+        }
+    }
+
+    if (sprite_metadata_.GetAnimationStats(effect.idle_animation_key, "default", idle_frame_count, idle_fps) &&
         idle_frame_count > 0) {
         cycle_seconds = static_cast<float>(idle_frame_count) / std::max(0.001f, idle_fps);
     }
@@ -7262,7 +7701,7 @@ void GameApp::SpawnLightningEffect(Vector2 start, Vector2 end, float idle_durati
 
     int death_frame_count = 0;
     float death_fps = 1.0f;
-    if (sprite_metadata_.GetAnimationStats(death_key, "default", death_frame_count, death_fps) &&
+    if (sprite_metadata_.GetAnimationStats(effect.death_animation_key, "default", death_frame_count, death_fps) &&
         death_frame_count > 0) {
         effect.death_duration = static_cast<float>(death_frame_count) / std::max(0.001f, death_fps);
     }
@@ -7275,7 +7714,13 @@ void GameApp::UpdateLightningEffects(float dt) {
         if (!effect.alive) {
             continue;
         }
-        if (!effect.dying) {
+        if (effect.birthing) {
+            effect.born_elapsed += dt;
+            if (effect.born_elapsed >= effect.born_duration) {
+                effect.birthing = false;
+                effect.born_elapsed = effect.born_duration;
+            }
+        } else if (!effect.dying) {
             effect.elapsed += dt;
             if (effect.elapsed >= effect.idle_duration) {
                 effect.dying = true;
@@ -7293,6 +7738,45 @@ void GameApp::UpdateLightningEffects(float dt) {
         std::remove_if(state_.lightning_effects.begin(), state_.lightning_effects.end(),
                        [](const LightningEffect& effect) { return !effect.alive; }),
         state_.lightning_effects.end());
+
+    std::unordered_set<int> active_charging_rune_ids;
+    for (const Rune& rune : state_.runes) {
+        if (!rune.active || !rune.castle_charging) {
+            continue;
+        }
+        const CastleState* castle = FindCastleById(rune.castle_id);
+        if (castle == nullptr) {
+            continue;
+        }
+        active_charging_rune_ids.insert(rune.id);
+        float& cooldown = castle_charge_lightning_cooldowns_[rune.id];
+        cooldown -= dt;
+        if (cooldown <= 0.0f) {
+            SpawnLightningEffect(CellToWorldCenter(rune.cell), GetCastleChargePortWorld(*castle),
+                                 Constants::kCastleChargeLightningIntervalSeconds, false, "charging_lightning_born",
+                                 "charging_lightning_idle", "charging_lightning_death");
+            if (!state_.lightning_effects.empty()) {
+                LightningEffect& effect = state_.lightning_effects.back();
+                effect.has_sort_y_override = true;
+                float sort_y = GetCastleChargePortWorld(*castle).y;
+                if (const MapObjectInstance* castle_object = FindMapObjectById(castle->map_object_id)) {
+                    if (const ObjectPrototype* proto = FindObjectPrototype(castle_object->prototype_id)) {
+                        const Rectangle aabb = GetMapObjectCollisionAabb(*castle_object, proto);
+                        sort_y = aabb.y + aabb.height + 1.0f;
+                    }
+                }
+                effect.sort_y_override = sort_y;
+            }
+            cooldown = Constants::kCastleChargeLightningIntervalSeconds;
+        }
+    }
+    for (auto it = castle_charge_lightning_cooldowns_.begin(); it != castle_charge_lightning_cooldowns_.end();) {
+        if (active_charging_rune_ids.count(it->first) == 0) {
+            it = castle_charge_lightning_cooldowns_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 int GameApp::SpawnCompositeEffect(const std::string& effect_id, Vector2 origin_world) {
@@ -8241,7 +8725,7 @@ void GameApp::HandleEventsHost() {
 }
 
 bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
-    if (player.selected_rune_type == RuneType::None) {
+    if (player.selected_rune_type == RuneType::None || !IsRuneAvailableToPlayer(player, player.selected_rune_type)) {
         return false;
     }
 
@@ -8605,7 +9089,8 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
                                 const auto rune_it = std::find_if(state_.runes.begin(), state_.runes.end(),
                                                                   [&](const Rune& rune) {
                                                                       if (!rune.active || !(rune.cell == cell) ||
-                                                                          rune.rune_type != info->rune_type) {
+                                                                          rune.rune_type != info->rune_type ||
+                                                                          rune.castle_charging) {
                                                                           return false;
                                                                       }
 
@@ -8645,7 +9130,7 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
 
                     GridCoord cast_origin = event.cell;
                     const bool static_fire_bolt = !matched_fire_storm_rune_ids.empty() || !matched_fire_storm_dummy_ids.empty();
-                    if (pattern.spell_name == "fire_storm") {
+                    if (pattern.spell_name == "fire_storm" || pattern.spell_name == "fire_flower") {
                         for (int y = 0; y < rows; ++y) {
                             for (int x = 0; x < cols; ++x) {
                                 const auto info = spell_patterns_.GetSymbolInfo(variant[y][x]);
@@ -8829,6 +9314,256 @@ GridCoord GameApp::WorldToCell(Vector2 world) const {
 
 Vector2 GameApp::CellToWorldCenter(const GridCoord& cell) const { return state_.map.CellCenterWorld(cell); }
 
+bool GameApp::IsCastleEquippableRune(RuneType rune_type) const {
+    return rune_type == RuneType::Fire || rune_type == RuneType::Water || rune_type == RuneType::Earth;
+}
+
+int GameApp::GetRuneRequiredCastleLevel(RuneType rune_type) const {
+    switch (rune_type) {
+        case RuneType::Fire:
+        case RuneType::Water:
+            return 1;
+        case RuneType::Earth:
+            return 2;
+        case RuneType::Catalyst:
+        case RuneType::FireStormDummy:
+        case RuneType::None:
+            return 0;
+    }
+    return 0;
+}
+
+int GameApp::GetCastleLoadoutCapacity(int castle_level) const {
+    if (castle_level <= 1) {
+        return 1;
+    }
+    if (castle_level == 2) {
+        return 2;
+    }
+    return 3;
+}
+
+float GameApp::GetCastleEnergyRequirementForLevel(int castle_level) const {
+    if (castle_level <= 0) {
+        return 0.0f;
+    }
+    if (castle_level_energy_requirements_.empty()) {
+        return Constants::kCastleChargeEnergyPerRune;
+    }
+    const size_t index = static_cast<size_t>(std::max(0, castle_level - 1));
+    if (index < castle_level_energy_requirements_.size()) {
+        return castle_level_energy_requirements_[index];
+    }
+    return castle_level_energy_requirements_.back();
+}
+
+int GameApp::ComputeCastleLevel(float total_energy, float* out_energy_into_current_level,
+                                float* out_energy_needed_for_next_level) const {
+    float remaining_energy = std::max(0.0f, total_energy);
+    int level = 1;
+    float requirement = std::max(0.001f, GetCastleEnergyRequirementForLevel(level));
+    while (remaining_energy + 0.0001f >= requirement) {
+        remaining_energy -= requirement;
+        ++level;
+        requirement = std::max(0.001f, GetCastleEnergyRequirementForLevel(level));
+    }
+    if (out_energy_into_current_level != nullptr) {
+        *out_energy_into_current_level = remaining_energy;
+    }
+    if (out_energy_needed_for_next_level != nullptr) {
+        *out_energy_needed_for_next_level = requirement;
+    }
+    return std::max(1, level);
+}
+
+bool GameApp::IsRuneAvailableToPlayer(const Player& player, RuneType rune_type) const {
+    if (rune_type == RuneType::None) {
+        return false;
+    }
+    if (rune_type == RuneType::Catalyst || rune_type == RuneType::FireStormDummy) {
+        return true;
+    }
+    return std::find(player.rune_slots.begin(), player.rune_slots.end(), rune_type) != player.rune_slots.end();
+}
+
+const CastleState* GameApp::FindCastleById(int id) const {
+    auto it = std::find_if(state_.castles.begin(), state_.castles.end(),
+                           [&](const CastleState& castle) { return castle.id == id; });
+    return it == state_.castles.end() ? nullptr : &(*it);
+}
+
+CastleState* GameApp::FindCastleById(int id) {
+    auto it = std::find_if(state_.castles.begin(), state_.castles.end(),
+                           [&](const CastleState& castle) { return castle.id == id; });
+    return it == state_.castles.end() ? nullptr : &(*it);
+}
+
+const CastleState* GameApp::FindCastleByTeam(int team) const {
+    auto it = std::find_if(state_.castles.begin(), state_.castles.end(),
+                           [&](const CastleState& castle) { return castle.team == team; });
+    return it == state_.castles.end() ? nullptr : &(*it);
+}
+
+CastleState* GameApp::FindCastleByTeam(int team) {
+    auto it = std::find_if(state_.castles.begin(), state_.castles.end(),
+                           [&](const CastleState& castle) { return castle.team == team; });
+    return it == state_.castles.end() ? nullptr : &(*it);
+}
+
+const CastleState* GameApp::GetAlliedCastleForPlayer(const Player& player) const {
+    return FindCastleByTeam(player.team);
+}
+
+bool GameApp::IsPlayerWithinCastleRange(const Player& player, const CastleState& castle) const {
+    const float range_world = Constants::kCastleInteractionRangeTiles * static_cast<float>(state_.map.cell_size);
+    return Vector2Distance(player.pos, CellToWorldCenter(castle.cell)) <= range_world;
+}
+
+Vector2 GameApp::GetCastleChargePortWorld(const CastleState& castle) const {
+    Vector2 port = CellToWorldCenter(castle.cell);
+    port.x += static_cast<float>(castle.charge_port_offset_x);
+    port.y += static_cast<float>(castle.charge_port_offset_y);
+    return port;
+}
+
+void GameApp::RefreshCastleDerivedState(CastleState& castle) {
+    castle.total_energy = std::max(0.0f, castle.total_energy);
+    castle.level = ComputeCastleLevel(castle.total_energy, &castle.energy_into_current_level,
+                                      &castle.energy_needed_for_next_level);
+}
+
+void GameApp::NormalizePlayerRuneLoadout(Player& player) const {
+    std::array<RuneType, 4> normalized = {RuneType::None, RuneType::None, RuneType::Catalyst, RuneType::None};
+    int insert_index = 0;
+    for (RuneType rune_type : player.rune_slots) {
+        if (!IsCastleEquippableRune(rune_type)) {
+            continue;
+        }
+        while (insert_index == 2) {
+            ++insert_index;
+        }
+        if (insert_index >= static_cast<int>(normalized.size())) {
+            break;
+        }
+        normalized[static_cast<size_t>(insert_index)] = rune_type;
+        ++insert_index;
+    }
+    player.rune_slots = normalized;
+    if (player.selected_rune_slot < 0 || player.selected_rune_slot >= static_cast<int>(player.rune_slots.size())) {
+        player.selected_rune_slot = 2;
+    }
+    if (!IsCastleManagedRuneSlot(player.selected_rune_slot) &&
+        player.rune_slots[static_cast<size_t>(player.selected_rune_slot)] != RuneType::Catalyst) {
+        player.selected_rune_slot = 2;
+    }
+    player.selected_rune_type = player.rune_slots[static_cast<size_t>(player.selected_rune_slot)];
+    player.rune_placing_mode = player.selected_rune_type != RuneType::None &&
+                               GetPlayerRuneCooldownRemaining(player, player.selected_rune_type) <= 0.0f &&
+                               player.mana >= GetRuneManaCost(player.selected_rune_type);
+}
+
+bool GameApp::EquipRuneToCastleLoadout(Player& player, RuneType rune_type, int castle_level) {
+    if (!IsCastleEquippableRune(rune_type) || castle_level < GetRuneRequiredCastleLevel(rune_type)) {
+        return false;
+    }
+    if (std::find(player.rune_slots.begin(), player.rune_slots.end(), rune_type) != player.rune_slots.end()) {
+        return false;
+    }
+    int equipped_count = 0;
+    for (RuneType slot_rune : player.rune_slots) {
+        if (IsCastleEquippableRune(slot_rune)) {
+            ++equipped_count;
+        }
+    }
+    if (equipped_count >= GetCastleLoadoutCapacity(castle_level)) {
+        return false;
+    }
+    for (int slot_index : {0, 1, 3}) {
+        if (player.rune_slots[static_cast<size_t>(slot_index)] == RuneType::None) {
+            player.rune_slots[static_cast<size_t>(slot_index)] = rune_type;
+            NormalizePlayerRuneLoadout(player);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool GameApp::UnequipRuneFromCastleLoadout(Player& player, RuneType rune_type) {
+    bool removed = false;
+    for (RuneType& slot_rune : player.rune_slots) {
+        if (slot_rune == rune_type && IsCastleEquippableRune(slot_rune)) {
+            slot_rune = RuneType::None;
+            removed = true;
+        }
+    }
+    if (removed) {
+        NormalizePlayerRuneLoadout(player);
+    }
+    return removed;
+}
+
+bool GameApp::IsCastleManagedRuneSlot(int slot_index) const {
+    return slot_index >= 0 && slot_index < Constants::kHudRuneSlotCount && slot_index != 2;
+}
+
+bool GameApp::IsCastleCharging(int castle_id) const {
+    return std::any_of(state_.runes.begin(), state_.runes.end(), [&](const Rune& rune) {
+        return rune.active && rune.castle_charging && rune.castle_id == castle_id;
+    });
+}
+
+void GameApp::OpenLocalInventoryUiForCurrentContext() {
+    Player* local_player = FindPlayerById(state_.local_player_id);
+    if (local_player == nullptr) {
+        return;
+    }
+    local_player->inventory_mode = true;
+    const CastleState* allied_castle = GetAlliedCastleForPlayer(*local_player);
+    local_inventory_ui_mode_ =
+        (allied_castle != nullptr && IsPlayerWithinCastleRange(*local_player, *allied_castle))
+            ? InventoryUiMode::CastleLoadout
+            : InventoryUiMode::Inventory;
+}
+
+void GameApp::CloseLocalInventoryUi() {
+    if (Player* local_player = FindPlayerById(state_.local_player_id)) {
+        local_player->inventory_mode = false;
+        CancelInventoryDrag(*local_player);
+    }
+    local_inventory_ui_mode_ = InventoryUiMode::Closed;
+}
+
+void GameApp::InitializeCastlesFromSpawnPoints() {
+    state_.castles.clear();
+    std::vector<GridCoord> castle_cells = state_.map.spawn_points;
+    if (castle_cells.size() < 2) {
+        castle_cells = {{2, 2}, {state_.map.width - 3, state_.map.height - 3}};
+    } else if (castle_cells.size() > 2) {
+        castle_cells.resize(2);
+    }
+    state_.map.spawn_points = castle_cells;
+
+    for (size_t i = 0; i < castle_cells.size(); ++i) {
+        const int team = (i == 0) ? Constants::kTeamBlue : Constants::kTeamRed;
+        const int object_id = SpawnObjectInstanceAtCell("castle", castle_cells[i]);
+        MapObjectInstance* object = FindMapObjectById(object_id);
+        if (object != nullptr) {
+            object->owner_team = team;
+        }
+        CastleState castle;
+        castle.id = state_.next_entity_id++;
+        castle.team = team;
+        castle.cell = castle_cells[i];
+        castle.map_object_id = object_id;
+        if (const ObjectPrototype* proto = FindObjectPrototype("castle")) {
+            castle.charge_port_offset_x = proto->charge_port_offset_x;
+            castle.charge_port_offset_y = proto->charge_port_offset_y;
+        }
+        RefreshCastleDerivedState(castle);
+        state_.castles.push_back(castle);
+    }
+}
+
 Player* GameApp::FindPlayerById(int id) {
     auto it = std::find_if(state_.players.begin(), state_.players.end(),
                            [&](const Player& player) { return player.id == id; });
@@ -8975,22 +9710,9 @@ void GameApp::RenderGroundMapObjects() {
             static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
         const float visual_scale =
             proto->type == ObjectType::Consumable ? Constants::kDroppedItemVisualScale : 1.0f;
-        const float dst_w = base_dst_w * visual_scale;
-        const float dst_h = base_dst_h * visual_scale;
-        Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
-                         static_cast<float>(object.cell.y * state_.map.cell_size) -
-                             (base_dst_h - static_cast<float>(state_.map.cell_size)),
-                         dst_w, dst_h};
-        dst.x += (base_dst_w - dst_w) * 0.5f;
-        dst.y += (base_dst_h - dst_h) * 0.5f;
-        dst = SnapRect(dst);
-
-        std::string animation = proto->idle_animation;
+        const Rectangle dst = GetMapObjectSpriteRect(object, proto, base_dst_w, base_dst_h, visual_scale);
         float anim_time = render_time_seconds_;
-        if (object.state == MapObjectState::Dying && !proto->death_animation.empty() && metadata->HasAnimation(proto->death_animation)) {
-            animation = proto->death_animation;
-            anim_time = object.state_time;
-        }
+        const std::string animation = ResolveMapObjectAnimation(object, *proto, *metadata, &anim_time);
 
         if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
             const Rectangle src =
@@ -9136,6 +9858,8 @@ void GameApp::DrawObjectShadowLayer() {
                    Color{255, 255, 255, Constants::kGlobalShadowAlpha});
 }
 
+bool GameApp::IsZoneEnabled() const { return state_.match.zone_enabled; }
+
 void GameApp::DrawWorldLayerWithZonePostProcess() {
     if (!has_world_layer_target_) {
         return;
@@ -9144,7 +9868,7 @@ void GameApp::DrawWorldLayerWithZonePostProcess() {
     const Rectangle src = {0.0f, 0.0f, static_cast<float>(world_layer_target_.texture.width),
                            -static_cast<float>(world_layer_target_.texture.height)};
     const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
-    if (!has_zone_post_process_shader_) {
+    if (!IsZoneEnabled() || !has_zone_post_process_shader_) {
         DrawTexturePro(world_layer_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
         return;
     }
@@ -9171,6 +9895,9 @@ void GameApp::DrawWorldLayerWithZonePostProcess() {
 }
 
 void GameApp::RenderZoneFillOverlay() {
+    if (!IsZoneEnabled()) {
+        return;
+    }
     if (!has_zone_fill_overlay_shader_ || !sprite_metadata_.IsLoaded() || !sprite_metadata_.HasAnimation("zone_fill")) {
         return;
     }
@@ -9202,6 +9929,9 @@ void GameApp::RenderZoneFillOverlay() {
 }
 
 void GameApp::RenderZoneBorderOverlay() {
+    if (!IsZoneEnabled()) {
+        return;
+    }
     if (!has_zone_border_overlay_shader_) {
         return;
     }
@@ -9579,6 +10309,11 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             continue;
         }
         float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
+        if (const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+            proto != nullptr && proto->has_collision_box_override) {
+            const Rectangle aabb = GetMapObjectCollisionAabb(object, proto);
+            sort_y = aabb.y + aabb.height;
+        }
         if (object.prototype_id == "vase_1" || object.prototype_id == "vase_2" || object.prototype_id == "vase_3" ||
             object.prototype_id == "vase_4") {
             sort_y -= 4.0f;
@@ -9722,7 +10457,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             const float t1 = static_cast<float>(seg + 1) / static_cast<float>(segments);
             const Vector2 p0 = Vector2Add(effect.start, Vector2Scale(delta, t0));
             const Vector2 p1 = Vector2Add(effect.start, Vector2Scale(delta, t1));
-            const float sort_y = (p0.y + p1.y) * 0.5f;
+            const float sort_y = effect.has_sort_y_override ? effect.sort_y_override : (p0.y + p1.y) * 0.5f;
             items.push_back({RenderKind::LightningSegment, sort_y, i, 0, static_cast<size_t>(seg)});
         }
     }
@@ -9885,29 +10620,23 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                         draw_texture = has_huge_texture ? &huge_texture : nullptr;
                         break;
                 }
+                if (object.prototype_id == "castle" && object.owner_team >= 0 &&
+                    object.owner_team < static_cast<int>(sprite_sheet_128x128_team_variants_.size())) {
+                    const Texture2D& variant =
+                        sprite_sheet_128x128_team_variants_[static_cast<size_t>(object.owner_team)];
+                    if (variant.id != 0) {
+                        draw_texture = &variant;
+                    }
+                }
                 const float base_dst_w =
                     static_cast<float>(metadata->GetCellWidth() > 0 ? metadata->GetCellWidth() : state_.map.cell_size);
                 const float base_dst_h =
                     static_cast<float>(metadata->GetCellHeight() > 0 ? metadata->GetCellHeight() : state_.map.cell_size);
                 const float visual_scale =
                     proto->type == ObjectType::Consumable ? Constants::kDroppedItemVisualScale : 1.0f;
-                const float dst_w = base_dst_w * visual_scale;
-                const float dst_h = base_dst_h * visual_scale;
-                Rectangle dst = {static_cast<float>(object.cell.x * state_.map.cell_size),
-                                 static_cast<float>(object.cell.y * state_.map.cell_size) -
-                                     (base_dst_h - static_cast<float>(state_.map.cell_size)),
-                                 dst_w, dst_h};
-                dst.x += (base_dst_w - dst_w) * 0.5f;
-                dst.y += (base_dst_h - dst_h) * 0.5f;
-                dst = SnapRect(dst);
-
-                std::string animation = proto->idle_animation;
+                const Rectangle dst = GetMapObjectSpriteRect(object, proto, base_dst_w, base_dst_h, visual_scale);
                 float anim_time = render_time_seconds_;
-                if (object.state == MapObjectState::Dying && !proto->death_animation.empty() &&
-                    metadata->HasAnimation(proto->death_animation)) {
-                    animation = proto->death_animation;
-                    anim_time = object.state_time;
-                }
+                const std::string animation = ResolveMapObjectAnimation(object, *proto, *metadata, &anim_time);
 
                 if (draw_texture != nullptr && metadata->IsLoaded() && metadata->HasAnimation(animation)) {
                     const Rectangle src =
@@ -10247,10 +10976,10 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 if (!effect.alive) {
                     break;
                 }
-                const char* animation_key =
-                    effect.dying ? (effect.volatile_variant ? "lightning_volatile_magic_death" : "lightning_magic_death")
-                                 : (effect.volatile_variant ? "lightning_volatile_magic_idle" : "lightning_magic_idle");
-                if (!has_texture || !sprite_metadata_.HasAnimation(animation_key)) {
+                const std::string& animation_key = effect.birthing   ? effect.born_animation_key
+                                                   : effect.dying   ? effect.death_animation_key
+                                                                    : effect.idle_animation_key;
+                if (!has_texture || animation_key.empty() || !sprite_metadata_.HasAnimation(animation_key)) {
                     break;
                 }
 
@@ -10269,8 +10998,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 const float seg_len = std::max(1.0f, Vector2Length(seg_vec));
                 const float rotation = static_cast<float>(std::atan2(delta.y, delta.x) * RAD2DEG);
 
-                float anim_time = effect.dying ? effect.death_elapsed : effect.elapsed;
-                if (!effect.dying && seg < effect.segment_phase_offsets_seconds.size()) {
+                float anim_time = effect.birthing ? effect.born_elapsed : (effect.dying ? effect.death_elapsed : effect.elapsed);
+                if (!effect.birthing && !effect.dying && seg < effect.segment_phase_offsets_seconds.size()) {
                     anim_time += effect.segment_phase_offsets_seconds[seg];
                 }
 
@@ -11061,6 +11790,8 @@ void GameApp::RenderPlayerOverlays() {
     const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
                                static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
                                static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
 
     for (const OverlayItem& overlay : overlays) {
         const Player& player = *overlay.player;
@@ -11085,11 +11816,34 @@ void GameApp::RenderPlayerOverlays() {
         }
         DrawRectangleLinesEx(health_bar, 1.0f, BLACK);
 
+        float name_anchor_y = health_bar.y;
+        const int catalyst_charges = GetPlayerRuneChargeCount(player, RuneType::Catalyst);
+        if (catalyst_charges > 0 && has_texture && sprite_metadata_.HasAnimation("catalyst_overhead_indicator")) {
+            Rectangle src = InsetSourceRect(
+                sprite_metadata_.GetFrame("catalyst_overhead_indicator", "default", render_time_seconds_),
+                Constants::kAtlasSampleInsetPixels);
+            src.x += 12.0f;
+            src.y += 12.0f;
+            src.width = 10.0f;
+            src.height = 10.0f;
+            const float icon_size = src.width;
+            const float icon_gap = Constants::kCatalystOverheadIconGap;
+            const float row_width =
+                static_cast<float>(catalyst_charges) * icon_size + static_cast<float>(catalyst_charges - 1) * icon_gap;
+            const float row_left = health_bar.x + (health_bar.width - row_width) * 0.5f;
+            const float row_y = health_bar.y - Constants::kCatalystOverheadIconRowGap - icon_size;
+            name_anchor_y = row_y;
+            for (int i = 0; i < catalyst_charges; ++i) {
+                Rectangle icon_dst = {row_left + static_cast<float>(i) * (icon_size + icon_gap), row_y, icon_size, icon_size};
+                DrawTexturePro(texture, src, SnapRect(icon_dst), {0, 0}, 0.0f, WHITE);
+            }
+        }
+
         if (player.id != state_.local_player_id && !player.name.empty()) {
             const int name_font_size = 8;
             const int name_width = MeasureText(player.name.c_str(), name_font_size);
             const int name_x = static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(name_width)) * 0.5f);
-            const int name_y = static_cast<int>(health_bar.y - static_cast<float>(name_font_size) - 2.0f);
+            const int name_y = static_cast<int>(name_anchor_y - static_cast<float>(name_font_size) - 2.0f);
             DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
         }
     }
@@ -11407,6 +12161,9 @@ void GameApp::RenderBottomHud() {
     if (!local_player) {
         return;
     }
+    const CastleState* allied_castle = GetAlliedCastleForPlayer(*local_player);
+    const bool near_allied_castle = allied_castle != nullptr && IsPlayerWithinCastleRange(*local_player, *allied_castle);
+    const bool loadout_mode = local_player->inventory_mode && local_inventory_ui_mode_ == InventoryUiMode::CastleLoadout;
     const float scale = Constants::kHudScale;
     const float panel_width = Constants::kHudPanelWidth * scale;
     const float panel_height = (Constants::kHudPanelHeight - 28.0f) * scale;
@@ -11567,6 +12324,9 @@ void GameApp::RenderBottomHud() {
         }
 
         if (!is_weapon_slot && local_player->inventory_mode && hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (is_rune_slot && !IsCastleManagedRuneSlot(slot_index)) {
+                continue;
+            }
             inventory_slot_clicked = true;
             if (!local_player->ui_dragging_slot) {
                 const bool has_content =
@@ -11576,6 +12336,11 @@ void GameApp::RenderBottomHud() {
                     BeginInventoryDrag(*local_player, is_rune_slot ? SlotFamily::Rune : SlotFamily::Item, slot_index);
                 }
             } else if (local_player->ui_drag_source_family == (is_rune_slot ? SlotFamily::Rune : SlotFamily::Item)) {
+                if (local_player->ui_drag_source_family == SlotFamily::Rune &&
+                    (!IsCastleManagedRuneSlot(local_player->ui_drag_source_index) ||
+                     !IsCastleManagedRuneSlot(slot_index))) {
+                    continue;
+                }
                 DropInventoryDrag(*local_player, is_rune_slot ? SlotFamily::Rune : SlotFamily::Item, slot_index);
                 drag_drop_completed = true;
                 if (!network_manager_.IsHost()) {
@@ -11721,7 +12486,7 @@ void GameApp::RenderBottomHud() {
     }
 
     if (show_inventory_edit_hint && !local_player->inventory_mode) {
-        const char* hint_text = "Press Tab to edit";
+        const char* hint_text = near_allied_castle ? "Press Tab for loadout" : "Press Tab to edit";
         const int hint_font_size = static_cast<int>(std::roundf(9.0f * scale));
         const int hint_padding_x = static_cast<int>(std::roundf(8.0f * scale));
         const int hint_padding_y = static_cast<int>(std::roundf(6.0f * scale));
@@ -11767,6 +12532,91 @@ void GameApp::RenderBottomHud() {
                          static_cast<int>(drag_dst.y + drag_dst.height - 12.0f * scale),
                          static_cast<int>(std::roundf(8.0f * scale)), WHITE);
             }
+        }
+    }
+
+    if (loadout_mode && allied_castle != nullptr) {
+        const float screen_w = static_cast<float>(GetScreenWidth());
+        const float top_division_top = 78.0f;
+        const float top_division_bottom = hud_y - 18.0f;
+        const float panel_x = screen_w * 0.5f + 14.0f;
+        const float panel_y = top_division_top;
+        const float panel_w = std::min(356.0f, std::max(300.0f, screen_w - panel_x - 14.0f));
+        const float panel_h = std::max(180.0f, top_division_bottom - panel_y);
+        const Rectangle loadout_panel = {panel_x, panel_y, panel_w, panel_h};
+        DrawRectangleRec(loadout_panel, Color{24, 28, 34, 236});
+        DrawRectangleLinesEx(loadout_panel, 1.0f, Color{80, 92, 112, 255});
+        DrawText(TextFormat("Castle level: %d", allied_castle->level), static_cast<int>(panel_x + 16.0f),
+                 static_cast<int>(panel_y + 14.0f), 22, RAYWHITE);
+        DrawLineEx({panel_x + 14.0f, panel_y + 44.0f}, {panel_x + panel_w - 14.0f, panel_y + 44.0f}, 1.0f,
+                   Color{72, 82, 96, 255});
+
+        int equipped_count = 0;
+        for (RuneType rune_type : local_player->rune_slots) {
+            if (IsCastleEquippableRune(rune_type)) {
+                ++equipped_count;
+            }
+        }
+        DrawText(TextFormat("Equipped: %d / %d", equipped_count, GetCastleLoadoutCapacity(allied_castle->level)),
+                 static_cast<int>(panel_x + 16.0f), static_cast<int>(panel_y + 52.0f), 16, Color{188, 196, 212, 255});
+
+        struct LoadoutRuneRow {
+            RuneType rune_type = RuneType::None;
+            const char* label = "";
+        };
+        const std::array<LoadoutRuneRow, 3> rows = {{
+            {RuneType::Fire, "Fire"},
+            {RuneType::Water, "Water"},
+            {RuneType::Earth, "Earth"},
+        }};
+        float row_y = panel_y + 84.0f;
+        for (const LoadoutRuneRow& row : rows) {
+            const bool equipped =
+                std::find(local_player->rune_slots.begin(), local_player->rune_slots.end(), row.rune_type) !=
+                local_player->rune_slots.end();
+            const int required_level = GetRuneRequiredCastleLevel(row.rune_type);
+            const bool level_unlocked = allied_castle->level >= required_level;
+            const bool has_capacity = equipped || equipped_count < GetCastleLoadoutCapacity(allied_castle->level);
+            const char* rune_animation = GetRuneSpriteAnimationKey(row.rune_type);
+            const float icon_size = 18.0f;
+            const float icon_x = panel_x + 16.0f;
+            const float icon_y = row_y + 7.0f;
+            if (sprite_metadata_.IsLoaded() && sprite_metadata_.HasAnimation(rune_animation)) {
+                const Rectangle icon_src =
+                    InsetSourceRect(sprite_metadata_.GetFrame(rune_animation, "default", render_time_seconds_),
+                                    Constants::kAtlasSampleInsetPixels);
+                const Rectangle icon_dst = {icon_x, icon_y, icon_size, icon_size};
+                DrawTexturePro(sprite_metadata_.GetTexture(), icon_src, SnapRect(icon_dst), {0, 0}, 0.0f, WHITE);
+            }
+            DrawText(row.label, static_cast<int>(panel_x + 40.0f), static_cast<int>(row_y + 8.0f), 20, RAYWHITE);
+            if (!level_unlocked) {
+                DrawText(TextFormat("Requires level %d", required_level), static_cast<int>(panel_x + 128.0f),
+                         static_cast<int>(row_y + 10.0f), 16, Color{186, 120, 120, 255});
+            } else if (!equipped && !has_capacity) {
+                DrawText("Capacity full", static_cast<int>(panel_x + 128.0f), static_cast<int>(row_y + 10.0f), 16,
+                         Color{198, 188, 132, 255});
+            }
+
+            const Rectangle button = {panel_x + panel_w - 118.0f, row_y + 2.0f, 100.0f, 30.0f};
+            bool pressed = false;
+            if (!level_unlocked || (!equipped && !has_capacity)) {
+                GuiDisable();
+                pressed = GuiButton(button, equipped ? "Unequip" : "Equip");
+                GuiEnable();
+            } else {
+                pressed = GuiButton(button, equipped ? "Unequip" : "Equip");
+            }
+            if (pressed) {
+                const bool changed = equipped ? UnequipRuneFromCastleLoadout(*local_player, row.rune_type)
+                                              : EquipRuneToCastleLoadout(*local_player, row.rune_type, allied_castle->level);
+                if (changed && !network_manager_.IsHost()) {
+                    QueueLocalInventorySync(*local_player);
+                }
+                if (changed) {
+                    equipped_count += equipped ? -1 : 1;
+                }
+            }
+            row_y += 40.0f;
         }
     }
 }
@@ -12370,6 +13220,15 @@ void GameApp::RegisterSpellRuntimes() {
                                              GetFireStormConversionTriggerSeconds() + 0.1f);
                                          cast.alive = true;
                                          context.state->fire_storm_casts.push_back(cast);
+                                         return true;
+                                     });
+    spell_runtime_registry_.Register("fire_flower",
+                                     [](const SpellRuntimeMatch& match, const SpellRuntimeContext& context) {
+                                         if (context.state == nullptr || context.event_queue == nullptr) {
+                                             return false;
+                                         }
+                                         FireFlowerSpell spell(match.cast_origin, match.caster_player_id, match.direction);
+                                         spell.Cast(*context.state, *context.event_queue);
                                          return true;
                                      });
 }

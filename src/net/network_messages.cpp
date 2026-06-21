@@ -180,6 +180,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["base_snapshot_id"] = message.base_snapshot_id;
     out["is_delta"] = message.is_delta;
     out["time_remaining"] = message.time_remaining;
+    out["zone_enabled"] = message.zone_enabled;
     out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
     out["min_arena_radius_tiles"] = message.min_arena_radius_tiles;
     out["arena_radius_tiles"] = message.arena_radius_tiles;
@@ -217,7 +218,9 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"action_state", player.action_state},
             {"melee_active_remaining", player.melee_active_remaining},
             {"rune_placing_mode", player.rune_placing_mode},
+            {"selected_rune_slot", player.selected_rune_slot},
             {"selected_rune_type", player.selected_rune_type},
+            {"rune_slots", player.rune_slots},
             {"mana", Quantize2(player.mana)},
             {"max_mana", Quantize2(player.max_mana)},
             {"grappling_cooldown_remaining", Quantize2(player.grappling_cooldown_remaining)},
@@ -286,6 +289,9 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"fire_storm_visual_state_duration", Quantize2(rune.fire_storm_visual_state_duration)},
             {"fire_storm_revert_after_death", rune.fire_storm_revert_after_death},
             {"fire_storm_pending_removal", rune.fire_storm_pending_removal},
+            {"castle_charging", rune.castle_charging},
+            {"castle_id", rune.castle_id},
+            {"castle_charge_elapsed_seconds", Quantize2(rune.castle_charge_elapsed_seconds)},
         });
     }
 
@@ -328,6 +334,8 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     for (const auto& object : message.map_objects) {
         out["map_objects"].push_back({
             {"id", object.id},
+            {"owner_player_id", object.owner_player_id},
+            {"owner_team", object.owner_team},
             {"prototype_id", object.prototype_id},
             {"cell_x", object.cell_x},
             {"cell_y", object.cell_y},
@@ -338,6 +346,23 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"death_duration", Quantize2(object.death_duration)},
             {"collision_enabled", object.collision_enabled},
             {"alive", object.alive},
+        });
+    }
+
+    out["castles"] = nlohmann::json::array();
+    for (const auto& castle : message.castles) {
+        out["castles"].push_back({
+            {"id", castle.id},
+            {"team", castle.team},
+            {"cell_x", castle.cell_x},
+            {"cell_y", castle.cell_y},
+            {"map_object_id", castle.map_object_id},
+            {"level", castle.level},
+            {"total_energy", Quantize2(castle.total_energy)},
+            {"energy_into_current_level", Quantize2(castle.energy_into_current_level)},
+            {"energy_needed_for_next_level", Quantize2(castle.energy_needed_for_next_level)},
+            {"charge_port_offset_x", castle.charge_port_offset_x},
+            {"charge_port_offset_y", castle.charge_port_offset_y},
         });
     }
 
@@ -421,6 +446,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["removed_projectile_ids"] = message.removed_projectile_ids;
     out["removed_ice_wall_ids"] = message.removed_ice_wall_ids;
     out["removed_map_object_ids"] = message.removed_map_object_ids;
+    out["removed_castle_ids"] = message.removed_castle_ids;
     out["removed_fire_storm_dummy_ids"] = message.removed_fire_storm_dummy_ids;
     out["removed_fire_storm_cast_ids"] = message.removed_fire_storm_cast_ids;
     out["removed_earth_roots_group_ids"] = message.removed_earth_roots_group_ids;
@@ -436,6 +462,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     out.base_snapshot_id = json.value("base_snapshot_id", 0);
     out.is_delta = json.value("is_delta", false);
     out.time_remaining = json.value("time_remaining", 0.0f);
+    out.zone_enabled = json.value("zone_enabled", true);
     out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
     out.min_arena_radius_tiles = json.value("min_arena_radius_tiles", 0.0f);
     out.arena_radius_tiles = json.value("arena_radius_tiles", 0.0f);
@@ -475,7 +502,9 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             player.action_state = item.value("action_state", 0);
             player.melee_active_remaining = item.value("melee_active_remaining", 0.0f);
             player.rune_placing_mode = item.value("rune_placing_mode", false);
+            player.selected_rune_slot = item.value("selected_rune_slot", 0);
             player.selected_rune_type = item.value("selected_rune_type", 0);
+            player.rune_slots = item.value("rune_slots", std::vector<int>{});
             player.mana = item.value("mana", 0.0f);
             player.max_mana = item.value("max_mana", 0.0f);
             player.grappling_cooldown_remaining = item.value("grappling_cooldown_remaining", 0.0f);
@@ -537,6 +566,20 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             rune.earth_state_duration = item.value("earth_state_duration", 0.0f);
             rune.earth_roots_spawned = item.value("earth_roots_spawned", false);
             rune.earth_roots_group_id = item.value("earth_roots_group_id", -1);
+            rune.fire_storm_original_owner_player_id = item.value("fire_storm_original_owner_player_id", -1);
+            rune.fire_storm_original_owner_team = item.value("fire_storm_original_owner_team", 0);
+            rune.fire_storm_original_rune_type = item.value("fire_storm_original_rune_type", -1);
+            rune.fire_storm_temporary = item.value("fire_storm_temporary", false);
+            rune.fire_storm_source_rune = item.value("fire_storm_source_rune", false);
+            rune.fire_storm_remaining_seconds = item.value("fire_storm_remaining_seconds", 0.0f);
+            rune.fire_storm_visual_state = item.value("fire_storm_visual_state", 0);
+            rune.fire_storm_visual_state_time = item.value("fire_storm_visual_state_time", 0.0f);
+            rune.fire_storm_visual_state_duration = item.value("fire_storm_visual_state_duration", 0.0f);
+            rune.fire_storm_revert_after_death = item.value("fire_storm_revert_after_death", false);
+            rune.fire_storm_pending_removal = item.value("fire_storm_pending_removal", false);
+            rune.castle_charging = item.value("castle_charging", false);
+            rune.castle_id = item.value("castle_id", -1);
+            rune.castle_charge_elapsed_seconds = item.value("castle_charge_elapsed_seconds", 0.0f);
             out.runes.push_back(rune);
         }
     }
@@ -585,6 +628,8 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
         for (const auto& item : *objects_it) {
             MapObjectSnapshot object;
             object.id = item.value("id", -1);
+            object.owner_player_id = item.value("owner_player_id", -1);
+            object.owner_team = item.value("owner_team", 0);
             object.prototype_id = item.value("prototype_id", std::string{});
             object.cell_x = item.value("cell_x", 0);
             object.cell_y = item.value("cell_y", 0);
@@ -596,6 +641,25 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             object.collision_enabled = item.value("collision_enabled", false);
             object.alive = item.value("alive", true);
             out.map_objects.push_back(object);
+        }
+    }
+
+    const auto castles_it = json.find("castles");
+    if (castles_it != json.end() && castles_it->is_array()) {
+        for (const auto& item : *castles_it) {
+            CastleSnapshot castle;
+            castle.id = item.value("id", -1);
+            castle.team = item.value("team", 0);
+            castle.cell_x = item.value("cell_x", 0);
+            castle.cell_y = item.value("cell_y", 0);
+            castle.map_object_id = item.value("map_object_id", -1);
+            castle.level = item.value("level", 1);
+            castle.total_energy = item.value("total_energy", 0.0f);
+            castle.energy_into_current_level = item.value("energy_into_current_level", 0.0f);
+            castle.energy_needed_for_next_level = item.value("energy_needed_for_next_level", 100.0f);
+            castle.charge_port_offset_x = item.value("charge_port_offset_x", 0);
+            castle.charge_port_offset_y = item.value("charge_port_offset_y", 0);
+            out.castles.push_back(castle);
         }
     }
 
@@ -708,6 +772,12 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             out.removed_map_object_ids.push_back(item.get<int>());
         }
     }
+    const auto removed_castles_it = json.find("removed_castle_ids");
+    if (removed_castles_it != json.end() && removed_castles_it->is_array()) {
+        for (const auto& item : *removed_castles_it) {
+            out.removed_castle_ids.push_back(item.get<int>());
+        }
+    }
     const auto removed_dummies_it = json.find("removed_fire_storm_dummy_ids");
     if (removed_dummies_it != json.end() && removed_dummies_it->is_array()) {
         for (const auto& item : *removed_dummies_it) {
@@ -742,6 +812,7 @@ nlohmann::json ToJson(const LobbyStateMessage& message) {
     out["mode_type"] = message.mode_type;
     out["round_time_seconds"] = message.round_time_seconds;
     out["best_of_target_kills"] = message.best_of_target_kills;
+    out["zone_enabled"] = message.zone_enabled;
     out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
     out["shrink_start_seconds"] = message.shrink_start_seconds;
     out["min_arena_radius_tiles"] = message.min_arena_radius_tiles;
@@ -765,6 +836,7 @@ std::optional<LobbyStateMessage> LobbyStateFromJson(const nlohmann::json& json) 
     out.mode_type = json.value("mode_type", 0);
     out.round_time_seconds = json.value("round_time_seconds", 0);
     out.best_of_target_kills = json.value("best_of_target_kills", 0);
+    out.zone_enabled = json.value("zone_enabled", true);
     out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
     out.shrink_start_seconds = json.value("shrink_start_seconds", 0.0f);
     out.min_arena_radius_tiles = json.value("min_arena_radius_tiles", 0.0f);

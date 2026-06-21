@@ -28,6 +28,14 @@ SpriteSheetType ParseSpriteSheetType(const std::string& value, bool& ok) {
     return SpriteSheetType::Base32;
 }
 
+MapObjectSpriteAnchor ParseSpriteAnchor(const std::string& value, bool& ok) {
+    ok = true;
+    if (value.empty() || value == "cell_top_left") return MapObjectSpriteAnchor::CellTopLeft;
+    if (value == "cell_center") return MapObjectSpriteAnchor::CellCenter;
+    ok = false;
+    return MapObjectSpriteAnchor::CellTopLeft;
+}
+
 EffectType ParseEffectType(const std::string& value, bool& ok) {
     ok = true;
     if (value == "increase_current_health") return EffectType::IncreaseCurrentHealth;
@@ -147,8 +155,20 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
         }
 
         proto.idle_animation = sprite_it->value("idle", "");
+        proto.charging_animation = sprite_it->value("charging", "");
+        proto.born_animation = sprite_it->value("born", "");
         proto.death_animation = sprite_it->value("death", "");
         proto.shadow_animation = sprite_it->value("shadow", "");
+        proto.sprite_offset_x = sprite_it->value("offset_x", 0);
+        proto.sprite_offset_y = sprite_it->value("offset_y", 0);
+        const std::string anchor_str = sprite_it->value("anchor", "");
+        bool anchor_ok = false;
+        proto.sprite_anchor = ParseSpriteAnchor(anchor_str, anchor_ok);
+        if (!anchor_ok) {
+            last_error_ = "unknown sprite anchor '" + anchor_str + "'";
+            TraceLog(LOG_ERROR, "ObjectsDatabase: %s (id=%s)", last_error_.c_str(), proto.id.c_str());
+            return false;
+        }
         if (proto.idle_animation.empty()) {
             last_error_ = "missing sprite.idle animation key";
             TraceLog(LOG_ERROR, "ObjectsDatabase: %s (id=%s)", last_error_.c_str(), proto.id.c_str());
@@ -165,6 +185,27 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
             proto.collision_box_w = collision_box_it->value("w", 0);
             proto.collision_box_h = collision_box_it->value("h", 0);
             proto.has_collision_box_override = proto.collision_box_w > 0 && proto.collision_box_h > 0;
+        }
+        if (const auto charge_port_it = it.value().find("charge_port_offset");
+            charge_port_it != it.value().end() && charge_port_it->is_object()) {
+            proto.charge_port_offset_x = charge_port_it->value("x", 0);
+            proto.charge_port_offset_y = charge_port_it->value("y", 0);
+        }
+        if (const auto blocked_tiles_it = it.value().find("blocked_tiles");
+            blocked_tiles_it != it.value().end() && !blocked_tiles_it->is_null()) {
+            if (!blocked_tiles_it->is_array()) {
+                last_error_ = "blocked_tiles must be an array";
+                TraceLog(LOG_ERROR, "ObjectsDatabase: %s (id=%s)", last_error_.c_str(), proto.id.c_str());
+                return false;
+            }
+            for (const auto& tile_json : *blocked_tiles_it) {
+                if (!tile_json.is_object()) {
+                    last_error_ = "blocked_tiles entries must be objects";
+                    TraceLog(LOG_ERROR, "ObjectsDatabase: %s (id=%s)", last_error_.c_str(), proto.id.c_str());
+                    return false;
+                }
+                proto.blocked_tiles.push_back({tile_json.value("x", 0), tile_json.value("y", 0)});
+            }
         }
 
         const auto map_key_it = it.value().find("map_key");

@@ -19,6 +19,11 @@ enum class SpriteSheetType {
     Large128x128,
 };
 
+enum class MapObjectSpriteAnchor {
+    CellTopLeft,
+    CellCenter,
+};
+
 enum class EffectType {
     IncreaseCurrentHealth,
     IncreaseCurrentMana,
@@ -51,7 +56,12 @@ struct ObjectPrototype {
 
     SpriteSheetType sprite_sheet = SpriteSheetType::Base32;
     SpriteSheetType shadow_sheet = SpriteSheetType::Base32;
+    MapObjectSpriteAnchor sprite_anchor = MapObjectSpriteAnchor::CellTopLeft;
+    int sprite_offset_x = 0;
+    int sprite_offset_y = 0;
     std::string idle_animation;
+    std::string charging_animation;
+    std::string born_animation;
     std::string death_animation;
     std::string shadow_animation;
 
@@ -63,6 +73,9 @@ struct ObjectPrototype {
     int collision_box_y = 0;
     int collision_box_w = 0;
     int collision_box_h = 0;
+    int charge_port_offset_x = 0;
+    int charge_port_offset_y = 0;
+    std::vector<GridCoord> blocked_tiles;
 
     TileType terrain_tile = TileType::Grass;
     bool has_terrain_tile_override = false;
@@ -84,12 +97,15 @@ struct MapObjectSeed {
 };
 
 enum class MapObjectState {
+    Spawning,
     Active,
     Dying,
 };
 
 struct MapObjectInstance {
     int id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
     std::string prototype_id;
     GridCoord cell;
 

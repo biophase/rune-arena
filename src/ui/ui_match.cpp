@@ -1,21 +1,83 @@
 #include "ui/ui_match.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <raylib.h>
 
 #include "core/constants.h"
 
 void DrawMatchHud(const GameState& state, int local_player_id) {
-    DrawRectangle(10, 10, 360, 88, Color{0, 0, 0, 130});
+    int local_team = Constants::kTeamBlue;
+    for (const auto& player : state.players) {
+        if (player.id == local_player_id) {
+            local_team = player.team;
+            break;
+        }
+    }
+    const int enemy_team = local_team == Constants::kTeamBlue ? Constants::kTeamRed : Constants::kTeamBlue;
+    const auto find_castle = [&](int team) -> const CastleState* {
+        for (const auto& castle : state.castles) {
+            if (castle.team == team) {
+                return &castle;
+            }
+        }
+        return nullptr;
+    };
+    const CastleState* own_castle = find_castle(local_team);
+    const CastleState* enemy_castle = find_castle(enemy_team);
+
+    const int screen_w = GetScreenWidth();
+    const Rectangle left_panel = {12.0f, 10.0f, 320.0f, 62.0f};
+    const Rectangle right_panel = {static_cast<float>(screen_w) - 332.0f, 10.0f, 320.0f, 62.0f};
+    const Rectangle center_panel = {static_cast<float>(screen_w / 2 - 96), 10.0f, 192.0f, 46.0f};
+
+    auto draw_castle_panel = [&](const Rectangle& rect, const CastleState* castle, bool right_align) {
+        DrawRectangleRec(rect, Color{0, 0, 0, 148});
+        DrawRectangleLinesEx(rect, 1.0f, Color{72, 82, 96, 255});
+        if (castle == nullptr) {
+            return;
+        }
+        const float bar_x = right_align ? rect.x + 56.0f : rect.x + 12.0f;
+        const float bar_w = rect.width - 128.0f;
+        const float bar_y = rect.y + 12.0f;
+        const float ratio =
+            castle->energy_needed_for_next_level > 0.0f
+                ? std::clamp(castle->energy_into_current_level / castle->energy_needed_for_next_level, 0.0f, 1.0f)
+                : 0.0f;
+        DrawRectangleRec({bar_x, bar_y, bar_w, 12.0f}, Color{52, 58, 68, 255});
+        DrawRectangleRec({bar_x, bar_y, bar_w * ratio, 12.0f},
+                         right_align ? Color{208, 96, 96, 255} : Color{104, 160, 242, 255});
+        DrawRectangleLinesEx({bar_x, bar_y, bar_w, 12.0f}, 1.0f, Color{16, 18, 24, 255});
+        const std::string energy_text =
+            TextFormat("%d / %d", static_cast<int>(std::round(castle->energy_into_current_level)),
+                       static_cast<int>(std::round(castle->energy_needed_for_next_level)));
+        const int energy_x = right_align
+                                 ? static_cast<int>(rect.x + rect.width - 12.0f - MeasureText(energy_text.c_str(), 16))
+                                 : static_cast<int>(bar_x + bar_w + 8.0f);
+        DrawText(energy_text.c_str(), energy_x, static_cast<int>(rect.y + 8.0f), 16, RAYWHITE);
+        const std::string level_text = TextFormat("Castle level: %d", castle->level);
+        const int level_x = right_align
+                                ? static_cast<int>(rect.x + rect.width - 12.0f - MeasureText(level_text.c_str(), 18))
+                                : static_cast<int>(rect.x + 12.0f);
+        DrawText(level_text.c_str(), level_x, static_cast<int>(rect.y + 32.0f), 18, RAYWHITE);
+    };
+
+    draw_castle_panel(left_panel, own_castle, false);
+    draw_castle_panel(right_panel, enemy_castle, true);
+
+    DrawRectangleRec(center_panel, Color{0, 0, 0, 148});
+    DrawRectangleLinesEx(center_panel, 1.0f, Color{72, 82, 96, 255});
     if (state.match.mode_type == MatchModeType::BestOfKills) {
-        DrawText(TextFormat("Best Of: %d", state.match.best_of_target_kills), 22, 20, 24, RAYWHITE);
+        DrawText(TextFormat("Best Of: %d", state.match.best_of_target_kills), static_cast<int>(center_panel.x + 18.0f),
+                 static_cast<int>(center_panel.y + 8.0f), 18, RAYWHITE);
     } else {
         const int total_seconds = std::max(0, static_cast<int>(state.match.time_remaining));
-        DrawText(TextFormat("Time: %d:%02d", total_seconds / 60, total_seconds % 60), 22, 20, 24, RAYWHITE);
+        DrawText(TextFormat("Time: %d:%02d", total_seconds / 60, total_seconds % 60),
+                 static_cast<int>(center_panel.x + 28.0f), static_cast<int>(center_panel.y + 8.0f), 18, RAYWHITE);
     }
-    DrawText(TextFormat("Red: %d   Blue: %d", state.match.red_team_kills, state.match.blue_team_kills), 22, 48, 20,
-             RAYWHITE);
+    DrawText(TextFormat("Blue %d  Red %d", state.match.blue_team_kills, state.match.red_team_kills),
+             static_cast<int>(center_panel.x + 20.0f), static_cast<int>(center_panel.y + 26.0f), 14, RAYWHITE);
 }
 
 void DrawPostMatch(const GameState& state, int winning_team) {

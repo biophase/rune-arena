@@ -9,6 +9,7 @@ struct LobbyUiResult {
     bool request_start_match = false;
     bool request_leave = false;
     bool request_toggle_mode_type = false;
+    bool request_toggle_zone_enabled = false;
     bool request_decrease_round_time = false;
     bool request_increase_round_time = false;
     bool request_decrease_best_of = false;
@@ -26,7 +27,8 @@ struct LobbyUiResult {
 
 LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_host, const std::string& host_display_ip,
                         int mode_type, int round_time_seconds, int best_of_target_kills,
-                        float shrink_tiles_per_second, float shrink_start_seconds, float min_arena_radius_tiles,
+                        bool zone_enabled, float shrink_tiles_per_second, float shrink_start_seconds,
+                        float min_arena_radius_tiles,
                         const std::string& mode_name, const std::string& connection_status,
                         const std::string& selected_map_label, const std::string& map_options_text,
                         int selected_map_index, bool map_dropdown_edit_mode, const Texture2D* preview_texture,

@@ -31,9 +31,9 @@ struct Player {
     float outside_zone_damage_accumulator = 0.0f;
 
     bool rune_placing_mode = false;
-    RuneType selected_rune_type = RuneType::Fire;
-    int selected_rune_slot = 0;
-    std::array<RuneType, 4> rune_slots = {RuneType::Fire, RuneType::Water, RuneType::Catalyst, RuneType::Earth};
+    RuneType selected_rune_type = RuneType::Catalyst;
+    int selected_rune_slot = 2;
+    std::array<RuneType, 4> rune_slots = {RuneType::None, RuneType::None, RuneType::Catalyst, RuneType::None};
     std::array<float, 5> rune_cooldown_remaining = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     std::array<float, 5> rune_cooldown_total = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     std::array<int, 5> rune_charge_counts = {0, 0, 0, 0, 0};

@@ -1,5 +1,7 @@
 #include "gameplay/snapshot_translation.h"
 
+#include <algorithm>
+
 namespace SnapshotTranslation {
 
 PlayerSnapshot BuildPlayerSnapshot(const Player& player) {
@@ -19,7 +21,12 @@ PlayerSnapshot BuildPlayerSnapshot(const Player& player) {
     snapshot.action_state = static_cast<int>(player.action_state);
     snapshot.melee_active_remaining = player.melee_active_remaining;
     snapshot.rune_placing_mode = player.rune_placing_mode;
+    snapshot.selected_rune_slot = player.selected_rune_slot;
     snapshot.selected_rune_type = static_cast<int>(player.selected_rune_type);
+    snapshot.rune_slots.reserve(player.rune_slots.size());
+    for (RuneType rune_type : player.rune_slots) {
+        snapshot.rune_slots.push_back(static_cast<int>(rune_type));
+    }
     snapshot.mana = player.mana;
     snapshot.max_mana = player.max_mana;
     snapshot.grappling_cooldown_remaining = player.grappling_cooldown_remaining;
@@ -73,6 +80,8 @@ void ApplyPlayerSnapshot(Player* player, const PlayerSnapshot& snapshot, const s
     player->action_state = static_cast<PlayerActionState>(snapshot.action_state);
     player->melee_active_remaining = snapshot.melee_active_remaining;
     player->rune_placing_mode = snapshot.rune_placing_mode;
+    player->selected_rune_slot =
+        std::clamp(snapshot.selected_rune_slot, 0, static_cast<int>(player->rune_slots.size()) - 1);
     player->selected_rune_type = static_cast<RuneType>(snapshot.selected_rune_type);
     player->mana = snapshot.mana;
     player->max_mana = snapshot.max_mana;
@@ -122,6 +131,9 @@ void ApplyPlayerSnapshot(Player* player, const PlayerSnapshot& snapshot, const s
     for (size_t i = 0; i < player->rune_charge_counts.size() && i < snapshot.rune_charge_counts.size(); ++i) {
         player->rune_charge_counts[i] = snapshot.rune_charge_counts[i];
     }
+    for (size_t i = 0; i < player->rune_slots.size() && i < snapshot.rune_slots.size(); ++i) {
+        player->rune_slots[i] = static_cast<RuneType>(snapshot.rune_slots[i]);
+    }
     for (size_t i = 0; i < player->weapon_slots.size() && i < snapshot.weapon_slots.size(); ++i) {
         player->weapon_slots[i] = snapshot.weapon_slots[i];
     }
@@ -157,6 +169,25 @@ RuneSnapshot BuildRuneSnapshot(const Rune& rune) {
     snapshot.fire_storm_visual_state_duration = rune.fire_storm_visual_state_duration;
     snapshot.fire_storm_revert_after_death = rune.fire_storm_revert_after_death;
     snapshot.fire_storm_pending_removal = rune.fire_storm_pending_removal;
+    snapshot.castle_charging = rune.castle_charging;
+    snapshot.castle_id = rune.castle_id;
+    snapshot.castle_charge_elapsed_seconds = rune.castle_charge_elapsed_seconds;
+    return snapshot;
+}
+
+CastleSnapshot BuildCastleSnapshot(const CastleState& castle) {
+    CastleSnapshot snapshot;
+    snapshot.id = castle.id;
+    snapshot.team = castle.team;
+    snapshot.cell_x = castle.cell.x;
+    snapshot.cell_y = castle.cell.y;
+    snapshot.map_object_id = castle.map_object_id;
+    snapshot.level = castle.level;
+    snapshot.total_energy = castle.total_energy;
+    snapshot.energy_into_current_level = castle.energy_into_current_level;
+    snapshot.energy_needed_for_next_level = castle.energy_needed_for_next_level;
+    snapshot.charge_port_offset_x = castle.charge_port_offset_x;
+    snapshot.charge_port_offset_y = castle.charge_port_offset_y;
     return snapshot;
 }
 
@@ -196,6 +227,8 @@ IceWallSnapshot BuildIceWallSnapshot(const IceWallPiece& wall) {
 MapObjectSnapshot BuildMapObjectSnapshot(const MapObjectInstance& object) {
     MapObjectSnapshot snapshot;
     snapshot.id = object.id;
+    snapshot.owner_player_id = object.owner_player_id;
+    snapshot.owner_team = object.owner_team;
     snapshot.prototype_id = object.prototype_id;
     snapshot.cell_x = object.cell.x;
     snapshot.cell_y = object.cell.y;

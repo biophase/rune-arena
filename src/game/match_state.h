@@ -18,6 +18,7 @@ struct MatchState {
     float time_remaining = static_cast<float>(Constants::kDefaultMatchDurationSeconds);
     MatchModeType mode_type = MatchModeType::MostKillsTimed;
     int best_of_target_kills = Constants::kDefaultBestOfTargetKills;
+    bool zone_enabled = true;
     float shrink_tiles_per_second = Constants::kDefaultShrinkTilesPerSecond;
     float shrink_start_seconds = Constants::kDefaultShrinkStartSeconds;
     float min_arena_radius_tiles = Constants::kDefaultMinArenaRadiusTiles;

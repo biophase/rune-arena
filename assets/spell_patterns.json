@@ -137,6 +137,18 @@
                     ]
                 ]
             }
+        },
+        "fire_flower":{
+            "order_relevent" : false,
+            "directions":{
+                "top":[
+                    [
+                        ["F"],
+                        ["C"],
+                        ["E"]
+                    ]
+                ]
+            }
         }
     }
 }

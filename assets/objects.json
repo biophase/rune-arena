@@ -181,6 +181,43 @@
         "hp": 1000
       }
     },
+    "fire_flower": {
+      "type": "Unit",
+      "map_key": null,
+      "masked_occluder": true,
+      "sprite": {
+        "sheet": "large128x128",
+        "idle": "fire_flower_idle",
+        "born": "fire_flower_born",
+        "anchor": "cell_center",
+        "offset_y": 16
+      },
+      "walkable": false,
+      "stops_projectiles": true,
+      "collision_box": { "x": 50, "y": 72, "w": 28, "h": 28 },
+      "blocked_tiles": [
+        { "x": 0, "y": 0 },
+        { "x": 0, "y": 1 }
+      ],
+      "unit": {
+        "hp": 100
+      }
+    },
+    "castle": {
+      "type": "Decoration",
+      "map_key": null,
+      "masked_occluder": true,
+      "sprite": {
+        "sheet": "large128x128",
+        "idle": "castle_idle",
+        "charging": "castle_charging",
+        "anchor": "cell_center"
+      },
+      "walkable": false,
+      "stops_projectiles": true,
+      "collision_box": { "x": 40, "y": 84, "w": 48, "h": 28 },
+      "charge_port_offset": { "x": 0, "y": -56 }
+    },
     "sword_item": {
       "type": "Consumable",
       "map_key": null,

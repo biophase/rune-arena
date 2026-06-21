@@ -34,7 +34,9 @@ bool AreEqual(const PlayerSnapshot& a, const PlayerSnapshot& b) {
            a.vel_y == b.vel_y && a.aim_dir_x == b.aim_dir_x && a.aim_dir_y == b.aim_dir_y && a.hp == b.hp &&
            a.kills == b.kills && a.alive == b.alive && a.facing == b.facing && a.action_state == b.action_state &&
            a.melee_active_remaining == b.melee_active_remaining && a.rune_placing_mode == b.rune_placing_mode &&
+           a.selected_rune_slot == b.selected_rune_slot &&
            a.selected_rune_type == b.selected_rune_type &&
+           a.rune_slots == b.rune_slots &&
            a.mana == b.mana && a.max_mana == b.max_mana &&
            a.grappling_cooldown_remaining == b.grappling_cooldown_remaining &&
            a.grappling_cooldown_total == b.grappling_cooldown_total &&
@@ -87,7 +89,18 @@ bool AreEqual(const RuneSnapshot& a, const RuneSnapshot& b) {
            a.fire_storm_visual_state_time == b.fire_storm_visual_state_time &&
            a.fire_storm_visual_state_duration == b.fire_storm_visual_state_duration &&
            a.fire_storm_revert_after_death == b.fire_storm_revert_after_death &&
-           a.fire_storm_pending_removal == b.fire_storm_pending_removal;
+           a.fire_storm_pending_removal == b.fire_storm_pending_removal &&
+           a.castle_charging == b.castle_charging && a.castle_id == b.castle_id &&
+           a.castle_charge_elapsed_seconds == b.castle_charge_elapsed_seconds;
+}
+
+bool AreEqual(const CastleSnapshot& a, const CastleSnapshot& b) {
+    return a.id == b.id && a.team == b.team && a.cell_x == b.cell_x && a.cell_y == b.cell_y &&
+           a.map_object_id == b.map_object_id && a.level == b.level && a.total_energy == b.total_energy &&
+           a.energy_into_current_level == b.energy_into_current_level &&
+           a.energy_needed_for_next_level == b.energy_needed_for_next_level &&
+           a.charge_port_offset_x == b.charge_port_offset_x &&
+           a.charge_port_offset_y == b.charge_port_offset_y;
 }
 
 bool AreEqual(const ProjectileSnapshot& a, const ProjectileSnapshot& b) {
@@ -105,7 +118,8 @@ bool AreEqual(const IceWallSnapshot& a, const IceWallSnapshot& b) {
 }
 
 bool AreEqual(const MapObjectSnapshot& a, const MapObjectSnapshot& b) {
-    return a.id == b.id && a.prototype_id == b.prototype_id && a.cell_x == b.cell_x && a.cell_y == b.cell_y &&
+    return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.prototype_id == b.prototype_id && a.cell_x == b.cell_x && a.cell_y == b.cell_y &&
            a.object_type == b.object_type && a.hp == b.hp && a.state == b.state &&
            a.state_time == b.state_time && a.death_duration == b.death_duration &&
            a.collision_enabled == b.collision_enabled && a.alive == b.alive;
@@ -183,6 +197,8 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
     delta.removed_ice_wall_ids.clear();
     delta.map_objects.clear();
     delta.removed_map_object_ids.clear();
+    delta.castles.clear();
+    delta.removed_castle_ids.clear();
     delta.fire_storm_dummies.clear();
     delta.removed_fire_storm_dummy_ids.clear();
     delta.fire_storm_casts.clear();
@@ -262,6 +278,20 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
         }
     }
 
+    const auto base_castles = BuildIdMap(base.castles);
+    const auto current_castles = BuildIdMap(current.castles);
+    for (const auto& castle : current.castles) {
+        auto it = base_castles.find(castle.id);
+        if (it == base_castles.end() || !AreEqual(castle, *it->second)) {
+            delta.castles.push_back(castle);
+        }
+    }
+    for (const auto& castle : base.castles) {
+        if (current_castles.find(castle.id) == current_castles.end()) {
+            delta.removed_castle_ids.push_back(castle.id);
+        }
+    }
+
     const auto base_dummies = BuildIdMap(base.fire_storm_dummies);
     const auto current_dummies = BuildIdMap(current.fire_storm_dummies);
     for (const auto& dummy : current.fire_storm_dummies) {
@@ -333,6 +363,7 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
     out.base_snapshot_id = 0;
     out.is_delta = false;
     out.time_remaining = delta.time_remaining;
+    out.zone_enabled = delta.zone_enabled;
     out.shrink_tiles_per_second = delta.shrink_tiles_per_second;
     out.min_arena_radius_tiles = delta.min_arena_radius_tiles;
     out.arena_radius_tiles = delta.arena_radius_tiles;
@@ -368,6 +399,10 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
     for (const auto& object : delta.map_objects) {
         UpsertById(out.map_objects, object);
     }
+    RemoveByIds(out.castles, delta.removed_castle_ids);
+    for (const auto& castle : delta.castles) {
+        UpsertById(out.castles, castle);
+    }
     RemoveByIds(out.fire_storm_dummies, delta.removed_fire_storm_dummy_ids);
     for (const auto& dummy : delta.fire_storm_dummies) {
         UpsertById(out.fire_storm_dummies, dummy);
@@ -390,6 +425,7 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
     out.removed_projectile_ids.clear();
     out.removed_ice_wall_ids.clear();
     out.removed_map_object_ids.clear();
+    out.removed_castle_ids.clear();
     out.removed_fire_storm_dummy_ids.clear();
     out.removed_fire_storm_cast_ids.clear();
     out.removed_earth_roots_group_ids.clear();

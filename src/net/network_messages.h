@@ -96,7 +96,9 @@ struct PlayerSnapshot {
     int action_state = 0;
     float melee_active_remaining = 0.0f;
     bool rune_placing_mode = false;
+    int selected_rune_slot = 0;
     int selected_rune_type = 0;
+    std::vector<int> rune_slots;
     float mana = 0.0f;
     float max_mana = 0.0f;
     float grappling_cooldown_remaining = 0.0f;
@@ -170,6 +172,23 @@ struct RuneSnapshot {
     float fire_storm_visual_state_duration = 0.0f;
     bool fire_storm_revert_after_death = false;
     bool fire_storm_pending_removal = false;
+    bool castle_charging = false;
+    int castle_id = -1;
+    float castle_charge_elapsed_seconds = 0.0f;
+};
+
+struct CastleSnapshot {
+    int id = -1;
+    int team = 0;
+    int cell_x = 0;
+    int cell_y = 0;
+    int map_object_id = -1;
+    int level = 1;
+    float total_energy = 0.0f;
+    float energy_into_current_level = 0.0f;
+    float energy_needed_for_next_level = 100.0f;
+    int charge_port_offset_x = 0;
+    int charge_port_offset_y = 0;
 };
 
 struct ProjectileSnapshot {
@@ -203,6 +222,8 @@ struct IceWallSnapshot {
 
 struct MapObjectSnapshot {
     int id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
     std::string prototype_id;
     int cell_x = 0;
     int cell_y = 0;
@@ -287,6 +308,7 @@ struct ServerSnapshotMessage {
     int base_snapshot_id = 0;
     bool is_delta = false;
     float time_remaining = 0.0f;
+    bool zone_enabled = true;
     float shrink_tiles_per_second = 0.0f;
     float min_arena_radius_tiles = 0.0f;
     float arena_radius_tiles = 0.0f;
@@ -309,6 +331,8 @@ struct ServerSnapshotMessage {
     std::vector<int> removed_ice_wall_ids;
     std::vector<MapObjectSnapshot> map_objects;
     std::vector<int> removed_map_object_ids;
+    std::vector<CastleSnapshot> castles;
+    std::vector<int> removed_castle_ids;
     std::vector<FireStormDummySnapshot> fire_storm_dummies;
     std::vector<int> removed_fire_storm_dummy_ids;
     std::vector<FireStormCastSnapshot> fire_storm_casts;
@@ -330,6 +354,7 @@ struct LobbyStateMessage {
     int mode_type = 0;
     int round_time_seconds = 0;
     int best_of_target_kills = 0;
+    bool zone_enabled = true;
     float shrink_tiles_per_second = 0.0f;
     float shrink_start_seconds = 0.0f;
     float min_arena_radius_tiles = 0.0f;

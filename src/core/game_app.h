@@ -21,6 +21,7 @@
 #include "config/controls_manager.h"
 #include "emitters/smoke_emitter.h"
 #include "events/event_queue.h"
+#include "game/game_state.h"
 #include "gameplay/equipment_registry.h"
 #include "gameplay/hit_shape_library.h"
 #include "gameplay/loot_tables.h"
@@ -132,6 +133,7 @@ class GameApp {
     void UpdateMapObjects(float dt);
     void UpdateIceWalls(float dt);
     void UpdateRunes(float dt);
+    void UpdateCastles(float dt);
     void UpdatePlayerStatusEffects(Player& player, float dt);
     void UpdateProjectiles(float dt);
     void UpdateExplosions(float dt);
@@ -156,13 +158,16 @@ class GameApp {
     void SpawnDamageHitParticles(Vector2 target_pos, std::optional<Vector2> damage_world_pos);
     void SpawnHammerImpactEffect(Vector2 world_pos);
     void SpawnProjectileExplosion(const Projectile& projectile, std::optional<int> excluded_target_id);
-    void SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds, bool volatile_variant = false);
+    void SpawnLightningEffect(Vector2 start, Vector2 end, float idle_duration_seconds, bool volatile_variant = false,
+                              const char* born_animation_key = nullptr, const char* idle_animation_key = nullptr,
+                              const char* death_animation_key = nullptr);
     bool TryStartGrapplingHook(Player& player, Vector2 target_world, bool play_audio = true);
     void SpawnDamagePopup(Vector2 world_pos, int amount, bool is_heal = false);
     bool ApplyDamageToPlayer(Player& target, int attacker_player_id, int damage, const char* source,
                              bool count_kill_for_attacker,
                              std::optional<Vector2> damage_world_pos = std::nullopt);
     void HandlePlayerDeath(Player& victim, int killer_player_id, bool count_kill_for_attacker);
+    bool IsZoneEnabled() const;
     bool IsOutsideArena(Vector2 world_pos) const;
     Vector2 ClampToArenaWithBuffer(Vector2 world_pos, float buffer_tiles) const;
     Vector2 ComputeRespawnPosition(const Player& player) const;
@@ -191,6 +196,29 @@ class GameApp {
     bool IsCellOccupiedByRune(const GridCoord& cell) const;
     bool IsCellOccupiedByFireStormDummy(const GridCoord& cell) const;
     bool IsPlayerBeingPulled(int player_id) const;
+    bool IsRuneAvailableToPlayer(const Player& player, RuneType rune_type) const;
+    bool IsCastleEquippableRune(RuneType rune_type) const;
+    int GetRuneRequiredCastleLevel(RuneType rune_type) const;
+    int GetCastleLoadoutCapacity(int castle_level) const;
+    float GetCastleEnergyRequirementForLevel(int castle_level) const;
+    int ComputeCastleLevel(float total_energy, float* out_energy_into_current_level = nullptr,
+                           float* out_energy_needed_for_next_level = nullptr) const;
+    const CastleState* FindCastleById(int id) const;
+    CastleState* FindCastleById(int id);
+    const CastleState* FindCastleByTeam(int team) const;
+    CastleState* FindCastleByTeam(int team);
+    const CastleState* GetAlliedCastleForPlayer(const Player& player) const;
+    bool IsPlayerWithinCastleRange(const Player& player, const CastleState& castle) const;
+    Vector2 GetCastleChargePortWorld(const CastleState& castle) const;
+    void RefreshCastleDerivedState(CastleState& castle);
+    void InitializeCastlesFromSpawnPoints();
+    void NormalizePlayerRuneLoadout(Player& player) const;
+    bool EquipRuneToCastleLoadout(Player& player, RuneType rune_type, int castle_level);
+    bool UnequipRuneFromCastleLoadout(Player& player, RuneType rune_type);
+    bool IsCastleManagedRuneSlot(int slot_index) const;
+    bool IsCastleCharging(int castle_id) const;
+    void OpenLocalInventoryUiForCurrentContext();
+    void CloseLocalInventoryUi();
 
     GridCoord WorldToCell(Vector2 world) const;
     Vector2 CellToWorldCenter(const GridCoord& cell) const;
@@ -293,6 +321,11 @@ class GameApp {
     bool RenderModularTreeShadow(const MapObjectInstance& object, const ObjectPrototype& proto);
     bool DrawWindAnimatedMapObject(const MapObjectInstance& object, const ObjectPrototype& proto, const Texture2D& texture,
                                    Rectangle src, Rectangle dst);
+    Rectangle GetMapObjectSpriteRect(const MapObjectInstance& object, const ObjectPrototype* proto, float sprite_width,
+                                     float sprite_height, float visual_scale = 1.0f, bool snap = true) const;
+    std::string ResolveMapObjectAnimation(const MapObjectInstance& object, const ObjectPrototype& proto,
+                                          const SpriteMetadataLoader& metadata, float* out_anim_time = nullptr) const;
+    float GetMapObjectAnimationDurationSeconds(const ObjectPrototype& proto, const std::string& animation_name) const;
     Rectangle GetMapObjectCollisionAabb(const MapObjectInstance& object, const ObjectPrototype* proto) const;
 
     static FacingDirection AimToFacing(Vector2 aim);
@@ -338,6 +371,7 @@ class GameApp {
     SpriteMetadataLoader sprite_metadata_tall_;
     SpriteMetadataLoader sprite_metadata_96x96_;
     SpriteMetadataLoader sprite_metadata_128x128_;
+    std::vector<Texture2D> sprite_sheet_128x128_team_variants_;
     ModularCharacterAsset modular_player_asset_;
     ModularCharacterAsset modular_tree_asset_;
     SpellPatternLoader spell_patterns_;
@@ -412,6 +446,7 @@ class GameApp {
     std::unordered_map<int, int> previous_object_hp_;
     std::unordered_map<int, float> object_damage_flash_remaining_;
     std::unordered_map<int, float> rooted_unit_damage_accumulators_;
+    std::vector<float> castle_level_energy_requirements_ = {100.0f, 300.0f, 600.0f, 1000.0f};
 
     struct RemotePositionSample {
         double time_seconds = 0.0;
@@ -468,6 +503,7 @@ class GameApp {
     std::string resolved_modular_tree_outline_mask_path_;
     std::string resolved_modular_tree_asset_metadata_path_;
     std::string resolved_spell_pattern_path_;
+    std::string resolved_castle_level_requirements_path_;
     std::string resolved_equipment_profiles_path_;
     std::string resolved_hit_shapes_path_;
     std::string resolved_loot_tables_path_;
@@ -488,6 +524,7 @@ class GameApp {
     MatchModeType lobby_mode_type_ = MatchModeType::MostKillsTimed;
     int lobby_round_time_seconds_ = Constants::kDefaultMatchDurationSeconds;
     int lobby_best_of_target_kills_ = Constants::kDefaultBestOfTargetKills;
+    bool lobby_zone_enabled_ = true;
     float lobby_shrink_tiles_per_second_ = Constants::kDefaultShrinkTilesPerSecond;
     float lobby_shrink_start_seconds_ = Constants::kDefaultShrinkStartSeconds;
     float lobby_min_arena_radius_tiles_ = Constants::kDefaultMinArenaRadiusTiles;
@@ -523,6 +560,13 @@ class GameApp {
         Settings,
     };
     InGameMenuPage in_game_menu_page_ = InGameMenuPage::Home;
+    enum class InventoryUiMode {
+        Closed,
+        Inventory,
+        CastleLoadout,
+    };
+    InventoryUiMode local_inventory_ui_mode_ = InventoryUiMode::Closed;
+    bool pending_open_initial_loadout_ui_ = false;
 
     bool pending_primary_pressed_ = false;
     bool pending_grappling_pressed_ = false;
@@ -558,6 +602,7 @@ class GameApp {
         float unlock_radius = 0.0f;
     };
     std::unordered_map<int, DroppedItemPickupBlock> dropped_item_pickup_blocks_;
+    std::unordered_map<int, float> castle_charge_lightning_cooldowns_;
     std::unordered_map<std::string, int> loot_quota_remaining_;
     int next_predicted_entity_id_ = -1;
     std::mt19937 rng_;

@@ -6,6 +6,7 @@
 #include <raylib.h>
 
 #include "game/game_types.h"
+#include "game/castle.h"
 #include "game/composite_effect.h"
 #include "game/damage_popup.h"
 #include "game/earth_roots_group.h"
@@ -73,6 +74,7 @@ struct GameState {
     std::vector<GrapplingHook> grappling_hooks;
     std::vector<DamagePopup> damage_popups;
     std::vector<InfluenceZoneCell> influence_zones;
+    std::vector<CastleState> castles;
     MapData map;
 
     int local_player_id = -1;

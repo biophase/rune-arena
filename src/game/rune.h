@@ -44,4 +44,7 @@ struct Rune {
     float fire_storm_visual_state_duration = 0.0f;
     bool fire_storm_revert_after_death = false;
     bool fire_storm_pending_removal = false;
+    bool castle_charging = false;
+    int castle_id = -1;
+    float castle_charge_elapsed_seconds = 0.0f;
 };
