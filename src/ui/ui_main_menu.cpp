@@ -46,11 +46,13 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
                               int join_ip_buffer_size, const std::vector<DiscoveredHost>& discovered_hosts,
                               const std::string& config_path, const ControlsBindings& current_bindings,
                               const std::string& controls_path, bool show_network_debug_panel,
-                              bool hide_own_influence_zones, const std::string& status_message, bool status_is_error) {
+                              bool hide_own_influence_zones, bool enable_influence_zone_system,
+                              const std::string& status_message, bool status_is_error) {
     MainMenuUiResult result;
     result.controls_bindings = current_bindings;
     result.show_network_debug_panel = show_network_debug_panel;
     result.hide_own_influence_zones = hide_own_influence_zones;
+    result.enable_influence_zone_system = enable_influence_zone_system;
 
     const int center_x = GetScreenWidth() / 2;
     static MainMenuPage page = MainMenuPage::Root;
@@ -70,6 +72,7 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
     static ControlsBindings draft_bindings = current_bindings;
     static bool draft_show_network_debug_panel = true;
     static bool draft_hide_own_influence_zones = false;
+    static bool draft_enable_influence_zone_system = true;
     static int rebinding_action = -1;
     static int rebind_block_frames = 0;
     if (selected_host_index >= static_cast<int>(discovered_hosts.size())) {
@@ -90,6 +93,7 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
             draft_bindings = current_bindings;
             draft_show_network_debug_panel = show_network_debug_panel;
             draft_hide_own_influence_zones = hide_own_influence_zones;
+            draft_enable_influence_zone_system = enable_influence_zone_system;
             rebinding_action = -1;
         }
         if (GuiButton({static_cast<float>(panel_x + 150), static_cast<float>(panel_y + 404), 220, 44}, "Exit")) {
@@ -178,6 +182,12 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         if (updated_hide_own_influence_zones != draft_hide_own_influence_zones) {
             draft_hide_own_influence_zones = updated_hide_own_influence_zones;
         }
+        bool updated_enable_influence_zone_system = draft_enable_influence_zone_system;
+        GuiCheckBox({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 156), 24, 24},
+                    "Enable Influence Zone System", &updated_enable_influence_zone_system);
+        if (updated_enable_influence_zone_system != draft_enable_influence_zone_system) {
+            draft_enable_influence_zone_system = updated_enable_influence_zone_system;
+        }
         if (draft_show_network_debug_panel != show_network_debug_panel) {
             result.settings_changed = true;
             result.show_network_debug_panel = draft_show_network_debug_panel;
@@ -186,13 +196,17 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
             result.settings_changed = true;
             result.hide_own_influence_zones = draft_hide_own_influence_zones;
         }
-        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 170), 180, 40}, "Controls")) {
+        if (draft_enable_influence_zone_system != enable_influence_zone_system) {
+            result.settings_changed = true;
+            result.enable_influence_zone_system = draft_enable_influence_zone_system;
+        }
+        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 210), 180, 40}, "Controls")) {
             page = MainMenuPage::Controls;
             draft_bindings = current_bindings;
             rebinding_action = -1;
             rebind_block_frames = 0;
         }
-        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 220), 180, 36}, "Back")) {
+        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 260), 180, 36}, "Back")) {
             page = MainMenuPage::Root;
         }
         DrawText(TextFormat("Config: %s", config_path.c_str()), panel_x + 20, panel_y + panel_height - 40, 12,

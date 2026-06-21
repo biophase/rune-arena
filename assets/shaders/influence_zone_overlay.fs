@@ -116,8 +116,7 @@ void main() {
     vec2 screenPos = vec2(gl_FragCoord.x, uScreenHeight - gl_FragCoord.y);
     vec2 worldPos = ScreenToWorld(screenPos);
     if (worldPos.x < 0.0 || worldPos.y < 0.0 || worldPos.x >= uMapSizeWorld.x || worldPos.y >= uMapSizeWorld.y) {
-        finalColor = vec4(0.0);
-        return;
+        discard;
     }
 
     vec2 uv = worldPos / max(uMapSizeWorld, vec2(0.0001));
@@ -127,16 +126,14 @@ void main() {
     float density = EdgeDensity(signedDistPx) * 0.8;
     const float densityFloor = 0.00000325;
     if (density <= densityFloor) {
-        finalColor = vec4(0.0);
-        return;
+        discard;
     }
 
     vec2 worldPx = floor(worldPos) + vec2(0.5);
     float patternMix = mod(floor(worldPx.x / 8.0) + floor(worldPx.y / 8.0) + uPatternPhase + uPatternFrame, 2.0);
     float threshold = mix(Bayer4A(worldPx), Bayer4B(worldPx), patternMix);
     if (density <= threshold) {
-        finalColor = vec4(0.0);
-        return;
+        discard;
     }
 
     float normalizedDensity = clamp((density - densityFloor) / max(1.0 - densityFloor, 0.0001), 0.0, 1.0);

@@ -37,6 +37,8 @@ bool ConfigManager::Load(UserSettings& settings) const {
     settings.fullscreen = json.value("fullscreen", settings.fullscreen);
     settings.show_network_debug_panel = json.value("show_network_debug_panel", settings.show_network_debug_panel);
     settings.hide_own_influence_zones = json.value("hide_own_influence_zones", settings.hide_own_influence_zones);
+    settings.enable_influence_zone_system =
+        json.value("enable_influence_zone_system", settings.enable_influence_zone_system);
     settings.lobby_zone_enabled = json.value("lobby_zone_enabled", settings.lobby_zone_enabled);
     settings.lobby_shrink_tiles_per_second =
         json.value("lobby_shrink_tiles_per_second", settings.lobby_shrink_tiles_per_second);
@@ -60,6 +62,7 @@ bool ConfigManager::Save(const UserSettings& settings) const {
     json["fullscreen"] = settings.fullscreen;
     json["show_network_debug_panel"] = settings.show_network_debug_panel;
     json["hide_own_influence_zones"] = settings.hide_own_influence_zones;
+    json["enable_influence_zone_system"] = settings.enable_influence_zone_system;
     json["lobby_zone_enabled"] = settings.lobby_zone_enabled;
     json["lobby_shrink_tiles_per_second"] = settings.lobby_shrink_tiles_per_second;
     json["lobby_min_arena_radius_tiles"] = settings.lobby_min_arena_radius_tiles;

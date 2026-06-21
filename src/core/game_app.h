@@ -278,6 +278,7 @@ class GameApp {
     void RenderInfluenceZoneOverlay();
     void RenderInfluenceZoneAnimatedTiles();
     bool ShouldRenderInfluenceTeam(int team) const;
+    bool IsInfluenceZoneSystemEnabled() const;
     void RenderRunes();
     void RenderIceWalls();
     void RenderPlayers();
@@ -359,6 +360,10 @@ class GameApp {
     void RenderVolatileCastCasterFx(const Player& player, Vector2 draw_pos) const;
     std::string GetClientLobbyStatusText() const;
     std::string GetPlayerDisplayName(int player_id) const;
+    Rectangle GetCameraWorldCullRect(float padding_world = 0.0f) const;
+    void GetVisibleCellBounds(int padding_cells, int* out_min_x, int* out_min_y, int* out_max_x, int* out_max_y) const;
+    bool IsWorldRectVisible(const Rectangle& world_rect, float padding_world = 0.0f) const;
+    void RebuildStaticRenderCaches();
 
     ConfigManager config_manager_;
     ControlsManager controls_manager_;
@@ -447,6 +452,13 @@ class GameApp {
     std::unordered_map<int, float> object_damage_flash_remaining_;
     std::unordered_map<int, float> rooted_unit_damage_accumulators_;
     std::vector<float> castle_level_energy_requirements_ = {100.0f, 300.0f, 600.0f, 1000.0f};
+    struct StaticDecorationRenderItem {
+        float sort_y = 0.0f;
+        size_t decoration_index = 0;
+    };
+    std::vector<std::vector<StaticDecorationRenderItem>> static_decoration_render_chunks_;
+    int static_decoration_chunk_cols_ = 0;
+    int static_decoration_chunk_rows_ = 0;
 
     struct RemotePositionSample {
         double time_seconds = 0.0;
@@ -517,6 +529,7 @@ class GameApp {
     std::string resolved_influence_zone_overlay_shader_path_;
     std::string resolved_damage_flash_shader_path_;
     std::string resolved_tree_composite_shader_path_;
+    std::string resolved_tree_composite_no_reveal_shader_path_;
     std::string resolved_tree_wind_shader_path_;
     std::string main_menu_status_message_;
     bool main_menu_status_is_error_ = false;
@@ -602,7 +615,7 @@ class GameApp {
         float unlock_radius = 0.0f;
     };
     std::unordered_map<int, DroppedItemPickupBlock> dropped_item_pickup_blocks_;
-    std::unordered_map<int, float> castle_charge_lightning_cooldowns_;
+    std::unordered_map<int, int> castle_charge_lightning_effect_ids_;
     std::unordered_map<std::string, int> loot_quota_remaining_;
     int next_predicted_entity_id_ = -1;
     std::mt19937 rng_;
@@ -631,6 +644,8 @@ class GameApp {
     bool has_damage_flash_shader_ = false;
     Shader tree_composite_shader_ = {};
     bool has_tree_composite_shader_ = false;
+    Shader tree_composite_no_reveal_shader_ = {};
+    bool has_tree_composite_no_reveal_shader_ = false;
     Shader tree_wind_shader_ = {};
     bool has_tree_wind_shader_ = false;
     int occluder_reveal_count_loc_ = -1;
@@ -694,6 +709,18 @@ class GameApp {
     int tree_composite_inside_alpha_loc_ = -1;
     int tree_composite_reveal_count_loc_ = -1;
     int tree_composite_reveal_data_loc_ = -1;
+    int tree_composite_no_reveal_trunk_texture_loc_ = -1;
+    int tree_composite_no_reveal_canopy_foreground_texture_loc_ = -1;
+    int tree_composite_no_reveal_mask_texture_loc_ = -1;
+    int tree_composite_no_reveal_canopy_background_rect_loc_ = -1;
+    int tree_composite_no_reveal_trunk_rect_loc_ = -1;
+    int tree_composite_no_reveal_canopy_foreground_rect_loc_ = -1;
+    int tree_composite_no_reveal_mask_rect_loc_ = -1;
+    int tree_composite_no_reveal_time_loc_ = -1;
+    int tree_composite_no_reveal_sway_strength_loc_ = -1;
+    int tree_composite_no_reveal_sway_speed_loc_ = -1;
+    int tree_composite_no_reveal_phase_offset_loc_ = -1;
+    int tree_composite_no_reveal_gradient_start_loc_ = -1;
     int tree_wind_frame_rect_loc_ = -1;
     int tree_wind_time_loc_ = -1;
     int tree_wind_sway_strength_loc_ = -1;

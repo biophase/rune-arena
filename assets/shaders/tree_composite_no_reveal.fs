@@ -19,23 +19,6 @@ uniform float uSwayStrengthPixels;
 uniform float uSwaySpeed;
 uniform float uPhaseOffset;
 uniform float uGradientStart;
-uniform int uRevealCount;
-uniform vec4 uRevealData[8];
-uniform float uScreenHeight;
-uniform float uInsideAlpha;
-
-float Bayer4(vec2 p) {
-    int x = int(mod(p.x, 4.0));
-    int y = int(mod(p.y, 4.0));
-    int idx = x + y * 4;
-    float thresholds[16] = float[16](
-        0.0 / 16.0, 8.0 / 16.0, 2.0 / 16.0, 10.0 / 16.0,
-        12.0 / 16.0, 4.0 / 16.0, 14.0 / 16.0, 6.0 / 16.0,
-        3.0 / 16.0, 11.0 / 16.0, 1.0 / 16.0, 9.0 / 16.0,
-        15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0
-    );
-    return thresholds[idx];
-}
 
 vec4 AlphaOver(vec4 under, vec4 over) {
     float outAlpha = over.a + under.a * (1.0 - over.a);
@@ -96,20 +79,6 @@ vec4 EvaluateComposite(vec2 localPx, out bool masked) {
     return masked ? vec4(0.0) : visible;
 }
 
-float ComputeReveal(vec2 screenPos) {
-    float reveal = 0.0;
-    for (int i = 0; i < 8; ++i) {
-        if (i >= uRevealCount) {
-            break;
-        }
-        vec4 data = uRevealData[i];
-        float distPx = distance(screenPos, data.xy);
-        float contribution = 1.0 - smoothstep(data.z, data.w, distPx);
-        reveal = max(reveal, contribution);
-    }
-    return reveal;
-}
-
 void main() {
     vec2 canopyAtlasSize = vec2(textureSize(texture0, 0));
     vec2 localPx = fragTexCoord * canopyAtlasSize - uCanopyBackgroundRectPx.xy;
@@ -138,21 +107,6 @@ void main() {
 
     if (color.a <= 0.001) {
         discard;
-    }
-
-    if (uRevealCount > 0) {
-        vec2 screenPos = vec2(gl_FragCoord.x, uScreenHeight - gl_FragCoord.y);
-        float reveal = ComputeReveal(screenPos);
-        if (reveal > 0.0) {
-            float alphaMul = 1.0;
-            if (reveal >= 0.999) {
-                alphaMul = uInsideAlpha;
-            } else {
-                float dither = Bayer4(floor(localPx));
-                alphaMul = (reveal > dither) ? uInsideAlpha : 1.0;
-            }
-            color.a *= alphaMul;
-        }
     }
 
     finalColor = color * fragColor * colDiffuse;

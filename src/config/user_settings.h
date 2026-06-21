@@ -12,6 +12,7 @@ struct UserSettings {
     bool fullscreen = true;
     bool show_network_debug_panel = true;
     bool hide_own_influence_zones = false;
+    bool enable_influence_zone_system = true;
     bool lobby_zone_enabled = true;
     float lobby_shrink_tiles_per_second = Constants::kDefaultShrinkTilesPerSecond;
     float lobby_min_arena_radius_tiles = Constants::kDefaultMinArenaRadiusTiles;

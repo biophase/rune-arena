@@ -367,6 +367,7 @@ struct OccluderRevealCircle {
 constexpr int kInfluenceDistanceSamplesPerTile = 2;
 constexpr float kInfluenceDistanceOuterTailPx = 6.0f;
 constexpr float kInfluenceDistanceInnerTailPx = 22.0f;
+constexpr int kStaticRenderChunkSizeTiles = 16;
 constexpr int kConsoleMaxVisibleLines = 5;
 constexpr int kConsoleCharsPerLine = 48;
 constexpr float kConsoleLifetimeSeconds = 5.0f;
@@ -1236,6 +1237,7 @@ bool GameApp::Initialize() {
     resolved_influence_zone_overlay_shader_path_ = ResolveRuntimePath(Constants::kInfluenceZoneOverlayShaderPath);
     resolved_damage_flash_shader_path_ = ResolveRuntimePath(Constants::kDamageFlashShaderPath);
     resolved_tree_composite_shader_path_ = ResolveRuntimePath(Constants::kTreeCompositeShaderPath);
+    resolved_tree_composite_no_reveal_shader_path_ = ResolveRuntimePath(Constants::kTreeCompositeNoRevealShaderPath);
     resolved_tree_wind_shader_path_ = ResolveRuntimePath(Constants::kTreeWindShaderPath);
 
     objects_database_.LoadFromFile(resolved_objects_config_path_);
@@ -1579,6 +1581,36 @@ void GameApp::LoadRenderShaders() {
         }
     }
 
+    if (FileExists(resolved_tree_composite_no_reveal_shader_path_.c_str())) {
+        tree_composite_no_reveal_shader_ = LoadShader(nullptr, resolved_tree_composite_no_reveal_shader_path_.c_str());
+        has_tree_composite_no_reveal_shader_ = (tree_composite_no_reveal_shader_.id != 0);
+        if (has_tree_composite_no_reveal_shader_) {
+            tree_composite_no_reveal_trunk_texture_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uTrunkTexture");
+            tree_composite_no_reveal_canopy_foreground_texture_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uCanopyForegroundTexture");
+            tree_composite_no_reveal_mask_texture_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uMaskTexture");
+            tree_composite_no_reveal_canopy_background_rect_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uCanopyBackgroundRectPx");
+            tree_composite_no_reveal_trunk_rect_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uTrunkRectPx");
+            tree_composite_no_reveal_canopy_foreground_rect_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uCanopyForegroundRectPx");
+            tree_composite_no_reveal_mask_rect_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uMaskRectPx");
+            tree_composite_no_reveal_time_loc_ = GetShaderLocation(tree_composite_no_reveal_shader_, "uTime");
+            tree_composite_no_reveal_sway_strength_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uSwayStrengthPixels");
+            tree_composite_no_reveal_sway_speed_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uSwaySpeed");
+            tree_composite_no_reveal_phase_offset_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uPhaseOffset");
+            tree_composite_no_reveal_gradient_start_loc_ =
+                GetShaderLocation(tree_composite_no_reveal_shader_, "uGradientStart");
+        }
+    }
+
     if (FileExists(resolved_tree_wind_shader_path_.c_str())) {
         tree_wind_shader_ = LoadShader(nullptr, resolved_tree_wind_shader_path_.c_str());
         has_tree_wind_shader_ = (tree_wind_shader_.id != 0);
@@ -1640,6 +1672,11 @@ void GameApp::UnloadRenderShaders() {
     }
     tree_composite_shader_ = {};
     has_tree_composite_shader_ = false;
+    if (has_tree_composite_no_reveal_shader_) {
+        UnloadShader(tree_composite_no_reveal_shader_);
+    }
+    tree_composite_no_reveal_shader_ = {};
+    has_tree_composite_no_reveal_shader_ = false;
     if (has_tree_wind_shader_) {
         UnloadShader(tree_wind_shader_);
     }
@@ -1706,6 +1743,18 @@ void GameApp::UnloadRenderShaders() {
     tree_composite_inside_alpha_loc_ = -1;
     tree_composite_reveal_count_loc_ = -1;
     tree_composite_reveal_data_loc_ = -1;
+    tree_composite_no_reveal_trunk_texture_loc_ = -1;
+    tree_composite_no_reveal_canopy_foreground_texture_loc_ = -1;
+    tree_composite_no_reveal_mask_texture_loc_ = -1;
+    tree_composite_no_reveal_canopy_background_rect_loc_ = -1;
+    tree_composite_no_reveal_trunk_rect_loc_ = -1;
+    tree_composite_no_reveal_canopy_foreground_rect_loc_ = -1;
+    tree_composite_no_reveal_mask_rect_loc_ = -1;
+    tree_composite_no_reveal_time_loc_ = -1;
+    tree_composite_no_reveal_sway_strength_loc_ = -1;
+    tree_composite_no_reveal_sway_speed_loc_ = -1;
+    tree_composite_no_reveal_phase_offset_loc_ = -1;
+    tree_composite_no_reveal_gradient_start_loc_ = -1;
     tree_wind_frame_rect_loc_ = -1;
     tree_wind_time_loc_ = -1;
     tree_wind_sway_strength_loc_ = -1;
@@ -2024,32 +2073,16 @@ bool GameApp::RenderModularTreeObject(const MapObjectInstance& object, const Obj
         outline_mask_texture != nullptr ? modular_tree_asset_.GetFrame("outline_mask", "tree", render_time_seconds_) : Rectangle{};
     const Rectangle dst = GetModularTreeSpriteRect(object, "trunk");
 
-    if (!has_tree_composite_shader_) {
-        DrawTexturePro(*canopy_background_texture, canopy_background_src, dst, {0, 0}, 0.0f, WHITE);
+    const auto draw_tree_layers_simple = [&]() {
+        DrawWindAnimatedMapObject(object, proto, *canopy_background_texture, canopy_background_src, dst);
         DrawTexturePro(*trunk_texture, trunk_src, dst, {0, 0}, 0.0f, WHITE);
-        DrawTexturePro(*canopy_foreground_texture, canopy_foreground_src, dst, {0, 0}, 0.0f, WHITE);
+        DrawWindAnimatedMapObject(object, proto, *canopy_foreground_texture, canopy_foreground_src, dst);
+    };
+
+    if (!has_tree_composite_shader_ && !has_tree_composite_no_reveal_shader_) {
+        draw_tree_layers_simple();
         return true;
     }
-
-    SetShaderValueTexture(tree_composite_shader_, tree_composite_trunk_texture_loc_, *trunk_texture);
-    SetShaderValueTexture(tree_composite_shader_, tree_composite_canopy_foreground_texture_loc_,
-                          *canopy_foreground_texture);
-    SetShaderValueTexture(tree_composite_shader_, tree_composite_mask_texture_loc_,
-                          outline_mask_texture != nullptr ? *outline_mask_texture : *canopy_background_texture);
-
-    const float canopy_background_rect[4] = {canopy_background_src.x, canopy_background_src.y,
-                                             canopy_background_src.width, canopy_background_src.height};
-    const float trunk_rect[4] = {trunk_src.x, trunk_src.y, trunk_src.width, trunk_src.height};
-    const float canopy_foreground_rect[4] = {canopy_foreground_src.x, canopy_foreground_src.y,
-                                             canopy_foreground_src.width, canopy_foreground_src.height};
-    const float mask_rect[4] = {outline_mask_src.x, outline_mask_src.y, outline_mask_src.width, outline_mask_src.height};
-    const float time_seconds = render_time_seconds_;
-    const float sway_strength = proto.wind_strength_pixels > 0.0f ? proto.wind_strength_pixels : Constants::kTreeWindSwayStrengthPixels;
-    const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
-    const float phase_offset = GetMapObjectWindPhaseOffset(object);
-    const float gradient_start = proto.wind_gradient_start;
-    const float screen_height = static_cast<float>(GetScreenHeight());
-    const float inside_alpha = Constants::kOccluderRevealInsideAlpha;
 
     std::array<float, Constants::kOccluderRevealMaxCircles * 4> reveal_data = {};
     int circle_count = 0;
@@ -2095,31 +2128,82 @@ bool GameApp::RenderModularTreeObject(const MapObjectInstance& object, const Obj
         }
     }
 
-    SetShaderValueV(tree_composite_shader_, tree_composite_canopy_background_rect_loc_, canopy_background_rect,
-                    SHADER_UNIFORM_VEC4, 1);
-    SetShaderValueV(tree_composite_shader_, tree_composite_trunk_rect_loc_, trunk_rect, SHADER_UNIFORM_VEC4, 1);
-    SetShaderValueV(tree_composite_shader_, tree_composite_canopy_foreground_rect_loc_, canopy_foreground_rect,
-                    SHADER_UNIFORM_VEC4, 1);
-    SetShaderValueV(tree_composite_shader_, tree_composite_mask_rect_loc_, mask_rect, SHADER_UNIFORM_VEC4, 1);
-    SetShaderValue(tree_composite_shader_, tree_composite_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_composite_shader_, tree_composite_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_composite_shader_, tree_composite_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_composite_shader_, tree_composite_phase_offset_loc_, &phase_offset, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_composite_shader_, tree_composite_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_composite_shader_, tree_composite_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_composite_shader_, tree_composite_inside_alpha_loc_, &inside_alpha, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_composite_shader_, tree_composite_reveal_count_loc_, &circle_count, SHADER_UNIFORM_INT);
-    if (circle_count > 0) {
-        SetShaderValueV(tree_composite_shader_, tree_composite_reveal_data_loc_, reveal_data.data(),
-                        SHADER_UNIFORM_VEC4, circle_count);
+    const bool use_reveal_shader = circle_count > 0 && has_tree_composite_shader_;
+    const bool use_no_reveal_shader = circle_count <= 0 && has_tree_composite_no_reveal_shader_;
+    if (!use_reveal_shader && !use_no_reveal_shader) {
+        draw_tree_layers_simple();
+        return true;
     }
 
-    // The tree composite shader samples multiple textures; flush batching so later draws
-    // cannot reuse stale texture bindings for these sampler uniforms.
-    rlDrawRenderBatchActive();
-    BeginShaderMode(tree_composite_shader_);
-    DrawTexturePro(*canopy_background_texture, canopy_background_src, dst, {0, 0}, 0.0f, WHITE);
-    EndShaderMode();
+    const float canopy_background_rect[4] = {canopy_background_src.x, canopy_background_src.y,
+                                             canopy_background_src.width, canopy_background_src.height};
+    const float trunk_rect[4] = {trunk_src.x, trunk_src.y, trunk_src.width, trunk_src.height};
+    const float canopy_foreground_rect[4] = {canopy_foreground_src.x, canopy_foreground_src.y,
+                                             canopy_foreground_src.width, canopy_foreground_src.height};
+    const float mask_rect[4] = {outline_mask_src.x, outline_mask_src.y, outline_mask_src.width, outline_mask_src.height};
+    const float time_seconds = render_time_seconds_;
+    const float sway_strength = proto.wind_strength_pixels > 0.0f ? proto.wind_strength_pixels : Constants::kTreeWindSwayStrengthPixels;
+    const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
+    const float phase_offset = GetMapObjectWindPhaseOffset(object);
+    const float gradient_start = proto.wind_gradient_start;
+    if (use_reveal_shader) {
+        const float screen_height = static_cast<float>(GetScreenHeight());
+        const float inside_alpha = Constants::kOccluderRevealInsideAlpha;
+        rlDrawRenderBatchActive();
+        BeginShaderMode(tree_composite_shader_);
+        SetShaderValueTexture(tree_composite_shader_, tree_composite_trunk_texture_loc_, *trunk_texture);
+        SetShaderValueTexture(tree_composite_shader_, tree_composite_canopy_foreground_texture_loc_,
+                              *canopy_foreground_texture);
+        SetShaderValueTexture(tree_composite_shader_, tree_composite_mask_texture_loc_,
+                              outline_mask_texture != nullptr ? *outline_mask_texture : *canopy_background_texture);
+        SetShaderValueV(tree_composite_shader_, tree_composite_canopy_background_rect_loc_, canopy_background_rect,
+                        SHADER_UNIFORM_VEC4, 1);
+        SetShaderValueV(tree_composite_shader_, tree_composite_trunk_rect_loc_, trunk_rect, SHADER_UNIFORM_VEC4, 1);
+        SetShaderValueV(tree_composite_shader_, tree_composite_canopy_foreground_rect_loc_, canopy_foreground_rect,
+                        SHADER_UNIFORM_VEC4, 1);
+        SetShaderValueV(tree_composite_shader_, tree_composite_mask_rect_loc_, mask_rect, SHADER_UNIFORM_VEC4, 1);
+        SetShaderValue(tree_composite_shader_, tree_composite_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_shader_, tree_composite_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_shader_, tree_composite_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_shader_, tree_composite_phase_offset_loc_, &phase_offset, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_shader_, tree_composite_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_shader_, tree_composite_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_shader_, tree_composite_inside_alpha_loc_, &inside_alpha, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_shader_, tree_composite_reveal_count_loc_, &circle_count, SHADER_UNIFORM_INT);
+        SetShaderValueV(tree_composite_shader_, tree_composite_reveal_data_loc_, reveal_data.data(), SHADER_UNIFORM_VEC4,
+                        circle_count);
+        DrawTexturePro(*canopy_background_texture, canopy_background_src, dst, {0, 0}, 0.0f, WHITE);
+        EndShaderMode();
+    } else {
+        rlDrawRenderBatchActive();
+        BeginShaderMode(tree_composite_no_reveal_shader_);
+        SetShaderValueTexture(tree_composite_no_reveal_shader_, tree_composite_no_reveal_trunk_texture_loc_,
+                              *trunk_texture);
+        SetShaderValueTexture(tree_composite_no_reveal_shader_,
+                              tree_composite_no_reveal_canopy_foreground_texture_loc_, *canopy_foreground_texture);
+        SetShaderValueTexture(tree_composite_no_reveal_shader_, tree_composite_no_reveal_mask_texture_loc_,
+                              outline_mask_texture != nullptr ? *outline_mask_texture : *canopy_background_texture);
+        SetShaderValueV(tree_composite_no_reveal_shader_, tree_composite_no_reveal_canopy_background_rect_loc_,
+                        canopy_background_rect, SHADER_UNIFORM_VEC4, 1);
+        SetShaderValueV(tree_composite_no_reveal_shader_, tree_composite_no_reveal_trunk_rect_loc_, trunk_rect,
+                        SHADER_UNIFORM_VEC4, 1);
+        SetShaderValueV(tree_composite_no_reveal_shader_, tree_composite_no_reveal_canopy_foreground_rect_loc_,
+                        canopy_foreground_rect, SHADER_UNIFORM_VEC4, 1);
+        SetShaderValueV(tree_composite_no_reveal_shader_, tree_composite_no_reveal_mask_rect_loc_, mask_rect,
+                        SHADER_UNIFORM_VEC4, 1);
+        SetShaderValue(tree_composite_no_reveal_shader_, tree_composite_no_reveal_time_loc_, &time_seconds,
+                       SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_no_reveal_shader_, tree_composite_no_reveal_sway_strength_loc_, &sway_strength,
+                       SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_no_reveal_shader_, tree_composite_no_reveal_sway_speed_loc_, &sway_speed,
+                       SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_no_reveal_shader_, tree_composite_no_reveal_phase_offset_loc_, &phase_offset,
+                       SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_composite_no_reveal_shader_, tree_composite_no_reveal_gradient_start_loc_, &gradient_start,
+                       SHADER_UNIFORM_FLOAT);
+        DrawTexturePro(*canopy_background_texture, canopy_background_src, dst, {0, 0}, 0.0f, WHITE);
+        EndShaderMode();
+    }
     rlDrawRenderBatchActive();
     return true;
 }
@@ -2170,6 +2254,11 @@ void GameApp::PumpInfluenceFieldBuilds() {
                 ApplyInfluenceBuildResult(std::move(result));
             }
         }
+    }
+
+    if (!IsInfluenceZoneSystemEnabled()) {
+        pending_influence_build_request_.reset();
+        return;
     }
 
     if (!influence_build_in_flight_ && pending_influence_build_request_.has_value()) {
@@ -3564,12 +3653,23 @@ void GameApp::Render() {
                 DrawMainMenu(player_name_buffer_, sizeof(player_name_buffer_), join_ip_buffer_, sizeof(join_ip_buffer_),
                              lan_discovery_.GetHosts(), config_manager_.GetConfigPath(), controls_bindings_,
                              controls_manager_.GetControlsPath(), show_network_debug_panel_,
-                             settings_.hide_own_influence_zones, main_menu_status_message_, main_menu_status_is_error_);
+                             settings_.hide_own_influence_zones, settings_.enable_influence_zone_system,
+                             main_menu_status_message_, main_menu_status_is_error_);
 
             if (ui_result.settings_changed) {
+                const bool influence_setting_changed =
+                    settings_.enable_influence_zone_system != ui_result.enable_influence_zone_system;
                 show_network_debug_panel_ = ui_result.show_network_debug_panel;
                 settings_.hide_own_influence_zones = ui_result.hide_own_influence_zones;
+                settings_.enable_influence_zone_system = ui_result.enable_influence_zone_system;
                 settings_.show_network_debug_panel = show_network_debug_panel_;
+                if (influence_setting_changed) {
+                    if (settings_.enable_influence_zone_system) {
+                        RebuildInfluenceZones();
+                    } else {
+                        ClearInfluenceZoneVisuals();
+                    }
+                }
                 config_manager_.Save(settings_);
             }
 
@@ -4013,7 +4113,7 @@ void GameApp::StartMatchAsHost() {
     pending_open_initial_loadout_ui_ = false;
     pending_object_spawns_.clear();
     dropped_item_pickup_blocks_.clear();
-    castle_charge_lightning_cooldowns_.clear();
+    castle_charge_lightning_effect_ids_.clear();
 
     Player host_player;
     host_player.id = 0;
@@ -5409,12 +5509,18 @@ void GameApp::SimulatePlayerFromInput(Player& player, const ClientInputMessage& 
             if (player.id == state_.local_player_id) {
                 local_inventory_ui_mode_ = InventoryUiMode::Closed;
             }
-        } else if (player.id == state_.local_player_id) {
-            const CastleState* allied_castle = GetAlliedCastleForPlayer(player);
-            local_inventory_ui_mode_ =
-                (allied_castle != nullptr && IsPlayerWithinCastleRange(player, *allied_castle))
-                    ? InventoryUiMode::CastleLoadout
-                    : InventoryUiMode::Inventory;
+        } else {
+            player.rune_placing_mode = false;
+            if (player.action_state == PlayerActionState::RunePlacing) {
+                player.action_state = PlayerActionState::Idle;
+            }
+            if (player.id == state_.local_player_id) {
+                const CastleState* allied_castle = GetAlliedCastleForPlayer(player);
+                local_inventory_ui_mode_ =
+                    (allied_castle != nullptr && IsPlayerWithinCastleRange(player, *allied_castle))
+                        ? InventoryUiMode::CastleLoadout
+                        : InventoryUiMode::Inventory;
+            }
         }
         inventory_editing = player.inventory_mode;
     }
@@ -5869,7 +5975,36 @@ void GameApp::RebuildMapObjectsFromSeeds() {
     for (const auto& seed : state_.map.object_seeds) {
         SpawnObjectInstanceAtCell(seed.prototype_id, seed.cell);
     }
+    RebuildStaticRenderCaches();
     RebuildAltarsFromMapObjects();
+}
+
+void GameApp::RebuildStaticRenderCaches() {
+    static_decoration_render_chunks_.clear();
+    static_decoration_chunk_cols_ = 0;
+    static_decoration_chunk_rows_ = 0;
+    if (state_.map.width <= 0 || state_.map.height <= 0) {
+        return;
+    }
+
+    static_decoration_chunk_cols_ =
+        (state_.map.width + kStaticRenderChunkSizeTiles - 1) / kStaticRenderChunkSizeTiles;
+    static_decoration_chunk_rows_ =
+        (state_.map.height + kStaticRenderChunkSizeTiles - 1) / kStaticRenderChunkSizeTiles;
+    static_decoration_render_chunks_.resize(static_cast<size_t>(static_decoration_chunk_cols_ * static_decoration_chunk_rows_));
+
+    for (size_t i = 0; i < state_.map.decorations.size(); ++i) {
+        if (state_.map.decorations[i].empty()) {
+            continue;
+        }
+        const int cell_x = static_cast<int>(i % static_cast<size_t>(std::max(1, state_.map.width)));
+        const int cell_y = static_cast<int>(i / static_cast<size_t>(std::max(1, state_.map.width)));
+        const int chunk_x = cell_x / kStaticRenderChunkSizeTiles;
+        const int chunk_y = cell_y / kStaticRenderChunkSizeTiles;
+        const size_t chunk_index = static_cast<size_t>(chunk_y * static_decoration_chunk_cols_ + chunk_x);
+        static_decoration_render_chunks_[chunk_index].push_back(
+            {((static_cast<float>(cell_y) + 1.0f) * static_cast<float>(state_.map.cell_size)), i});
+    }
 }
 
 void GameApp::RebuildAltarsFromMapObjects() {
@@ -7186,6 +7321,11 @@ void GameApp::UpdateEarthRootsGroups(float dt) {
 }
 
 void GameApp::RebuildInfluenceZones() {
+    if (!IsInfluenceZoneSystemEnabled()) {
+        ClearInfluenceZoneVisuals();
+        return;
+    }
+
     std::vector<InfluenceZoneCell> rebuilt_zones;
     for (const auto& rune : state_.runes) {
         if (!rune.active || !rune.creates_influence_zone) {
@@ -7739,6 +7879,16 @@ void GameApp::UpdateLightningEffects(float dt) {
                        [](const LightningEffect& effect) { return !effect.alive; }),
         state_.lightning_effects.end());
 
+    const auto has_active_lightning_effect = [&](int effect_id) {
+        return std::any_of(state_.lightning_effects.begin(), state_.lightning_effects.end(),
+                           [&](const LightningEffect& effect) { return effect.alive && effect.id == effect_id; });
+    };
+    const auto find_active_lightning_effect = [&](int effect_id) -> LightningEffect* {
+        auto it = std::find_if(state_.lightning_effects.begin(), state_.lightning_effects.end(),
+                               [&](const LightningEffect& effect) { return effect.alive && effect.id == effect_id; });
+        return it == state_.lightning_effects.end() ? nullptr : &(*it);
+    };
+
     std::unordered_set<int> active_charging_rune_ids;
     for (const Rune& rune : state_.runes) {
         if (!rune.active || !rune.castle_charging) {
@@ -7749,14 +7899,17 @@ void GameApp::UpdateLightningEffects(float dt) {
             continue;
         }
         active_charging_rune_ids.insert(rune.id);
-        float& cooldown = castle_charge_lightning_cooldowns_[rune.id];
-        cooldown -= dt;
-        if (cooldown <= 0.0f) {
+        const auto active_effect_it = castle_charge_lightning_effect_ids_.find(rune.id);
+        const bool has_active_effect =
+            active_effect_it != castle_charge_lightning_effect_ids_.end() &&
+            has_active_lightning_effect(active_effect_it->second);
+        if (!has_active_effect) {
             SpawnLightningEffect(CellToWorldCenter(rune.cell), GetCastleChargePortWorld(*castle),
-                                 Constants::kCastleChargeLightningIntervalSeconds, false, "charging_lightning_born",
-                                 "charging_lightning_idle", "charging_lightning_death");
+                                 999999.0f, false, "charging_lightning_born", "charging_lightning_idle",
+                                 "charging_lightning_death");
             if (!state_.lightning_effects.empty()) {
                 LightningEffect& effect = state_.lightning_effects.back();
+                castle_charge_lightning_effect_ids_[rune.id] = effect.id;
                 effect.has_sort_y_override = true;
                 float sort_y = GetCastleChargePortWorld(*castle).y;
                 if (const MapObjectInstance* castle_object = FindMapObjectById(castle->map_object_id)) {
@@ -7767,12 +7920,22 @@ void GameApp::UpdateLightningEffects(float dt) {
                 }
                 effect.sort_y_override = sort_y;
             }
-            cooldown = Constants::kCastleChargeLightningIntervalSeconds;
+        } else if (LightningEffect* effect = find_active_lightning_effect(active_effect_it->second)) {
+            effect->start = Vector2Add(CellToWorldCenter(rune.cell), {0.0f, 0.5f * static_cast<float>(std::max(1, state_.map.cell_size))});
+            effect->end = Vector2Add(GetCastleChargePortWorld(*castle), {0.0f, 0.5f * static_cast<float>(std::max(1, state_.map.cell_size))});
         }
     }
-    for (auto it = castle_charge_lightning_cooldowns_.begin(); it != castle_charge_lightning_cooldowns_.end();) {
+    for (auto it = castle_charge_lightning_effect_ids_.begin(); it != castle_charge_lightning_effect_ids_.end();) {
+        LightningEffect* effect = find_active_lightning_effect(it->second);
         if (active_charging_rune_ids.count(it->first) == 0) {
-            it = castle_charge_lightning_cooldowns_.erase(it);
+            if (effect != nullptr && !effect->dying) {
+                effect->birthing = false;
+                effect->dying = true;
+                effect->death_elapsed = 0.0f;
+            }
+            it = castle_charge_lightning_effect_ids_.erase(it);
+        } else if (effect == nullptr) {
+            it = castle_charge_lightning_effect_ids_.erase(it);
         } else {
             ++it;
         }
@@ -8808,6 +8971,9 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
 }
 
 bool GameApp::IsVolatileCastCellForPlayer(const Player& player, const GridCoord& cell) const {
+    if (!IsInfluenceZoneSystemEnabled()) {
+        return false;
+    }
     return std::any_of(state_.influence_zones.begin(), state_.influence_zones.end(), [&](const InfluenceZoneCell& influence) {
         return influence.cell == cell && influence.team != player.team;
     });
@@ -9314,6 +9480,43 @@ GridCoord GameApp::WorldToCell(Vector2 world) const {
 
 Vector2 GameApp::CellToWorldCenter(const GridCoord& cell) const { return state_.map.CellCenterWorld(cell); }
 
+Rectangle GameApp::GetCameraWorldCullRect(float padding_world) const {
+    const Vector2 top_left =
+        GetScreenToWorld2D({-padding_world * camera_.zoom, -padding_world * camera_.zoom}, camera_);
+    const Vector2 bottom_right = GetScreenToWorld2D(
+        {static_cast<float>(GetScreenWidth()) + padding_world * camera_.zoom,
+         static_cast<float>(GetScreenHeight()) + padding_world * camera_.zoom},
+        camera_);
+    return {std::min(top_left.x, bottom_right.x), std::min(top_left.y, bottom_right.y),
+            std::fabs(bottom_right.x - top_left.x), std::fabs(bottom_right.y - top_left.y)};
+}
+
+void GameApp::GetVisibleCellBounds(int padding_cells, int* out_min_x, int* out_min_y, int* out_max_x,
+                                   int* out_max_y) const {
+    if (out_min_x == nullptr || out_min_y == nullptr || out_max_x == nullptr || out_max_y == nullptr ||
+        state_.map.width <= 0 || state_.map.height <= 0 || state_.map.cell_size <= 0) {
+        return;
+    }
+    const float padding_world = static_cast<float>(std::max(0, padding_cells * state_.map.cell_size));
+    const Rectangle world_rect = GetCameraWorldCullRect(padding_world);
+    *out_min_x = std::clamp(static_cast<int>(std::floor(world_rect.x / static_cast<float>(state_.map.cell_size))), 0,
+                            state_.map.width - 1);
+    *out_min_y = std::clamp(static_cast<int>(std::floor(world_rect.y / static_cast<float>(state_.map.cell_size))), 0,
+                            state_.map.height - 1);
+    *out_max_x = std::clamp(
+        static_cast<int>(std::floor((world_rect.x + world_rect.width) / static_cast<float>(state_.map.cell_size))), 0,
+        state_.map.width - 1);
+    *out_max_y = std::clamp(
+        static_cast<int>(std::floor((world_rect.y + world_rect.height) / static_cast<float>(state_.map.cell_size))), 0,
+        state_.map.height - 1);
+}
+
+bool GameApp::IsWorldRectVisible(const Rectangle& world_rect, float padding_world) const {
+    const Rectangle view = GetCameraWorldCullRect(padding_world);
+    return world_rect.x + world_rect.width >= view.x && world_rect.x <= view.x + view.width &&
+           world_rect.y + world_rect.height >= view.y && world_rect.y <= view.y + view.height;
+}
+
 bool GameApp::IsCastleEquippableRune(RuneType rune_type) const {
     return rune_type == RuneType::Fire || rune_type == RuneType::Water || rune_type == RuneType::Earth;
 }
@@ -9457,7 +9660,7 @@ void GameApp::NormalizePlayerRuneLoadout(Player& player) const {
         player.selected_rune_slot = 2;
     }
     player.selected_rune_type = player.rune_slots[static_cast<size_t>(player.selected_rune_slot)];
-    player.rune_placing_mode = player.selected_rune_type != RuneType::None &&
+    player.rune_placing_mode = !player.inventory_mode && player.selected_rune_type != RuneType::None &&
                                GetPlayerRuneCooldownRemaining(player, player.selected_rune_type) <= 0.0f &&
                                player.mana >= GetRuneManaCost(player.selected_rune_type);
 }
@@ -9518,6 +9721,10 @@ void GameApp::OpenLocalInventoryUiForCurrentContext() {
         return;
     }
     local_player->inventory_mode = true;
+    local_player->rune_placing_mode = false;
+    if (local_player->action_state == PlayerActionState::RunePlacing) {
+        local_player->action_state = PlayerActionState::Idle;
+    }
     const CastleState* allied_castle = GetAlliedCastleForPlayer(*local_player);
     local_inventory_ui_mode_ =
         (allied_castle != nullptr && IsPlayerWithinCastleRange(*local_player, *allied_castle))
@@ -9711,6 +9918,9 @@ void GameApp::RenderGroundMapObjects() {
         const float visual_scale =
             proto->type == ObjectType::Consumable ? Constants::kDroppedItemVisualScale : 1.0f;
         const Rectangle dst = GetMapObjectSpriteRect(object, proto, base_dst_w, base_dst_h, visual_scale);
+        if (!IsWorldRectVisible(dst, static_cast<float>(state_.map.cell_size))) {
+            continue;
+        }
         float anim_time = render_time_seconds_;
         const std::string animation = ResolveMapObjectAnimation(object, *proto, *metadata, &anim_time);
 
@@ -9814,6 +10024,9 @@ void GameApp::UpdateObjectShadowLayer() {
         dst.x += (base_dst_w - dst_w) * 0.5f;
         dst.y += (base_dst_h - dst_h) * 0.5f;
         dst = SnapRect(dst);
+        if (!IsWorldRectVisible(dst, static_cast<float>(state_.map.cell_size))) {
+            continue;
+        }
 
         const Rectangle src = InsetSourceRect(
             metadata->GetFrame(proto->shadow_animation, "default", render_time_seconds_),
@@ -9962,7 +10175,8 @@ void GameApp::RenderZoneBorderOverlay() {
 }
 
 void GameApp::RenderInfluenceZoneOverlay() {
-    if (!has_influence_zone_overlay_shader_ || state_.map.cell_size <= 0 || state_.map.width <= 0 || state_.map.height <= 0) {
+    if (!IsInfluenceZoneSystemEnabled() || !has_influence_zone_overlay_shader_ || state_.map.cell_size <= 0 ||
+        state_.map.width <= 0 || state_.map.height <= 0) {
         return;
     }
 
@@ -9977,6 +10191,14 @@ void GameApp::RenderInfluenceZoneOverlay() {
     const float blend_t = std::clamp(influence_zone_transition_elapsed_seconds_ /
                                          std::max(0.0001f, Constants::kInfluenceZoneTransitionSeconds),
                                      0.0f, 1.0f);
+
+    // The influence overlay is drawn into the intermediate world render target.
+    // Preserve destination alpha while applying normal source-over RGB blending,
+    // otherwise semi-transparent overlay pixels can leave the RT partially transparent
+    // and later compositing exposes black under discarded pixels in tall shaders.
+    rlSetBlendFactorsSeparate(RL_SRC_ALPHA, RL_ONE_MINUS_SRC_ALPHA, RL_ONE, RL_ONE_MINUS_SRC_ALPHA, RL_FUNC_ADD,
+                              RL_FUNC_ADD);
+    BeginBlendMode(BLEND_CUSTOM_SEPARATE);
 
     SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_screen_height_loc_, &screen_height,
                    SHADER_UNIFORM_FLOAT);
@@ -10004,6 +10226,7 @@ void GameApp::RenderInfluenceZoneOverlay() {
         const float draw_blend_t = (has_from && has_to) ? blend_t : 1.0f;
         const Rectangle src = {0.0f, 0.0f, static_cast<float>(draw_texture.width), static_cast<float>(draw_texture.height)};
         const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+        rlDrawRenderBatchActive();
         BeginShaderMode(influence_zone_overlay_shader_);
         SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_tint_loc_, tint, SHADER_UNIFORM_VEC4, 1);
         SetShaderValue(influence_zone_overlay_shader_, influence_zone_overlay_pattern_phase_loc_, &pattern_phase,
@@ -10025,10 +10248,12 @@ void GameApp::RenderInfluenceZoneOverlay() {
         draw_team_field(influence_zone_distance_blue_from_texture_, has_influence_zone_distance_blue_from_texture_,
                         influence_zone_distance_blue_to_texture_, has_influence_zone_distance_blue_to_texture_, blue_tint, 1.0f);
     }
+
+    EndBlendMode();
 }
 
 void GameApp::RenderInfluenceZoneAnimatedTiles() {
-    if (state_.influence_zones.empty()) {
+    if (!IsInfluenceZoneSystemEnabled() || state_.influence_zones.empty()) {
         return;
     }
 
@@ -10071,6 +10296,8 @@ bool GameApp::ShouldRenderInfluenceTeam(int team) const {
     }
     return local_player->team != team;
 }
+
+bool GameApp::IsInfluenceZoneSystemEnabled() const { return settings_.enable_influence_zone_system; }
 
 void GameApp::RenderMapBoundsFadeOverlay() {
     if (!has_map_bounds_fade_shader_ || state_.map.cell_size <= 0) {
@@ -10260,6 +10487,13 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         return true;
     };
 
+    const Rectangle visible_world =
+        GetCameraWorldCullRect(static_cast<float>(std::max(1, state_.map.cell_size) * 3));
+    const auto point_visible = [&](Vector2 world_pos) {
+        return world_pos.x >= visible_world.x && world_pos.x <= visible_world.x + visible_world.width &&
+               world_pos.y >= visible_world.y && world_pos.y <= visible_world.y + visible_world.height;
+    };
+
     std::vector<RenderItem> items;
     size_t lightning_segment_total = 0;
     for (const auto& effect : state_.lightning_effects) {
@@ -10289,18 +10523,32 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             distance / std::max(1.0f, static_cast<float>(state_.map.cell_size))))));
     }
     items.reserve(state_.players.size() + state_.runes.size() + state_.projectiles.size() + storm_arc_visuals_.size() + state_.particles.size() +
-                  hammer_impact_effects_.size() + state_.ice_walls.size() + state_.map.decorations.size() +
-                  state_.map_objects.size() +
+                  hammer_impact_effects_.size() + state_.ice_walls.size() + state_.map_objects.size() +
                   lightning_segment_total + grappling_segment_total + state_.earth_roots_groups.size() * 17);
 
-    for (size_t i = 0; i < state_.map.decorations.size(); ++i) {
-        if (state_.map.decorations[i].empty()) {
-            continue;
+    if (static_decoration_chunk_cols_ > 0 && static_decoration_chunk_rows_ > 0) {
+        const int chunk_world = kStaticRenderChunkSizeTiles * std::max(1, state_.map.cell_size);
+        const int min_chunk_x =
+            std::clamp(static_cast<int>(std::floor(visible_world.x / static_cast<float>(chunk_world))), 0,
+                       static_decoration_chunk_cols_ - 1);
+        const int min_chunk_y =
+            std::clamp(static_cast<int>(std::floor(visible_world.y / static_cast<float>(chunk_world))), 0,
+                       static_decoration_chunk_rows_ - 1);
+        const int max_chunk_x =
+            std::clamp(static_cast<int>(std::floor((visible_world.x + visible_world.width) / static_cast<float>(chunk_world))), 0,
+                       static_decoration_chunk_cols_ - 1);
+        const int max_chunk_y =
+            std::clamp(static_cast<int>(std::floor((visible_world.y + visible_world.height) / static_cast<float>(chunk_world))), 0,
+                       static_decoration_chunk_rows_ - 1);
+        for (int chunk_y = min_chunk_y; chunk_y <= max_chunk_y; ++chunk_y) {
+            for (int chunk_x = min_chunk_x; chunk_x <= max_chunk_x; ++chunk_x) {
+                const auto& chunk = static_decoration_render_chunks_[static_cast<size_t>(
+                    chunk_y * static_decoration_chunk_cols_ + chunk_x)];
+                for (const StaticDecorationRenderItem& item : chunk) {
+                    items.push_back({RenderKind::LegacyDecoration, item.sort_y, item.decoration_index});
+                }
+            }
         }
-        const int cell_x = static_cast<int>(i % static_cast<size_t>(std::max(1, state_.map.width)));
-        const int cell_y = static_cast<int>(i / static_cast<size_t>(std::max(1, state_.map.width)));
-        items.push_back({RenderKind::LegacyDecoration,
-                         (static_cast<float>(cell_y) + 1.0f) * static_cast<float>(state_.map.cell_size), i});
     }
 
     for (size_t i = 0; i < state_.map_objects.size(); ++i) {
@@ -10308,9 +10556,18 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         if (!object.alive || IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
             continue;
         }
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        if (proto == nullptr) {
+            continue;
+        }
+        const Rectangle world_rect =
+            GetMapObjectSpriteRect(object, proto, static_cast<float>(GetSpriteSheetWidth(proto->sprite_sheet)),
+                                   static_cast<float>(GetSpriteSheetHeight(proto->sprite_sheet)), 1.0f, false);
+        if (!IsWorldRectVisible(world_rect, static_cast<float>(state_.map.cell_size))) {
+            continue;
+        }
         float sort_y = (static_cast<float>(object.cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
-        if (const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
-            proto != nullptr && proto->has_collision_box_override) {
+        if (proto->has_collision_box_override) {
             const Rectangle aabb = GetMapObjectCollisionAabb(object, proto);
             sort_y = aabb.y + aabb.height;
         }
@@ -10354,6 +10611,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             continue;
         }
         const Vector2 origin = CellToWorldCenter(dummy.cell);
+        if (!point_visible(origin)) {
+            continue;
+        }
         for (size_t j = 0; j < definition->parts.size(); ++j) {
             const auto& part = definition->parts[j];
             if (part.layer != CompositeEffectLayer::YSorted) {
@@ -10393,6 +10653,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 const size_t tile_index = static_cast<size_t>((dy + 1) * 3 + (dx + 1));
                 const GridCoord cell = {group.center_cell.x + dx, group.center_cell.y + dy};
                 const Vector2 center = CellToWorldCenter(cell);
+                if (!point_visible(center)) {
+                    continue;
+                }
                 items.push_back({RenderKind::EarthRootsPart, center.y - 4.0f, i, tile_index, 0});
                 if (!(dx == 0 && dy == 0)) {
                     items.push_back({RenderKind::EarthRootsPart, center.y + 8.0f, i, tile_index, 1});
@@ -10407,6 +10670,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             continue;
         }
         const Vector2 origin = GetRenderPlayerPosition(player.id);
+        if (!point_visible(origin)) {
+            continue;
+        }
         for (size_t j = 0; j < player.status_effects.size(); ++j) {
             const StatusEffectInstance& status = player.status_effects[j];
             if (status.composite_effect_id.empty()) {
@@ -10434,11 +10700,17 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             continue;
         }
         const Vector2 center = CellToWorldCenter(state_.runes[i].cell);
+        if (!point_visible(center)) {
+            continue;
+        }
         items.push_back({RenderKind::Rune, center.y, i});
     }
 
     for (size_t i = 0; i < state_.ice_walls.size(); ++i) {
         if (!state_.ice_walls[i].alive) {
+            continue;
+        }
+        if (!point_visible(CellToWorldCenter(state_.ice_walls[i].cell))) {
             continue;
         }
         const float base_y = (static_cast<float>(state_.ice_walls[i].cell.y) + 1.0f) * static_cast<float>(state_.map.cell_size);
@@ -10478,6 +10750,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 : ((!network_manager_.IsHost() && hook.owner_player_id == state_.local_player_id)
                        ? hook.head_pos
                        : GetRenderGrapplingHookHeadPosition(hook.id, hook.head_pos));
+        if (!point_visible(start) && !point_visible(end)) {
+            continue;
+        }
         const float distance = Vector2Distance(start, end);
         const int segments = std::max(
             2, static_cast<int>(std::floor(distance / std::max(1.0f, static_cast<float>(state_.map.cell_size)))));
@@ -10493,6 +10768,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         if (!state_.projectiles[i].alive) {
             continue;
         }
+        if (!point_visible(state_.projectiles[i].pos)) {
+            continue;
+        }
         items.push_back({RenderKind::Projectile, state_.projectiles[i].pos.y, i});
     }
 
@@ -10501,11 +10779,17 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             continue;
         }
         const Vector2 mid = Vector2Lerp(storm_arc_visuals_[i].start_world, storm_arc_visuals_[i].end_world, 0.5f);
+        if (!point_visible(mid)) {
+            continue;
+        }
         items.push_back({RenderKind::FireStormArc, mid.y, i});
     }
 
     for (size_t i = 0; i < state_.particles.size(); ++i) {
         if (!state_.particles[i].alive) {
+            continue;
+        }
+        if (!point_visible(state_.particles[i].pos)) {
             continue;
         }
         items.push_back({RenderKind::Particle, state_.particles[i].pos.y, i});
@@ -10515,12 +10799,18 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         if (!hammer_impact_effects_[i].alive) {
             continue;
         }
+        if (!point_visible(hammer_impact_effects_[i].world_pos)) {
+            continue;
+        }
         items.push_back({RenderKind::HammerImpact, hammer_impact_effects_[i].world_pos.y, i});
     }
 
     for (size_t i = 0; i < state_.players.size(); ++i) {
         const Player& player = state_.players[i];
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
+        if (!point_visible(draw_pos)) {
+            continue;
+        }
         items.push_back({RenderKind::Player, draw_pos.y + 16.0f, i});
     }
 
@@ -11178,6 +11468,11 @@ void GameApp::RenderMap() {
     if (state_.map.width <= 0 || state_.map.height <= 0) {
         return;
     }
+    int min_x = 0;
+    int min_y = 0;
+    int max_x = state_.map.width - 1;
+    int max_y = state_.map.height - 1;
+    GetVisibleCellBounds(1, &min_x, &min_y, &max_x, &max_y);
 
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
@@ -11280,8 +11575,8 @@ void GameApp::RenderMap() {
         return mask;
     };
 
-    for (int y = 0; y < state_.map.height; ++y) {
-        for (int x = 0; x < state_.map.width; ++x) {
+    for (int y = min_y; y <= max_y; ++y) {
+        for (int x = min_x; x <= max_x; ++x) {
             const TileType tile = state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)];
             const Rectangle dst = SnapRect(
                 {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
@@ -11328,6 +11623,11 @@ void GameApp::RenderMapForeground() {
     if (state_.map.width <= 0 || state_.map.height <= 0) {
         return;
     }
+    int min_x = 0;
+    int min_y = 0;
+    int max_x = state_.map.width - 1;
+    int max_y = state_.map.height - 1;
+    GetVisibleCellBounds(2, &min_x, &min_y, &max_x, &max_y);
 
     const bool has_texture = sprite_metadata_.IsLoaded();
     const Texture2D texture = sprite_metadata_.GetTexture();
@@ -11414,8 +11714,8 @@ void GameApp::RenderMapForeground() {
         return mask;
     };
 
-    for (int y = 0; y < state_.map.height; ++y) {
-        for (int x = 0; x < state_.map.width; ++x) {
+    for (int y = min_y; y <= max_y; ++y) {
+        for (int x = min_x; x <= max_x; ++x) {
             const TileType tile = state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)];
             const Rectangle dst = SnapRect(
                 {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
@@ -11500,8 +11800,8 @@ void GameApp::RenderMapForeground() {
                                   RL_FUNC_ADD, RL_FUNC_ADD);
         BeginBlendMode(BLEND_CUSTOM_SEPARATE);
 
-        for (int y = 0; y < state_.map.height; ++y) {
-            for (int x = 0; x < state_.map.width; ++x) {
+        for (int y = min_y; y <= max_y; ++y) {
+            for (int x = min_x; x <= max_x; ++x) {
                 const Rectangle dst = SnapRect(
                     {static_cast<float>(x * state_.map.cell_size), static_cast<float>(y * state_.map.cell_size),
                      static_cast<float>(state_.map.cell_size), static_cast<float>(state_.map.cell_size)});
@@ -12541,7 +12841,7 @@ void GameApp::RenderBottomHud() {
         const float top_division_bottom = hud_y - 18.0f;
         const float panel_x = screen_w * 0.5f + 14.0f;
         const float panel_y = top_division_top;
-        const float panel_w = std::min(356.0f, std::max(300.0f, screen_w - panel_x - 14.0f));
+        const float panel_w = std::min(534.0f, std::max(450.0f, screen_w - panel_x - 14.0f));
         const float panel_h = std::max(180.0f, top_division_bottom - panel_y);
         const Rectangle loadout_panel = {panel_x, panel_y, panel_w, panel_h};
         DrawRectangleRec(loadout_panel, Color{24, 28, 34, 236});
@@ -12577,6 +12877,12 @@ void GameApp::RenderBottomHud() {
             const int required_level = GetRuneRequiredCastleLevel(row.rune_type);
             const bool level_unlocked = allied_castle->level >= required_level;
             const bool has_capacity = equipped || equipped_count < GetCastleLoadoutCapacity(allied_castle->level);
+            const bool can_press_equip = level_unlocked && !equipped && has_capacity;
+            const Rectangle row_rect = {panel_x + 10.0f, row_y + 2.0f, panel_w - 20.0f, 32.0f};
+            if (equipped) {
+                DrawRectangleRec(row_rect, Color{58, 150, 76, 84});
+                DrawRectangleLinesEx(row_rect, 1.0f, Color{104, 208, 120, 220});
+            }
             const char* rune_animation = GetRuneSpriteAnimationKey(row.rune_type);
             const float icon_size = 18.0f;
             const float icon_x = panel_x + 16.0f;
@@ -12590,7 +12896,7 @@ void GameApp::RenderBottomHud() {
             }
             DrawText(row.label, static_cast<int>(panel_x + 40.0f), static_cast<int>(row_y + 8.0f), 20, RAYWHITE);
             if (!level_unlocked) {
-                DrawText(TextFormat("Requires level %d", required_level), static_cast<int>(panel_x + 128.0f),
+                DrawText(TextFormat("Requires castle level %d", required_level), static_cast<int>(panel_x + 128.0f),
                          static_cast<int>(row_y + 10.0f), 16, Color{186, 120, 120, 255});
             } else if (!equipped && !has_capacity) {
                 DrawText("Capacity full", static_cast<int>(panel_x + 128.0f), static_cast<int>(row_y + 10.0f), 16,
@@ -12605,6 +12911,21 @@ void GameApp::RenderBottomHud() {
                 GuiEnable();
             } else {
                 pressed = GuiButton(button, equipped ? "Unequip" : "Equip");
+            }
+            if (can_press_equip) {
+                const float pulse = 0.5f + 0.5f * std::sin(render_time_seconds_ * 2.0f * PI * 1.6f);
+                const unsigned char fill_alpha = static_cast<unsigned char>(std::roundf(42.0f + 78.0f * pulse));
+                const unsigned char border_alpha = static_cast<unsigned char>(std::roundf(120.0f + 100.0f * pulse));
+                const Rectangle fill_rect = {button.x + 1.0f, button.y + 1.0f, button.width - 2.0f, button.height - 2.0f};
+                DrawRectangleRec(fill_rect, Color{224, 198, 72, fill_alpha});
+                DrawRectangleLinesEx(fill_rect, 1.0f, Color{250, 228, 110, border_alpha});
+                const char* label = "Equip";
+                const int font_size = 10;
+                const int text_width = MeasureText(label, font_size);
+                DrawText(label,
+                         static_cast<int>(button.x + (button.width - static_cast<float>(text_width)) * 0.5f),
+                         static_cast<int>(button.y + (button.height - static_cast<float>(font_size)) * 0.5f - 1.0f),
+                         font_size, Color{221, 228, 245, 255});
             }
             if (pressed) {
                 const bool changed = equipped ? UnequipRuneFromCastleLoadout(*local_player, row.rune_type)
@@ -12684,6 +13005,18 @@ void GameApp::RenderInGameMenu() {
     GuiCheckBox({x + 20.0f, y + 116.0f, 24.0f, 24.0f}, "Hide Own Influence Zones", &updated_hide_own_influence_zones);
     if (updated_hide_own_influence_zones != settings_.hide_own_influence_zones) {
         settings_.hide_own_influence_zones = updated_hide_own_influence_zones;
+        config_manager_.Save(settings_);
+    }
+    bool updated_enable_influence_zone_system = settings_.enable_influence_zone_system;
+    GuiCheckBox({x + 20.0f, y + 150.0f, 24.0f, 24.0f}, "Enable Influence Zone System",
+                &updated_enable_influence_zone_system);
+    if (updated_enable_influence_zone_system != settings_.enable_influence_zone_system) {
+        settings_.enable_influence_zone_system = updated_enable_influence_zone_system;
+        if (settings_.enable_influence_zone_system) {
+            RebuildInfluenceZones();
+        } else {
+            ClearInfluenceZoneVisuals();
+        }
         config_manager_.Save(settings_);
     }
     if (GuiButton({x + 20.0f, y + height - 52.0f, 120.0f, 32.0f}, "Back")) {
