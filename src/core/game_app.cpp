@@ -377,6 +377,10 @@ Color TeamUiColor(int team) {
     return team == Constants::kTeamRed ? Color{255, 120, 120, 255} : Color{120, 170, 255, 255};
 }
 
+const char* TeamDisplayName(int team) {
+    return team == Constants::kTeamRed ? "Red" : "Blue";
+}
+
 ConsoleTextSpanMessage MakeConsoleSpan(std::string text, Color color) {
     return {std::move(text), color.r, color.g, color.b, color.a};
 }
@@ -1083,6 +1087,186 @@ bool WriteFileBytes(const std::string& path, const std::vector<uint8_t>& bytes) 
     return file.good();
 }
 
+bool IsPngMapFilePath(const std::string& path) {
+    namespace fs = std::filesystem;
+    const fs::path file_path(path);
+    const std::string extension = file_path.extension().string();
+    return fs::exists(file_path) && fs::is_regular_file(file_path) && (extension == ".png" || extension == ".PNG");
+}
+
+bool IsLayeredMapDirectoryPath(const std::string& path) {
+    namespace fs = std::filesystem;
+    const fs::path map_dir(path);
+    if (!fs::exists(map_dir) || !fs::is_directory(map_dir)) {
+        return false;
+    }
+    const std::string map_name = map_dir.filename().string();
+    return fs::exists(map_dir / "exports" / (map_name + "-terrain.png")) &&
+           fs::exists(map_dir / "exports" / (map_name + "-objects.png"));
+}
+
+std::string BuildLayeredMapTerrainPngPath(const std::string& map_dir_path) {
+    namespace fs = std::filesystem;
+    const fs::path map_dir(map_dir_path);
+    const std::string map_name = map_dir.filename().string();
+    return (map_dir / "exports" / (map_name + "-terrain.png")).string();
+}
+
+std::string BuildLayeredMapObjectsPngPath(const std::string& map_dir_path) {
+    namespace fs = std::filesystem;
+    const fs::path map_dir(map_dir_path);
+    const std::string map_name = map_dir.filename().string();
+    return (map_dir / "exports" / (map_name + "-objects.png")).string();
+}
+
+void AppendU32(std::vector<uint8_t>* out, uint32_t value) {
+    if (out == nullptr) {
+        return;
+    }
+    out->push_back(static_cast<uint8_t>(value & 0xffu));
+    out->push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
+    out->push_back(static_cast<uint8_t>((value >> 16u) & 0xffu));
+    out->push_back(static_cast<uint8_t>((value >> 24u) & 0xffu));
+}
+
+bool ReadU32(const std::vector<uint8_t>& bytes, size_t* offset, uint32_t* out_value) {
+    if (offset == nullptr || out_value == nullptr || *offset + 4 > bytes.size()) {
+        return false;
+    }
+    const size_t i = *offset;
+    *out_value = static_cast<uint32_t>(bytes[i]) | (static_cast<uint32_t>(bytes[i + 1]) << 8u) |
+                 (static_cast<uint32_t>(bytes[i + 2]) << 16u) | (static_cast<uint32_t>(bytes[i + 3]) << 24u);
+    *offset += 4;
+    return true;
+}
+
+void AppendString(std::vector<uint8_t>* out, const std::string& value) {
+    AppendU32(out, static_cast<uint32_t>(value.size()));
+    if (out != nullptr) {
+        out->insert(out->end(), value.begin(), value.end());
+    }
+}
+
+bool ReadString(const std::vector<uint8_t>& bytes, size_t* offset, std::string* out_value) {
+    uint32_t size = 0;
+    if (offset == nullptr || out_value == nullptr || !ReadU32(bytes, offset, &size) || *offset + size > bytes.size()) {
+        return false;
+    }
+    out_value->assign(reinterpret_cast<const char*>(bytes.data() + *offset), size);
+    *offset += size;
+    return true;
+}
+
+void AppendBlob(std::vector<uint8_t>* out, const std::vector<uint8_t>& bytes) {
+    AppendU32(out, static_cast<uint32_t>(bytes.size()));
+    if (out != nullptr) {
+        out->insert(out->end(), bytes.begin(), bytes.end());
+    }
+}
+
+bool ReadBlob(const std::vector<uint8_t>& bytes, size_t* offset, std::vector<uint8_t>* out_blob) {
+    uint32_t size = 0;
+    if (offset == nullptr || out_blob == nullptr || !ReadU32(bytes, offset, &size) || *offset + size > bytes.size()) {
+        return false;
+    }
+    out_blob->assign(bytes.begin() + static_cast<std::ptrdiff_t>(*offset),
+                     bytes.begin() + static_cast<std::ptrdiff_t>(*offset + size));
+    *offset += size;
+    return true;
+}
+
+bool BuildMapTransferPayload(const std::string& source_path, std::string* out_transfer_filename, std::vector<uint8_t>* out_bytes) {
+    if (out_transfer_filename == nullptr || out_bytes == nullptr) {
+        return false;
+    }
+    namespace fs = std::filesystem;
+    out_bytes->clear();
+    out_transfer_filename->clear();
+
+    if (IsPngMapFilePath(source_path)) {
+        *out_transfer_filename = fs::path(source_path).filename().string();
+        return ReadFileBytes(source_path, out_bytes);
+    }
+
+    if (!IsLayeredMapDirectoryPath(source_path)) {
+        return false;
+    }
+
+    const std::string terrain_path = BuildLayeredMapTerrainPngPath(source_path);
+    const std::string objects_path = BuildLayeredMapObjectsPngPath(source_path);
+    std::vector<uint8_t> terrain_bytes;
+    std::vector<uint8_t> objects_bytes;
+    if (!ReadFileBytes(terrain_path, &terrain_bytes) || !ReadFileBytes(objects_path, &objects_bytes)) {
+        return false;
+    }
+
+    const std::string map_name = fs::path(source_path).filename().string();
+    *out_transfer_filename = map_name + ".mapbundle";
+    out_bytes->insert(out_bytes->end(), {'R', 'A', 'M', 'B'});
+    out_bytes->push_back(static_cast<uint8_t>(1));  // bundle version
+    out_bytes->push_back(static_cast<uint8_t>(1));  // layered bundle
+    AppendString(out_bytes, map_name);
+    AppendBlob(out_bytes, terrain_bytes);
+    AppendBlob(out_bytes, objects_bytes);
+    return true;
+}
+
+bool ReconstructTransferredMap(const std::vector<uint8_t>& bytes, const std::string& transfer_filename, int transfer_id,
+                               std::string* out_resolved_path) {
+    if (out_resolved_path == nullptr) {
+        return false;
+    }
+    namespace fs = std::filesystem;
+    *out_resolved_path = {};
+
+    const bool is_bundle = bytes.size() >= 6 && bytes[0] == 'R' && bytes[1] == 'A' && bytes[2] == 'M' && bytes[3] == 'B';
+    if (!is_bundle) {
+        const fs::path temp_path =
+            fs::temp_directory_path() /
+            TextFormat("rune-arena-map-transfer-%d-%s", transfer_id, transfer_filename.c_str());
+        if (!WriteFileBytes(temp_path.string(), bytes)) {
+            return false;
+        }
+        *out_resolved_path = temp_path.string();
+        return true;
+    }
+
+    size_t offset = 4;
+    if (offset + 2 > bytes.size()) {
+        return false;
+    }
+    const uint8_t version = bytes[offset++];
+    const uint8_t format = bytes[offset++];
+    if (version != 1 || format != 1) {
+        return false;
+    }
+
+    std::string map_name;
+    std::vector<uint8_t> terrain_bytes;
+    std::vector<uint8_t> objects_bytes;
+    if (!ReadString(bytes, &offset, &map_name) || !ReadBlob(bytes, &offset, &terrain_bytes) ||
+        !ReadBlob(bytes, &offset, &objects_bytes) || offset != bytes.size()) {
+        return false;
+    }
+
+    const fs::path map_dir =
+        fs::temp_directory_path() / TextFormat("rune-arena-map-transfer-%d", transfer_id) / map_name;
+    const fs::path exports_dir = map_dir / "exports";
+    std::error_code ec;
+    fs::create_directories(exports_dir, ec);
+    if (ec) {
+        return false;
+    }
+
+    const fs::path terrain_path = exports_dir / (map_name + "-terrain.png");
+    const fs::path objects_path = exports_dir / (map_name + "-objects.png");
+    if (!WriteFileBytes(terrain_path.string(), terrain_bytes) || !WriteFileBytes(objects_path.string(), objects_bytes)) {
+        return false;
+    }
+    *out_resolved_path = map_dir.string();
+    return true;
+}
+
 bool IsColumnPrototypeId(const std::string& prototype_id) {
     return prototype_id.rfind("column_", 0) == 0;
 }
@@ -1351,7 +1535,32 @@ void GameApp::Run() {
 
 void GameApp::CaptureFrameInputEdges() {
     pending_primary_pressed_ = pending_primary_pressed_ || IsBindingPressed(controls_bindings_.primary_action);
-    pending_grappling_pressed_ = pending_grappling_pressed_ || IsBindingPressed(controls_bindings_.grappling_hook_action);
+    const bool grappling_pressed = IsBindingPressed(controls_bindings_.grappling_hook_action);
+    const bool grappling_released = IsBindingReleased(controls_bindings_.grappling_hook_action);
+    const bool grappling_down = IsBindingDown(controls_bindings_.grappling_hook_action);
+    if (grappling_pressed && app_screen_ == AppScreen::InMatch && !in_game_menu_open_ && !chat_input_active_) {
+        if (const Player* local_player = FindPlayerById(state_.local_player_id);
+            local_player != nullptr && CanPlayerStartGrapplingPreview(*local_player)) {
+            grappling_preview_armed_ = true;
+            grappling_preview_started_time_ = render_time_seconds_;
+        }
+    }
+    if (grappling_preview_armed_ && !grappling_down) {
+        if (grappling_released && app_screen_ == AppScreen::InMatch && !in_game_menu_open_ && !chat_input_active_) {
+            if (const Player* local_player = FindPlayerById(state_.local_player_id);
+                local_player != nullptr && CanPlayerStartGrapplingPreview(*local_player)) {
+                pending_grappling_pressed_ = true;
+            }
+        }
+        grappling_preview_armed_ = false;
+    } else if (grappling_preview_armed_) {
+        if (app_screen_ != AppScreen::InMatch || in_game_menu_open_ || chat_input_active_) {
+            grappling_preview_armed_ = false;
+        } else if (const Player* local_player = FindPlayerById(state_.local_player_id);
+                   local_player == nullptr || !CanPlayerStartGrapplingPreview(*local_player)) {
+            grappling_preview_armed_ = false;
+        }
+    }
     pending_escape_pressed_ = pending_escape_pressed_ || IsKeyPressed(KEY_ESCAPE);
     if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
         pending_enter_pressed_ = true;
@@ -2392,6 +2601,7 @@ void GameApp::LoadAudioAssets() {
     load_sfx(sfx_grappling_latch_, Constants::kSfxGrapplingLatchPath, Constants::kSfxVolumeGrapplingLatch);
     load_sfx(sfx_earth_rune_launch_, Constants::kSfxEarthRuneLaunchPath, Constants::kSfxVolumeEarthRuneLaunch);
     load_sfx(sfx_earth_rune_impact_, Constants::kSfxEarthRuneImpactPath, Constants::kSfxVolumeEarthRuneImpact);
+    load_sfx(sfx_castle_level_up_, Constants::kSfxCastleLevelUpPath, Constants::kSfxVolumeCastleLevelUp);
     for (size_t i = 0; i < sfx_ice_wave_cast_.size(); ++i) {
         load_sfx_with_fallback(sfx_ice_wave_cast_[i], Constants::kSfxIceWaveCastPaths[i],
                                Constants::kSfxIceWaveCastFallbackPaths[i], Constants::kSfxVolumeIceWaveCast);
@@ -2484,6 +2694,7 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_grappling_latch_);
     unload_sfx(sfx_earth_rune_launch_);
     unload_sfx(sfx_earth_rune_impact_);
+    unload_sfx(sfx_castle_level_up_);
     for (auto& clip : sfx_ice_wave_cast_) {
         unload_sfx(clip);
     }
@@ -2777,25 +2988,29 @@ void GameApp::RefreshLobbyMapCatalog() {
     const fs::path map_dir = fs::path(resolved_default_map_path_).parent_path();
     if (!map_dir.empty() && fs::exists(map_dir) && fs::is_directory(map_dir)) {
         for (const auto& entry : fs::directory_iterator(map_dir)) {
-            if (!entry.is_regular_file()) {
-                continue;
-            }
-            const std::string extension = entry.path().extension().string();
-            if (extension != ".png" && extension != ".PNG") {
-                continue;
-            }
             LobbyMapEntry map_entry;
-            map_entry.key = entry.path().filename().string();
-            map_entry.label = entry.path().stem().string();
-            map_entry.resolved_path = entry.path().string();
-            lobby_map_catalog_.push_back(std::move(map_entry));
+            if (entry.is_regular_file()) {
+                const std::string extension = entry.path().extension().string();
+                if (extension != ".png" && extension != ".PNG") {
+                    continue;
+                }
+                map_entry.key = entry.path().filename().string();
+                map_entry.label = entry.path().stem().string();
+                map_entry.resolved_path = entry.path().string();
+                lobby_map_catalog_.push_back(std::move(map_entry));
+            } else if (entry.is_directory() && IsLayeredMapDirectoryPath(entry.path().string())) {
+                map_entry.key = entry.path().filename().string();
+                map_entry.label = entry.path().filename().string();
+                map_entry.resolved_path = entry.path().string();
+                lobby_map_catalog_.push_back(std::move(map_entry));
+            }
         }
     }
 
     std::sort(lobby_map_catalog_.begin(), lobby_map_catalog_.end(),
               [](const LobbyMapEntry& a, const LobbyMapEntry& b) { return a.key < b.key; });
 
-    if (lobby_map_catalog_.empty() && FileExists(resolved_default_map_path_.c_str())) {
+    if (lobby_map_catalog_.empty() && std::filesystem::exists(std::filesystem::path(resolved_default_map_path_))) {
         const fs::path default_path(resolved_default_map_path_);
         lobby_map_catalog_.push_back(
             {default_path.filename().string(), default_path.stem().string(), resolved_default_map_path_});
@@ -2875,11 +3090,12 @@ void GameApp::ApplyLobbyPreviewTextureFromPngBytes(const std::vector<uint8_t>& p
 }
 
 bool GameApp::RebuildLobbyMapPreview() {
+    namespace fs = std::filesystem;
     lobby_preview_png_bytes_.clear();
     lobby_preview_status_text_ = "Preview unavailable";
     ClearLobbyMapPreviewTexture();
 
-    if (resolved_host_selected_map_path_.empty() || !FileExists(resolved_host_selected_map_path_.c_str())) {
+    if (resolved_host_selected_map_path_.empty() || !fs::exists(fs::path(resolved_host_selected_map_path_))) {
         return false;
     }
 
@@ -2957,7 +3173,8 @@ bool GameApp::RebuildLobbyMapPreview() {
     render_time_seconds_ = saved_render_time;
     camera_ = saved_camera;
 
-    if (!rendered_preview && !ReadFileBytes(resolved_host_selected_map_path_, &lobby_preview_png_bytes_)) {
+    if (!rendered_preview && IsPngMapFilePath(resolved_host_selected_map_path_) &&
+        !ReadFileBytes(resolved_host_selected_map_path_, &lobby_preview_png_bytes_)) {
         lobby_preview_png_bytes_.clear();
         lobby_preview_status_text_ = "Preview load failed";
         return false;
@@ -2967,7 +3184,8 @@ bool GameApp::RebuildLobbyMapPreview() {
     lobby_preview_generation_ += 1;
     applied_lobby_preview_generation_ = lobby_preview_generation_;
     applied_lobby_preview_map_key_ = lobby_selected_map_key_;
-    lobby_preview_status_text_ = rendered_preview ? "" : "PNG preview fallback";
+    lobby_preview_status_text_ =
+        rendered_preview ? "" : (IsPngMapFilePath(resolved_host_selected_map_path_) ? "PNG preview fallback" : "Preview unavailable");
     return has_lobby_map_preview_texture_;
 }
 
@@ -3076,19 +3294,14 @@ bool GameApp::FinalizeClientTransferredMap() {
         return false;
     }
 
-    namespace fs = std::filesystem;
-    const fs::path temp_path =
-        fs::temp_directory_path() /
-        TextFormat("rune-arena-map-transfer-%d-%s", transfer.transfer_id, transfer.map_filename.c_str());
-    if (!WriteFileBytes(temp_path.string(), file_bytes)) {
+    if (!ReconstructTransferredMap(file_bytes, transfer.map_filename, transfer.transfer_id, &resolved_client_cached_map_path_)) {
         ReturnToMainMenu();
-        main_menu_status_message_ = "Map transfer failed: could not write temp map";
+        main_menu_status_message_ = "Map transfer failed: could not reconstruct temp map";
         main_menu_status_is_error_ = true;
         pending_client_map_transfer_.reset();
         return false;
     }
 
-    resolved_client_cached_map_path_ = temp_path.string();
     resolved_map_path_ = resolved_client_cached_map_path_;
     state_ = GameState{};
     if (!map_loader_.Load(resolved_map_path_, &objects_database_, state_.map)) {
@@ -3129,7 +3342,10 @@ bool GameApp::SendSelectedMapToClients(int transfer_id, const std::vector<uint8_
     const uint32_t chunk_bytes = static_cast<uint32_t>(std::max<size_t>(1, Constants::kMapTransferChunkBytes));
     const uint32_t chunk_count =
         static_cast<uint32_t>((file_bytes.size() + chunk_bytes - 1) / chunk_bytes);
-    const std::string map_filename = std::filesystem::path(resolved_host_selected_map_path_).filename().string();
+    std::string map_filename = std::filesystem::path(resolved_host_selected_map_path_).filename().string();
+    if (IsLayeredMapDirectoryPath(resolved_host_selected_map_path_)) {
+        map_filename += ".mapbundle";
+    }
     const uint32_t checksum = ComputeByteChecksum(file_bytes);
 
     network_manager_.BroadcastMapTransferBegin(
@@ -4055,7 +4271,8 @@ void GameApp::StartMatchAsHost() {
 
     const int transfer_id = next_map_transfer_id_++;
     std::vector<uint8_t> map_transfer_precheck;
-    if (!ReadFileBytes(resolved_host_selected_map_path_, &map_transfer_precheck)) {
+    std::string transfer_filename;
+    if (!BuildMapTransferPayload(resolved_host_selected_map_path_, &transfer_filename, &map_transfer_precheck)) {
         lobby_preview_status_text_ = "Selected map failed to transfer";
         return;
     }
@@ -4517,6 +4734,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             previous_local_owned_hook = hook;
         }
     }
+    std::unordered_map<int, int> previous_castle_levels;
+    previous_castle_levels.reserve(state_.castles.size());
+    for (const auto& castle : state_.castles) {
+        previous_castle_levels[castle.id] = castle.level;
+    }
 
     Vector2 previous_local_pos = {0.0f, 0.0f};
     Vector2 previous_local_vel = {0.0f, 0.0f};
@@ -4893,6 +5115,14 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         castle.charge_port_offset_x = castle_snapshot.charge_port_offset_x;
         castle.charge_port_offset_y = castle_snapshot.charge_port_offset_y;
         state_.castles.push_back(castle);
+    }
+    if (!network_manager_.IsHost() && sfx_castle_level_up_.loaded) {
+        for (const auto& castle : state_.castles) {
+            const auto previous_level_it = previous_castle_levels.find(castle.id);
+            if (previous_level_it != previous_castle_levels.end() && castle.level > previous_level_it->second) {
+                PlaySound(sfx_castle_level_up_.sound);
+            }
+        }
     }
     if (!network_manager_.IsHost()) {
         std::unordered_set<int> current_object_ids;
@@ -5820,6 +6050,31 @@ float GameApp::GetPlayerMovementSpeedMultiplier(const Player& player) const {
         }
     }
     return multiplier;
+}
+
+float GameApp::GetPlayerRuneCastRangeWorld(const Player& player) const {
+    const int catalyst_charges = GetPlayerRuneChargeCount(player, RuneType::Catalyst);
+    const float range_tiles =
+        std::max(0.0f, Constants::kRuneCastRangeTiles -
+                           static_cast<float>(catalyst_charges) * Constants::kCatalystChargeRangePenaltyTilesPerStack);
+    return range_tiles * static_cast<float>(Constants::kRuneCellSize);
+}
+
+float GameApp::GetPlayerGrapplingRangeWorld(const Player& player) const {
+    const MobilityProfile* mobility_profile = GetEquippedMobility(player);
+    if (mobility_profile == nullptr || mobility_profile->kind != EquipmentActionKind::GrapplingHook) {
+        return 0.0f;
+    }
+    return std::max(0.0f, mobility_profile->range_tiles * static_cast<float>(state_.map.cell_size));
+}
+
+bool GameApp::CanPlayerStartGrapplingPreview(const Player& player) const {
+    if (!player.alive || player.inventory_mode || player.rune_placing_mode || player.grappling_cooldown_remaining > 0.0f ||
+        IsPlayerBeingPulled(player.id) || HasStatusEffect(player, StatusEffectType::Stunned)) {
+        return false;
+    }
+    const MobilityProfile* mobility_profile = GetEquippedMobility(player);
+    return mobility_profile != nullptr && mobility_profile->kind == EquipmentActionKind::GrapplingHook;
 }
 
 float GameApp::GetPlayerBaseAcceleration(const Player& player) const {
@@ -7119,6 +7374,12 @@ void GameApp::UpdateRunes(float dt) {
 }
 
 void GameApp::UpdateCastles(float dt) {
+    std::unordered_map<int, int> previous_castle_levels;
+    previous_castle_levels.reserve(state_.castles.size());
+    for (const auto& castle : state_.castles) {
+        previous_castle_levels[castle.id] = castle.level;
+    }
+
     for (auto& castle : state_.castles) {
         RefreshCastleDerivedState(castle);
     }
@@ -7158,6 +7419,22 @@ void GameApp::UpdateCastles(float dt) {
         rune.castle_charge_elapsed_seconds += dt;
         bound_castle->total_energy += energy_per_second * dt;
         RefreshCastleDerivedState(*bound_castle);
+        const auto previous_level_it = previous_castle_levels.find(bound_castle->id);
+        const int previous_level =
+            previous_level_it != previous_castle_levels.end() ? previous_level_it->second : bound_castle->level;
+        if (bound_castle->level > previous_level) {
+            if (sfx_castle_level_up_.loaded) {
+                PlaySound(sfx_castle_level_up_.sound);
+            }
+            ConsoleMessage console;
+            console.lifetime_seconds = kConsoleLifetimeSeconds;
+            console.spans.push_back(MakeConsoleSpan(TeamDisplayName(bound_castle->team), TeamUiColor(bound_castle->team)));
+            console.spans.push_back(MakeConsoleSpan("'s castle has reached level ", RAYWHITE));
+            console.spans.push_back(MakeConsoleSpan(std::to_string(bound_castle->level), TeamUiColor(bound_castle->team)));
+            console.spans.push_back(MakeConsoleSpan(".", RAYWHITE));
+            BroadcastConsoleMessageToAll(console);
+            previous_castle_levels[bound_castle->id] = bound_castle->level;
+        }
 
         if (rune.castle_charge_elapsed_seconds >= Constants::kCastleChargeDurationSeconds) {
             rune.active = false;
@@ -8894,7 +9171,7 @@ bool GameApp::TryPlaceRune(Player& player, Vector2 world_mouse) {
 
     const GridCoord cell = WorldToCell(world_mouse);
     const Vector2 cell_center = CellToWorldCenter(cell);
-    if (Vector2Distance(player.pos, cell_center) > Constants::kRuneCastRangeWorld) {
+    if (Vector2Distance(player.pos, cell_center) > GetPlayerRuneCastRangeWorld(player)) {
         return false;
     }
     if (!IsTileRunePlaceable(cell) || IsCellOccupiedByRune(cell) || IsCellOccupiedByFireStormDummy(cell)) {
@@ -9451,7 +9728,7 @@ bool GameApp::IsTileRunePlaceable(const GridCoord& cell) const {
     }
 
     const TileType tile = state_.map.GetTile(cell);
-    if (!(tile == TileType::Grass || tile == TileType::SpawnPoint)) {
+    if (!(tile == TileType::Grass || tile == TileType::SpawnPoint || tile == TileType::StoneTiles)) {
         return false;
     }
 
@@ -9813,6 +10090,7 @@ void GameApp::RenderWorld() {
     RenderInfluenceZoneOverlay();
     RenderInfluenceZoneAnimatedTiles();
     RenderNonTerrainDepthSorted(DepthSortedRenderPass::OverInfluenceOverlay);
+    RenderLocalGrapplingPreview();
     RenderMeleeAttacks();
     RenderDamagePopups();
     EndMode2D();
@@ -9828,6 +10106,67 @@ void GameApp::RenderWorld() {
     RenderPlayerOverlays();
     RenderDebugCollisionOverlay();
     EndMode2D();
+}
+
+void GameApp::RenderLocalGrapplingPreview() {
+    if (!grappling_preview_armed_ || app_screen_ != AppScreen::InMatch || !IsBindingDown(controls_bindings_.grappling_hook_action) ||
+        !sprite_metadata_.IsLoaded()) {
+        return;
+    }
+    const Player* local_player = FindPlayerById(state_.local_player_id);
+    if (local_player == nullptr || !CanPlayerStartGrapplingPreview(*local_player)) {
+        return;
+    }
+    if (!sprite_metadata_.HasAnimation("spark_particle_born") || !sprite_metadata_.HasAnimation("spark_particle_idle")) {
+        return;
+    }
+
+    const float radius = GetPlayerGrapplingRangeWorld(*local_player);
+    if (radius <= 1.0f) {
+        return;
+    }
+
+    const float circumference = 2.0f * PI * radius;
+    const int particle_count =
+        std::max(16, static_cast<int>(std::round(circumference / Constants::kGrapplingPreviewParticleSpacingWorld)));
+    if (particle_count <= 0) {
+        return;
+    }
+
+    const float born_duration =
+        GetAnimationDurationSeconds(sprite_metadata_, "spark_particle_born", "default", 1, 0.15f);
+    const float idle_duration =
+        GetAnimationDurationSeconds(sprite_metadata_, "spark_particle_idle", "default", 1, 0.20f);
+    const float hold_elapsed = std::max(0.0f, render_time_seconds_ - grappling_preview_started_time_);
+    const float particle_scale = Constants::kGrapplingPreviewParticleScale;
+
+    for (int i = 0; i < particle_count; ++i) {
+        const float angle = (2.0f * PI * static_cast<float>(i)) / static_cast<float>(particle_count);
+        const Vector2 center = {
+            local_player->pos.x + std::cos(angle) * radius,
+            local_player->pos.y + std::sin(angle) * radius,
+        };
+        const float phase_offset = born_duration * (static_cast<float>(i) / static_cast<float>(particle_count));
+        const float particle_elapsed = std::max(0.0f, hold_elapsed - phase_offset);
+
+        const char* animation = "spark_particle_idle";
+        float animation_time = 0.0f;
+        if (particle_elapsed < born_duration) {
+            animation = "spark_particle_born";
+            animation_time = particle_elapsed;
+        } else {
+            animation = "spark_particle_idle";
+            animation_time = std::fmod(std::max(0.0f, particle_elapsed - born_duration), std::max(0.05f, idle_duration));
+        }
+
+        const Rectangle src = InsetSourceRect(sprite_metadata_.GetFrame(animation, "default", animation_time),
+                                              Constants::kAtlasSampleInsetPixels);
+        const float dst_w = static_cast<float>(sprite_metadata_.GetCellWidth()) * particle_scale;
+        const float dst_h = static_cast<float>(sprite_metadata_.GetCellHeight()) * particle_scale;
+        Rectangle dst = {center.x - dst_w * 0.5f, center.y - dst_h * 0.5f, dst_w, dst_h};
+        DrawTexturePro(sprite_metadata_.GetTexture(), src, SnapRect(dst), {0.0f, 0.0f}, 0.0f,
+                       Color{255, 255, 255, 225});
+    }
 }
 
 void GameApp::EnsureWorldLayerRenderTarget() {
@@ -11478,6 +11817,8 @@ void GameApp::RenderMap() {
     const Texture2D texture = sprite_metadata_.GetTexture();
     const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
     const bool has_water_animation = has_texture && sprite_metadata_.HasAnimation("tile_water");
+    const bool has_stone_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("stone_tiles");
+    const bool has_stone_animation = has_texture && sprite_metadata_.HasAnimation("stone_tiles");
     if (has_water_gradient_shader_) {
         const float screen_height = static_cast<float>(GetScreenHeight());
         const float gradient_start[4] = {
@@ -11509,6 +11850,14 @@ void GameApp::RenderMap() {
         y = std::clamp(y, 0, state_.map.height - 1);
         return is_grass_family(state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)]);
     };
+    const auto sample_stone_for_dual_grid = [&](int x, int y) {
+        if (state_.map.width <= 0 || state_.map.height <= 0) {
+            return false;
+        }
+        x = std::clamp(x, 0, state_.map.width - 1);
+        y = std::clamp(y, 0, state_.map.height - 1);
+        return state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)] == TileType::StoneTiles;
+    };
 
     const auto compute_grass_dual_grid_mask = [&](int x, int y) {
         int mask = 0;
@@ -11525,6 +11874,40 @@ void GameApp::RenderMap() {
             mask |= 8;  // BL
         }
         return mask;
+    };
+    const auto compute_stone_dual_grid_mask = [&](int x, int y) {
+        int mask = 0;
+        if (sample_stone_for_dual_grid(x, y)) {
+            mask |= 1;  // TL
+        }
+        if (sample_stone_for_dual_grid(x + 1, y)) {
+            mask |= 2;  // TR
+        }
+        if (sample_stone_for_dual_grid(x + 1, y + 1)) {
+            mask |= 4;  // BR
+        }
+        if (sample_stone_for_dual_grid(x, y + 1)) {
+            mask |= 8;  // BL
+        }
+        return mask;
+    };
+    const auto sample_tile_clamped = [&](int x, int y) {
+        x = std::clamp(x, 0, state_.map.width - 1);
+        y = std::clamp(y, 0, state_.map.height - 1);
+        return state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)];
+    };
+    const auto compute_dual_grid_base_tile = [&](int x, int y) {
+        bool has_water = false;
+        bool has_stone = false;
+        for (const GridCoord corner : {GridCoord{x, y}, GridCoord{x + 1, y}, GridCoord{x + 1, y + 1}, GridCoord{x, y + 1}}) {
+            const TileType corner_tile = sample_tile_clamped(corner.x, corner.y);
+            has_water = has_water || corner_tile == TileType::Water;
+            has_stone = has_stone || corner_tile == TileType::StoneTiles;
+        }
+        if (has_stone && !has_water) {
+            return TileType::StoneTiles;
+        }
+        return TileType::Water;
     };
 
     const auto compute_grass_bitmask = [&](int x, int y) {
@@ -11587,17 +11970,31 @@ void GameApp::RenderMap() {
                 const Rectangle terrain_dst =
                     SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
 
-                const int mask = compute_grass_dual_grid_mask(x, y);
+                const TileType base_tile = compute_dual_grid_base_tile(x, y);
+                const int mask = (base_tile == TileType::StoneTiles) ? compute_stone_dual_grid_mask(x, y)
+                                                                     : compute_grass_dual_grid_mask(x, y);
                 Rectangle src = {};
-                if (sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_, SpriteFrameLayer::Water,
-                                                      src)) {
+                if (base_tile == TileType::StoneTiles && has_stone_dual_grid &&
+                    sprite_metadata_.GetDualGridFrame("stone_tiles", mask, render_time_seconds_,
+                                                      SpriteFrameLayer::Background, src)) {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
                                    0.0f, WHITE);
+                } else if (sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_,
+                                                             SpriteFrameLayer::Water, src)) {
+                    DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
+                                   0.0f, WHITE);
+                } else if (tile == TileType::StoneTiles && has_stone_animation) {
+                    const Rectangle stone_src = InsetSourceRect(
+                        sprite_metadata_.GetFrame("stone_tiles", "default", render_time_seconds_),
+                        Constants::kAtlasSampleInsetPixels);
+                    DrawTexturePro(texture, stone_src, dst, {0, 0}, 0.0f, WHITE);
                 } else if (has_water_animation) {
                     const Rectangle water_src = InsetSourceRect(
                         sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
                         Constants::kAtlasSampleInsetPixels);
                     DrawTexturePro(texture, water_src, terrain_dst, {0, 0}, 0.0f, WHITE);
+                } else if (tile == TileType::StoneTiles) {
+                    DrawRectangleRec(terrain_dst, Color{124, 120, 112, 255});
                 } else {
                     DrawRectangleRec(terrain_dst, Color{26, 96, 152, 255});
                 }
@@ -11606,9 +12003,16 @@ void GameApp::RenderMap() {
                     sprite_metadata_.GetFrame("tile_water", "default", render_time_seconds_),
                     Constants::kAtlasSampleInsetPixels);
                 DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
+            } else if (has_texture && tile == TileType::StoneTiles && has_stone_animation) {
+                const Rectangle src = InsetSourceRect(
+                    sprite_metadata_.GetFrame("stone_tiles", "default", render_time_seconds_),
+                    Constants::kAtlasSampleInsetPixels);
+                DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
             } else {
                 if (tile == TileType::Water) {
                     DrawRectangleRec(dst, Color{26, 96, 152, 255});
+                } else if (tile == TileType::StoneTiles) {
+                    DrawRectangleRec(dst, Color{124, 120, 112, 255});
                 }
             }
         }
@@ -11660,6 +12064,7 @@ void GameApp::RenderMapForeground() {
     const bool has_grass_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("tile_grass");
     const bool has_terrain_foam_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("terrain_foam");
     const bool has_grass_bitmask = has_texture && sprite_metadata_.HasBitmaskAnimation("tile_grass");
+    const bool has_stone_dual_grid = has_texture && sprite_metadata_.HasDualGridAnimation("stone_tiles");
     const auto is_grass_family = [](TileType tile) {
         return tile == TileType::Grass || tile == TileType::SpawnPoint;
     };
@@ -11670,6 +12075,14 @@ void GameApp::RenderMapForeground() {
         x = std::clamp(x, 0, state_.map.width - 1);
         y = std::clamp(y, 0, state_.map.height - 1);
         return is_grass_family(state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)]);
+    };
+    const auto sample_stone_for_dual_grid = [&](int x, int y) {
+        if (state_.map.width <= 0 || state_.map.height <= 0) {
+            return false;
+        }
+        x = std::clamp(x, 0, state_.map.width - 1);
+        y = std::clamp(y, 0, state_.map.height - 1);
+        return state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)] == TileType::StoneTiles;
     };
     const auto compute_grass_dual_grid_mask = [&](int x, int y) {
         int mask = 0;
@@ -11686,6 +12099,40 @@ void GameApp::RenderMapForeground() {
             mask |= 8;
         }
         return mask;
+    };
+    const auto compute_stone_dual_grid_mask = [&](int x, int y) {
+        int mask = 0;
+        if (sample_stone_for_dual_grid(x, y)) {
+            mask |= 1;
+        }
+        if (sample_stone_for_dual_grid(x + 1, y)) {
+            mask |= 2;
+        }
+        if (sample_stone_for_dual_grid(x + 1, y + 1)) {
+            mask |= 4;
+        }
+        if (sample_stone_for_dual_grid(x, y + 1)) {
+            mask |= 8;
+        }
+        return mask;
+    };
+    const auto sample_tile_clamped = [&](int x, int y) {
+        x = std::clamp(x, 0, state_.map.width - 1);
+        y = std::clamp(y, 0, state_.map.height - 1);
+        return state_.map.tiles[static_cast<size_t>(y * state_.map.width + x)];
+    };
+    const auto compute_dual_grid_base_tile = [&](int x, int y) {
+        bool has_water = false;
+        bool has_stone = false;
+        for (const GridCoord corner : {GridCoord{x, y}, GridCoord{x + 1, y}, GridCoord{x + 1, y + 1}, GridCoord{x, y + 1}}) {
+            const TileType corner_tile = sample_tile_clamped(corner.x, corner.y);
+            has_water = has_water || corner_tile == TileType::Water;
+            has_stone = has_stone || corner_tile == TileType::StoneTiles;
+        }
+        if (has_stone && !has_water) {
+            return TileType::StoneTiles;
+        }
+        return TileType::Water;
     };
     const auto compute_grass_bitmask = [&](int x, int y) {
         int mask = 0;
@@ -11724,17 +12171,27 @@ void GameApp::RenderMapForeground() {
                 const float half_cell = static_cast<float>(state_.map.cell_size) * 0.5f;
                 const Rectangle terrain_dst =
                     SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
-                const int mask = compute_grass_dual_grid_mask(x, y);
-                const bool has_land = sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Land);
+                const TileType base_tile = compute_dual_grid_base_tile(x, y);
+                const bool use_stone_transition = base_tile == TileType::StoneTiles && has_stone_dual_grid;
+                const int mask = use_stone_transition ? compute_stone_dual_grid_mask(x, y)
+                                                      : compute_grass_dual_grid_mask(x, y);
+                const bool has_land =
+                    !use_stone_transition && sprite_metadata_.HasDualGridLayer("tile_grass", mask, SpriteFrameLayer::Land);
 
                 Rectangle src = {};
+                if (use_stone_transition &&
+                    sprite_metadata_.GetDualGridFrame("stone_tiles", mask, render_time_seconds_,
+                                                      SpriteFrameLayer::Foreground, src)) {
+                    DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
+                                   0.0f, WHITE);
+                }
                 if (has_land &&
                     sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_, SpriteFrameLayer::Land,
                                                       src)) {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
                                    0.0f, WHITE);
                 }
-                if (!has_land &&
+                if (!use_stone_transition && !has_land &&
                     sprite_metadata_.GetDualGridFrame("tile_grass", mask, render_time_seconds_, SpriteFrameLayer::Single,
                                                       src)) {
                     DrawTexturePro(texture, InsetSourceRect(src, Constants::kAtlasSampleInsetPixels), terrain_dst, {0, 0},
@@ -11809,6 +12266,10 @@ void GameApp::RenderMapForeground() {
                 const Rectangle terrain_dst =
                     SnapRect({dst.x + half_cell, dst.y + half_cell, dst.width, dst.height});
                 const int mask = compute_grass_dual_grid_mask(x, y);
+                const TileType base_tile = compute_dual_grid_base_tile(x, y);
+                if (base_tile != TileType::Water) {
+                    continue;
+                }
                 if (mask <= 0 || mask >= 15) {
                     continue;
                 }
@@ -12409,7 +12870,7 @@ void GameApp::RenderRunePlacementOverlay() {
             if (!IsTileRunePlaceable(cell)) {
                 continue;
             }
-            if (Vector2Distance(local_player->pos, CellToWorldCenter(cell)) > Constants::kRuneCastRangeWorld) {
+            if (Vector2Distance(local_player->pos, CellToWorldCenter(cell)) > GetPlayerRuneCastRangeWorld(*local_player)) {
                 continue;
             }
 
@@ -12433,7 +12894,7 @@ void GameApp::RenderRunePlacementOverlay() {
     }
 
     const Vector2 center = CellToWorldCenter(mouse_cell);
-    const bool in_range = Vector2Distance(local_player->pos, center) <= Constants::kRuneCastRangeWorld;
+    const bool in_range = Vector2Distance(local_player->pos, center) <= GetPlayerRuneCastRangeWorld(*local_player);
     const bool valid = in_range && !IsCellOccupiedByRune(mouse_cell) && !IsCellOccupiedByFireStormDummy(mouse_cell) &&
                        IsTileRunePlaceable(mouse_cell);
     const char* animation_name = GetRuneSpriteAnimationKey(local_player->selected_rune_type);

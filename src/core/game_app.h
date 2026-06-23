@@ -289,6 +289,7 @@ class GameApp {
     void RenderParticles();
     void RenderDamagePopups();
     void RenderRunePlacementOverlay();
+    void RenderLocalGrapplingPreview();
     void RenderDebugCollisionOverlay();
     void RenderZoneFillOverlay();
     void RenderZoneBorderOverlay();
@@ -304,8 +305,11 @@ class GameApp {
     Vector2 GetRenderPlayerPosition(int player_id) const;
     bool IsWorldPointInsideCameraView(Vector2 world_pos) const;
     float GetPlayerMovementSpeedMultiplier(const Player& player) const;
+    float GetPlayerRuneCastRangeWorld(const Player& player) const;
+    float GetPlayerGrapplingRangeWorld(const Player& player) const;
     float GetPlayerBaseAcceleration(const Player& player) const;
     float GetPlayerAccelerationMultiplier(const Player& player) const;
+    bool CanPlayerStartGrapplingPreview(const Player& player) const;
     void PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const;
     bool HasVisibleIdleFireStormDummy() const;
     void LoadAudioAssets();
@@ -583,6 +587,8 @@ class GameApp {
 
     bool pending_primary_pressed_ = false;
     bool pending_grappling_pressed_ = false;
+    bool grappling_preview_armed_ = false;
+    float grappling_preview_started_time_ = 0.0f;
     bool pending_escape_pressed_ = false;
     bool pending_enter_pressed_ = false;
     bool pending_enter_shift_down_ = false;
@@ -780,6 +786,7 @@ class GameApp {
     LoadedSfx sfx_grappling_latch_;
     LoadedSfx sfx_earth_rune_launch_;
     LoadedSfx sfx_earth_rune_impact_;
+    LoadedSfx sfx_castle_level_up_;
     std::array<LoadedSfx, 3> sfx_ice_wave_cast_{};
     std::array<LoadedSfx, 3> sfx_ice_wave_impact_{};
     std::array<LoadedSfx, 2> sfx_hammer_swing_{};

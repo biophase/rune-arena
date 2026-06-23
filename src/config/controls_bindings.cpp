@@ -28,6 +28,13 @@ bool IsBindingPressed(int binding_code) {
     return IsKeyPressed(binding_code);
 }
 
+bool IsBindingReleased(int binding_code) {
+    if (IsMouseBinding(binding_code)) {
+        return IsMouseButtonReleased(DecodeMouseBinding(binding_code));
+    }
+    return IsKeyReleased(binding_code);
+}
+
 std::optional<int> PollAnyBindingPressed() {
     constexpr std::array<int, 7> mouse_buttons = {MOUSE_LEFT_BUTTON, MOUSE_RIGHT_BUTTON, MOUSE_MIDDLE_BUTTON,
                                                    MOUSE_BUTTON_SIDE, MOUSE_BUTTON_EXTRA, MOUSE_BUTTON_FORWARD,

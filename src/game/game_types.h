@@ -46,6 +46,7 @@ enum class EquipmentSlot {
 enum class TileType {
     Grass,
     Water,
+    StoneTiles,
     SpawnPoint,
     Unknown,
 };

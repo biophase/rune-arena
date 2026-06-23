@@ -35,5 +35,14 @@ Wizzard 128x128 modular export
 ASEPRITE_DATA_DIR=/Applications/Aseprite.app/Contents/Resources/data /Applications/Aseprite.app/Contents/MacOS/aseprite -b --script-param "source_file=assets/128x128_modular/wizzard_128x128.aseprite" --script-param "output_dir=assets/128x128_modular/exports" --script-param "source_name=wizzard_128x128" --script assets/aseprite_export_layers.lua
 ```
 
+
+Map export (twinlane)
+```
+ASEPRITE_DATA_DIR=/Applications/Aseprite.app/Contents/Resources/data /Applications/Aseprite.app/Contents/MacOS/aseprite -b --script-param "source_file=assets/maps/twinlane/twinlane.aseprite" --script-param "output_dir=assets/maps/twinlane/exports" --script-param "source_name=twinlane" --script assets/aseprite_export_layers.lua
+```
+
+
+
+
 ad852f - v 255
 ad852f - v 205

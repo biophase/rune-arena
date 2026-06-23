@@ -29,5 +29,6 @@ int DecodeMouseBinding(int binding_code);
 
 bool IsBindingDown(int binding_code);
 bool IsBindingPressed(int binding_code);
+bool IsBindingReleased(int binding_code);
 std::optional<int> PollAnyBindingPressed();
 std::string BindingToString(int binding_code);

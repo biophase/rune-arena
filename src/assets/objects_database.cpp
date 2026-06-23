@@ -49,6 +49,9 @@ TileType ParseTerrainTileType(const std::string& value) {
     if (value == "tile_water") {
         return TileType::Water;
     }
+    if (value == "stone_tiles") {
+        return TileType::StoneTiles;
+    }
     if (value == "team_spawn_point") {
         return TileType::SpawnPoint;
     }

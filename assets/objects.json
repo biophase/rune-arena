@@ -17,6 +17,14 @@
       "walkable": false,
       "stops_projectiles": false
     },
+    "stone_tiles": {
+      "type": "Terrain",
+      "map_key": [198, 197, 193],
+      "terrain_tile": "stone_tiles",
+      "sprite": { "sheet": "base32", "idle": "stone_tiles" },
+      "walkable": true,
+      "stops_projectiles": false
+    },
     "team_spawn_point": {
       "type": "Terrain",
       "map_key": [255, 255, 255],
@@ -215,9 +223,9 @@
       },
       "walkable": false,
       "stops_projectiles": true,
-      "collision_box": { "x": 40, "y": 84, "w": 48, "h": 28 },
+      "collision_box": { "x": 26, "y": 60, "w": 76, "h": 44 },
       "charge_port_offset": { "x": 0, "y": -56 }
-    },
+    }, 
     "sword_item": {
       "type": "Consumable",
       "map_key": null,

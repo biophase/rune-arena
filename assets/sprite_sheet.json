@@ -331,6 +331,35 @@
         }
       }
     },
+    "stone_tiles":{
+      "facings":{
+        "default":{
+          "frames": [[120,2]],
+          "fps":1
+        }
+      },
+      "dual_grid":{
+        "bit_order":"TL_TR_BR_BL",
+        "masks":{
+          "0":{"frames_background": [[116,3]], "fps":1},
+          "1":{"frames_background": [[117,0]], "fps":1},
+          "2":{"frames_background": [[117,1]], "fps":1},
+          "3":{"frames_background": [[117,2]], "fps":1},
+          "4":{"frames_background": [[117,3]], "fps":1},
+          "5":{"frames_background": [[118,0]], "fps":1},
+          "6":{"frames_background": [[118,1]], "fps":1},
+          "7":{"frames_background": [[118,2]], "fps":1},
+          "8":{"frames_background": [[118,3]], "fps":1},
+          "9":{"frames_background": [[119,0]], "fps":1},
+          "10":{"frames_background": [[119,1]], "fps":1},
+          "11":{"frames_background": [[119,2]], "fps":1},
+          "12":{"frames_background": [[119,3]], "fps":1},
+          "13":{"frames_background": [[120,0]], "fps":1},
+          "14":{"frames_background": [[120,1]], "fps":1},
+          "15":{"frames_background": [[120,2]], "fps":1}
+        }
+      }
+    },
     "tile_water":{
       "facings":{
         "default":{

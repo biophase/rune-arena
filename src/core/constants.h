@@ -120,6 +120,8 @@ constexpr float kGrapplingHookPullSpeed = 200.0f;
 constexpr float kGrapplingHookRetractSpeedMultiplier = 1.3f;
 constexpr float kGrapplingHookCollisionProbeStep = 4.0f;
 constexpr float kGrapplingHookArrivalEpsilon = 12.0f;
+constexpr float kGrapplingPreviewParticleSpacingWorld = 20.0f;
+constexpr float kGrapplingPreviewParticleScale = 1.0f;
 constexpr float kRuneMinCrossCooldownSeconds = 0.5f;
 constexpr float kRuneManaCostFire = 6.0f;
 constexpr float kRuneManaCostWater = 4.0f;
@@ -221,7 +223,8 @@ constexpr float kPlayerHealthBarWidth = 32.0f;
 constexpr float kPlayerHealthBarHeight = 4.0f;
 constexpr float kPlayerHealthBarOffsetY = -20.0f;
 constexpr int kCatalystChargeMaxHeld = 3;
-constexpr float kCatalystChargeMovementPenaltyPerStack = 0.10f;
+constexpr float kCatalystChargeMovementPenaltyPerStack = 0.15f;
+constexpr float kCatalystChargeRangePenaltyTilesPerStack = 2.0f;
 constexpr float kCatalystOverheadIconSize = 8.0f;
 constexpr float kCatalystOverheadIconGap = 1.0f;
 constexpr float kCatalystOverheadIconRowGap = 2.0f;
@@ -351,6 +354,7 @@ constexpr const char* kSfxGrapplingLatchPath =
     "assets/sfx/ogg/SFX/Attacks/Bow Attacks Hits and Blocks/Bow Impact Hit 1.ogg";
 constexpr const char* kSfxEarthRuneLaunchPath = "assets/sfx/EM_EARTH_LAUNCH_01.ogg";
 constexpr const char* kSfxEarthRuneImpactPath = "assets/sfx/EM_EARTH_IMPACT_01.ogg";
+constexpr const char* kSfxCastleLevelUpPath = "assets/sfx/levelup.wav";
 constexpr std::array<const char*, 2> kSfxHammerSwingPaths = {
     "assets/sfx/ogg/SFX/Spells/Rock Meteor Throw 1.ogg",
     "assets/sfx/ogg/SFX/Spells/Rock Meteor Throw 2.ogg",
@@ -418,6 +422,7 @@ constexpr float kSfxVolumeGrapplingThrow = 0.68f;
 constexpr float kSfxVolumeGrapplingLatch = 0.72f;
 constexpr float kSfxVolumeEarthRuneLaunch = 0.74f;
 constexpr float kSfxVolumeEarthRuneImpact = 0.78f;
+constexpr float kSfxVolumeCastleLevelUp = 0.85f;
 constexpr float kSfxVolumeIceWaveCast = 0.72f;
 constexpr float kSfxVolumeIceWaveImpact = 0.72f;
 constexpr float kSfxVolumeHammerSwing = 0.72f;
