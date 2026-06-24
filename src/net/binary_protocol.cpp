@@ -705,9 +705,7 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             !reader.ReadI32(player.kills) || !reader.ReadBool(player.alive) || !reader.ReadI32(player.facing) ||
             !reader.ReadI32(player.action_state) || !reader.ReadF32(player.melee_active_remaining) ||
             !reader.ReadBool(player.rune_placing_mode) || !reader.ReadI32(player.selected_rune_slot) ||
-            !reader.ReadI32(player.selected_rune_type) ||
-            !reader.ReadF32(player.mana) || !reader.ReadF32(player.max_mana) ||
-            !reader.ReadF32(player.grappling_cooldown_remaining) || !reader.ReadF32(player.grappling_cooldown_total)) {
+            !reader.ReadI32(player.selected_rune_type)) {
             return std::nullopt;
         }
 
@@ -718,6 +716,11 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             int32_t value = 0;
             if (!reader.ReadI32(value)) return std::nullopt;
             player.rune_slots.push_back(value);
+        }
+
+        if (!reader.ReadF32(player.mana) || !reader.ReadF32(player.max_mana) ||
+            !reader.ReadF32(player.grappling_cooldown_remaining) || !reader.ReadF32(player.grappling_cooldown_total)) {
+            return std::nullopt;
         }
         if (!reader.ReadU16(count)) return std::nullopt;
         player.rune_cooldown_remaining.reserve(count);

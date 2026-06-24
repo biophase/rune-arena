@@ -705,6 +705,9 @@ void NetworkManager::Poll() {
                         case binary::PacketType::Snapshot: {
                             auto received_snapshot = binary::DecodeSnapshotPayload(header.payload, header.payload_size);
                             if (!received_snapshot.has_value()) {
+                                last_debug_message_ = "snapshot decode failed";
+                                NetLog("[NET] Client failed to decode snapshot payload (%zu bytes)",
+                                       header.payload_size);
                                 break;
                             }
                             if (received_snapshot->is_delta) {
