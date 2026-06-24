@@ -11,6 +11,7 @@ struct UserSettings {
     int window_height = 720;
     bool fullscreen = true;
     bool show_network_debug_panel = true;
+    bool auto_pick_replace_equipment = true;
     bool hide_own_influence_zones = false;
     bool enable_influence_zone_system = true;
     bool lobby_zone_enabled = true;

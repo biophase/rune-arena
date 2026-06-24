@@ -72,6 +72,8 @@ class GameApp {
     void Shutdown();
 
   private:
+    struct ActiveModularAttackVisual;
+
     void Update(float dt);
     void Render();
     void CaptureFrameInputEdges();
@@ -244,12 +246,13 @@ class GameApp {
     void ApplyImmediateHeal(Player& player, int amount);
     void ApplyImmediateManaRestore(Player& player, int amount);
     void CancelRegenerationStatuses(Player& player);
-    void CancelInventoryDrag(Player& player);
+    void CancelInventoryDrag(Player& player, bool drop_to_world_if_unresolved = false);
     void BeginInventoryDrag(Player& player, SlotFamily family, int slot_index);
     void DropInventoryDrag(Player& player, SlotFamily family, int slot_index);
     void QueueLocalInventorySync(const Player& player);
     void ApplyInventoryLayoutSync(Player& player, const ClientActionMessage& action);
     bool PendingLocalInventorySyncMatches(const Player& player) const;
+    bool TryDropDraggedSlotToWorld(Player& player, SlotFamily family, int slot_index, bool single_instance);
     void AddRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddManaRegenerationStatus(Player& player, float duration_seconds, float amount_per_second);
     void AddStunnedStatus(Player& player, float duration_seconds);
@@ -258,6 +261,7 @@ class GameApp {
     void SpawnIceShardDeathParticle(Vector2 position, Vector2 travel_velocity);
     void SpawnIceWaveShardSnowParticle(const Projectile& projectile);
     void SpawnFrozenStatusSnowParticle(const Player& player);
+    void SpawnIceWallHealSnowBurst(const IceWallPiece& wall, int healed_amount);
     void RebuildInfluenceZones();
     int SpawnCompositeEffect(const std::string& effect_id, Vector2 origin_world);
     float GetCompositeEffectDurationSeconds(const std::string& effect_id) const;
@@ -317,6 +321,9 @@ class GameApp {
     void UpdateAudioFrame();
     void UpdateLocalFootstepAudio();
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
+    const ActiveModularAttackVisual* FindActiveModularAttackVisual(int player_id) const;
+    float GetPlayerLockedMeleeAimRadians(const Player& player) const;
+    float GetPlayerAttackVisualRotationDegrees(const Player& player) const;
     void LoadRenderShaders();
     void UnloadRenderShaders();
     void UpdateDamageFlashVisuals(float dt);
@@ -413,6 +420,12 @@ class GameApp {
         std::string weapon_item_id;
         float elapsed_seconds = 0.0f;
         float duration_seconds = 0.0f;
+        float snapped_angle_radians = 0.0f;
+        float locked_target_angle_radians = 0.0f;
+        float impact_time_seconds = 0.0f;
+        float recovery_start_time_seconds = 0.0f;
+        float attack_end_time_seconds = 0.0f;
+        bool uses_continuous_orientation = false;
         bool swing_event_played = false;
         bool impact_event_played = false;
     };
@@ -605,6 +618,10 @@ class GameApp {
     int pending_select_rune_slot_ = -1;
     int pending_activate_item_slot_ = -1;
     bool pending_toggle_inventory_mode_ = false;
+    bool pending_world_drop_request_ = false;
+    SlotFamily pending_world_drop_family_ = SlotFamily::Item;
+    int pending_world_drop_slot_index_ = -1;
+    bool pending_world_drop_single_instance_ = false;
     std::optional<Player> pending_local_inventory_sync_;
     bool pending_local_inventory_sync_dirty_ = false;
     struct PendingObjectSpawn {
@@ -787,6 +804,8 @@ class GameApp {
     LoadedSfx sfx_earth_rune_launch_;
     LoadedSfx sfx_earth_rune_impact_;
     LoadedSfx sfx_castle_level_up_;
+    LoadedSfx sfx_castle_equip_rune_;
+    LoadedSfx sfx_castle_unequip_rune_;
     std::array<LoadedSfx, 3> sfx_ice_wave_cast_{};
     std::array<LoadedSfx, 3> sfx_ice_wave_impact_{};
     std::array<LoadedSfx, 2> sfx_hammer_swing_{};

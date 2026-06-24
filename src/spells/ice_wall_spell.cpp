@@ -26,9 +26,9 @@ void IceWallSpell::Cast(GameState& state, EventQueue& event_queue) {
     }
 
     const bool horizontal = IsHorizontalDirection(direction_);
-    const int half_len = Constants::kIceWallLengthCells / 2;
-
-    for (int offset = -half_len; offset <= half_len; ++offset) {
+    const int start_offset = -Constants::kIceWallLengthCells / 2;
+    for (int i = 0; i < Constants::kIceWallLengthCells; ++i) {
+        const int offset = start_offset + i;
         GridCoord cell = cast_cell_;
         if (horizontal) {
             cell.x += offset;

@@ -1158,7 +1158,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 129.aseprite",
@@ -1275,7 +1275,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 142.aseprite",
@@ -1392,7 +1392,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 155.aseprite",
@@ -1509,7 +1509,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 168.aseprite",
@@ -1626,7 +1626,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 181.aseprite",
@@ -1743,7 +1743,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 194.aseprite",
@@ -1860,7 +1860,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 207.aseprite",
@@ -1977,7 +1977,7 @@
     "trimmed": false,
     "spriteSourceSize": { "x": 0, "y": 0, "w": 128, "h": 128 },
     "sourceSize": { "w": 128, "h": 128 },
-    "duration": 100
+    "duration": 250
    },
    {
     "filename": "wizzard_128x128 220.aseprite",

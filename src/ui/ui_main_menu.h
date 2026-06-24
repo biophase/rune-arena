@@ -14,6 +14,7 @@ struct MainMenuUiResult {
     int selected_host_port = 0;
     bool settings_changed = false;
     bool show_network_debug_panel = true;
+    bool auto_pick_replace_equipment = true;
     bool hide_own_influence_zones = false;
     bool enable_influence_zone_system = true;
     bool request_apply_controls = false;
@@ -24,6 +25,7 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
                               int join_ip_buffer_size,
                               const std::vector<DiscoveredHost>& discovered_hosts, const std::string& config_path,
                               const ControlsBindings& current_bindings, const std::string& controls_path,
-                              bool show_network_debug_panel, bool hide_own_influence_zones,
+                              bool show_network_debug_panel, bool auto_pick_replace_equipment,
+                              bool hide_own_influence_zones,
                               bool enable_influence_zone_system,
                               const std::string& status_message, bool status_is_error);

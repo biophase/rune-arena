@@ -35,6 +35,7 @@ enum class MatchModeType {
 enum class SlotFamily {
     Rune,
     Item,
+    Weapon,
 };
 
 enum class EquipmentSlot {

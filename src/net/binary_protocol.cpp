@@ -207,6 +207,10 @@ std::vector<uint8_t> EncodeClientActionPacket(const ClientActionMessage& message
     for (size_t i = 0; i < message.item_slot_cooldown_total.size() && i < 65535; ++i) {
         payload.WriteF32(message.item_slot_cooldown_total[i]);
     }
+    payload.WriteBool(message.request_world_drop);
+    payload.WriteI32(message.world_drop_slot_family);
+    payload.WriteI32(message.world_drop_slot_index);
+    payload.WriteBool(message.world_drop_single_instance);
     return MakePacket(PacketType::ClientAction, payload.Bytes());
 }
 
@@ -256,6 +260,10 @@ std::optional<ClientActionMessage> DecodeClientActionPayload(const uint8_t* payl
         float value = 0.0f;
         if (!reader.ReadF32(value)) return std::nullopt;
         out.item_slot_cooldown_total.push_back(value);
+    }
+    if (!reader.ReadBool(out.request_world_drop) || !reader.ReadI32(out.world_drop_slot_family) ||
+        !reader.ReadI32(out.world_drop_slot_index) || !reader.ReadBool(out.world_drop_single_instance)) {
+        return std::nullopt;
     }
     if (!reader.End()) {
         return std::nullopt;

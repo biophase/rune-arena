@@ -52,6 +52,10 @@ struct ClientActionMessage {
     std::vector<int> item_slot_counts;
     std::vector<float> item_slot_cooldown_remaining;
     std::vector<float> item_slot_cooldown_total;
+    bool request_world_drop = false;
+    int world_drop_slot_family = 0;
+    int world_drop_slot_index = -1;
+    bool world_drop_single_instance = false;
 };
 
 enum class ChatChannel : int {

@@ -36,6 +36,8 @@ bool ConfigManager::Load(UserSettings& settings) const {
     settings.window_height = json.value("window_height", settings.window_height);
     settings.fullscreen = json.value("fullscreen", settings.fullscreen);
     settings.show_network_debug_panel = json.value("show_network_debug_panel", settings.show_network_debug_panel);
+    settings.auto_pick_replace_equipment =
+        json.value("auto_pick_replace_equipment", settings.auto_pick_replace_equipment);
     settings.hide_own_influence_zones = json.value("hide_own_influence_zones", settings.hide_own_influence_zones);
     settings.enable_influence_zone_system =
         json.value("enable_influence_zone_system", settings.enable_influence_zone_system);
@@ -61,6 +63,7 @@ bool ConfigManager::Save(const UserSettings& settings) const {
     json["window_height"] = settings.window_height;
     json["fullscreen"] = settings.fullscreen;
     json["show_network_debug_panel"] = settings.show_network_debug_panel;
+    json["auto_pick_replace_equipment"] = settings.auto_pick_replace_equipment;
     json["hide_own_influence_zones"] = settings.hide_own_influence_zones;
     json["enable_influence_zone_system"] = settings.enable_influence_zone_system;
     json["lobby_zone_enabled"] = settings.lobby_zone_enabled;

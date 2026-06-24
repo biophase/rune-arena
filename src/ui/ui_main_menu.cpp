@@ -46,11 +46,13 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
                               int join_ip_buffer_size, const std::vector<DiscoveredHost>& discovered_hosts,
                               const std::string& config_path, const ControlsBindings& current_bindings,
                               const std::string& controls_path, bool show_network_debug_panel,
+                              bool auto_pick_replace_equipment,
                               bool hide_own_influence_zones, bool enable_influence_zone_system,
                               const std::string& status_message, bool status_is_error) {
     MainMenuUiResult result;
     result.controls_bindings = current_bindings;
     result.show_network_debug_panel = show_network_debug_panel;
+    result.auto_pick_replace_equipment = auto_pick_replace_equipment;
     result.hide_own_influence_zones = hide_own_influence_zones;
     result.enable_influence_zone_system = enable_influence_zone_system;
 
@@ -71,6 +73,7 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
     static int selected_host_index = -1;
     static ControlsBindings draft_bindings = current_bindings;
     static bool draft_show_network_debug_panel = true;
+    static bool draft_auto_pick_replace_equipment = true;
     static bool draft_hide_own_influence_zones = false;
     static bool draft_enable_influence_zone_system = true;
     static int rebinding_action = -1;
@@ -176,14 +179,20 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         if (updated_debug_panel != draft_show_network_debug_panel) {
             draft_show_network_debug_panel = updated_debug_panel;
         }
-        bool updated_hide_own_influence_zones = draft_hide_own_influence_zones;
+        bool updated_auto_pick_replace_equipment = draft_auto_pick_replace_equipment;
         GuiCheckBox({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 122), 24, 24},
+                    "Auto Replace Equipped Weapons", &updated_auto_pick_replace_equipment);
+        if (updated_auto_pick_replace_equipment != draft_auto_pick_replace_equipment) {
+            draft_auto_pick_replace_equipment = updated_auto_pick_replace_equipment;
+        }
+        bool updated_hide_own_influence_zones = draft_hide_own_influence_zones;
+        GuiCheckBox({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 156), 24, 24},
                     "Hide Own Influence Zones", &updated_hide_own_influence_zones);
         if (updated_hide_own_influence_zones != draft_hide_own_influence_zones) {
             draft_hide_own_influence_zones = updated_hide_own_influence_zones;
         }
         bool updated_enable_influence_zone_system = draft_enable_influence_zone_system;
-        GuiCheckBox({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 156), 24, 24},
+        GuiCheckBox({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 190), 24, 24},
                     "Enable Influence Zone System", &updated_enable_influence_zone_system);
         if (updated_enable_influence_zone_system != draft_enable_influence_zone_system) {
             draft_enable_influence_zone_system = updated_enable_influence_zone_system;
@@ -191,6 +200,10 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
         if (draft_show_network_debug_panel != show_network_debug_panel) {
             result.settings_changed = true;
             result.show_network_debug_panel = draft_show_network_debug_panel;
+        }
+        if (draft_auto_pick_replace_equipment != auto_pick_replace_equipment) {
+            result.settings_changed = true;
+            result.auto_pick_replace_equipment = draft_auto_pick_replace_equipment;
         }
         if (draft_hide_own_influence_zones != hide_own_influence_zones) {
             result.settings_changed = true;
@@ -200,13 +213,13 @@ MainMenuUiResult DrawMainMenu(char* player_name_buffer, int player_name_buffer_s
             result.settings_changed = true;
             result.enable_influence_zone_system = draft_enable_influence_zone_system;
         }
-        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 210), 180, 40}, "Controls")) {
+        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 244), 180, 40}, "Controls")) {
             page = MainMenuPage::Controls;
             draft_bindings = current_bindings;
             rebinding_action = -1;
             rebind_block_frames = 0;
         }
-        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 260), 180, 36}, "Back")) {
+        if (GuiButton({static_cast<float>(panel_x + 20), static_cast<float>(panel_y + 294), 180, 36}, "Back")) {
             page = MainMenuPage::Root;
         }
         DrawText(TextFormat("Config: %s", config_path.c_str()), panel_x + 20, panel_y + panel_height - 40, 12,

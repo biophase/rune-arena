@@ -81,6 +81,10 @@ nlohmann::json ToJson(const ClientActionMessage& message) {
         {"item_slot_counts", message.item_slot_counts},
         {"item_slot_cooldown_remaining", message.item_slot_cooldown_remaining},
         {"item_slot_cooldown_total", message.item_slot_cooldown_total},
+        {"request_world_drop", message.request_world_drop},
+        {"world_drop_slot_family", message.world_drop_slot_family},
+        {"world_drop_slot_index", message.world_drop_slot_index},
+        {"world_drop_single_instance", message.world_drop_single_instance},
     };
 }
 
@@ -101,6 +105,10 @@ std::optional<ClientActionMessage> ClientActionFromJson(const nlohmann::json& js
     out.item_slot_counts = json.value("item_slot_counts", std::vector<int>{});
     out.item_slot_cooldown_remaining = json.value("item_slot_cooldown_remaining", std::vector<float>{});
     out.item_slot_cooldown_total = json.value("item_slot_cooldown_total", std::vector<float>{});
+    out.request_world_drop = json.value("request_world_drop", false);
+    out.world_drop_slot_family = json.value("world_drop_slot_family", 0);
+    out.world_drop_slot_index = json.value("world_drop_slot_index", -1);
+    out.world_drop_single_instance = json.value("world_drop_single_instance", false);
     return out;
 }
 
