@@ -5747,7 +5747,7 @@ ClientInputMessage GameApp::BuildLocalInput(int local_player_id) {
             pending_select_rune_slot_ = -1;
             pending_activate_item_slot_ = -1;
             pending_toggle_inventory_mode_ = false;
-            pending_world_drop_request_ = false;
+            // Let UpdateMatch package the queued world-drop into a ClientActionMessage.
             return input;
         }
     }
