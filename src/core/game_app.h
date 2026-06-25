@@ -27,7 +27,7 @@
 #include "gameplay/loot_tables.h"
 #include "gameplay/spell_runtime_registry.h"
 #include "modes/most_kills_mode.h"
-#include "net/lan_discovery.h"
+#include "net/discovery_service.h"
 #include "net/network_manager.h"
 #include "spells/spell_pattern_loader.h"
 
@@ -407,7 +407,7 @@ class GameApp {
     MostKillsMode most_kills_mode_;
 
     NetworkManager network_manager_;
-    LanDiscovery lan_discovery_;
+    std::unique_ptr<IDiscoveryService> discovery_service_;
 
     AppScreen app_screen_ = AppScreen::MainMenu;
     Camera2D camera_ = {};

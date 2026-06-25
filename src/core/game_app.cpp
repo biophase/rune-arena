@@ -23,6 +23,7 @@
 #include "core/constants.h"
 #include "gameplay/action_intent.h"
 #include "gameplay/snapshot_translation.h"
+#include "net/lan_discovery.h"
 #include "spells/fire_bolt_spell.h"
 #include "spells/fire_flower_spell.h"
 #include "spells/ice_wave_spell.h"
@@ -1408,6 +1409,7 @@ bool IsLoadedMusic(const Music& music) {
 
 GameApp::GameApp(bool force_windowed_launch)
     : force_windowed_launch_(force_windowed_launch),
+      discovery_service_(std::make_unique<LanDiscovery>()),
       rng_(std::random_device{}()),
       visual_rng_(std::random_device{}()) {}
 
@@ -1576,7 +1578,7 @@ bool GameApp::Initialize() {
     camera_.zoom = Constants::kCameraZoom;
 
     app_screen_ = AppScreen::MainMenu;
-    if (!lan_discovery_.StartClientListener()) {
+    if (!discovery_service_->StartClientListener()) {
         main_menu_status_message_ = TextFormat("Discovery listener failed on UDP %d", Constants::kDiscoveryPort);
         main_menu_status_is_error_ = true;
     }
@@ -1598,7 +1600,7 @@ void GameApp::Run() {
         CaptureFrameInputEdges();
 
         network_manager_.Poll();
-        lan_discovery_.Update();
+        discovery_service_->Update();
         UpdateAudioFrame();
 
         while (accumulator >= Constants::kFixedDt) {
@@ -1683,7 +1685,7 @@ void GameApp::Shutdown() {
     settings_.show_network_debug_panel = show_network_debug_panel_;
     config_manager_.Save(settings_);
 
-    lan_discovery_.Stop();
+    discovery_service_->Stop();
     network_manager_.Stop();
     UnloadAudioAssets();
     UnloadRenderShaders();
@@ -3999,7 +4001,7 @@ void GameApp::Render() {
 
             const MainMenuUiResult ui_result =
                 DrawMainMenu(player_name_buffer_, sizeof(player_name_buffer_), join_ip_buffer_, sizeof(join_ip_buffer_),
-                             lan_discovery_.GetHosts(), config_manager_.GetConfigPath(), controls_bindings_,
+                             discovery_service_->GetHosts(), config_manager_.GetConfigPath(), controls_bindings_,
                              controls_manager_.GetControlsPath(), show_network_debug_panel_,
                              settings_.auto_pick_replace_equipment,
                              settings_.hide_own_influence_zones, settings_.enable_influence_zone_system,
@@ -4255,12 +4257,12 @@ void GameApp::StartAsHost() {
     main_menu_status_message_ = TextFormat("Host started on UDP %d", Constants::kDefaultPort);
     main_menu_status_is_error_ = false;
 
-    lan_discovery_.Stop();
-    if (!lan_discovery_.StartHostBroadcaster(settings_.player_name, Constants::kDefaultPort)) {
+    discovery_service_->Stop();
+    if (!discovery_service_->StartHostBroadcaster(settings_.player_name, Constants::kDefaultPort)) {
         std::printf("[UI] Warning: LAN discovery broadcaster failed to start\n");
     }
 
-    host_display_ip_ = TextFormat("%s:%d", lan_discovery_.GetHostLocalIp().c_str(), Constants::kDefaultPort);
+    host_display_ip_ = TextFormat("%s:%d", discovery_service_->GetHostLocalIp().c_str(), Constants::kDefaultPort);
     lobby_player_names_.clear();
     lobby_player_names_.push_back(settings_.player_name);
     render_player_positions_.clear();
@@ -4335,8 +4337,8 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
 
 void GameApp::ReturnToMainMenu() {
     network_manager_.Stop();
-    lan_discovery_.Stop();
-    if (!lan_discovery_.StartClientListener()) {
+    discovery_service_->Stop();
+    if (!discovery_service_->StartClientListener()) {
         main_menu_status_message_ = TextFormat("Discovery listener failed on UDP %d", Constants::kDiscoveryPort);
         main_menu_status_is_error_ = true;
     }

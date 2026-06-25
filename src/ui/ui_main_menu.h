@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "config/controls_bindings.h"
-#include "net/lan_discovery.h"
+#include "net/discovery_service.h"
 
 struct MainMenuUiResult {
     bool request_host = false;

@@ -286,7 +286,7 @@ std::vector<DiscoveredHost> LanDiscovery::GetHosts() const {
     return result;
 }
 
-const std::string& LanDiscovery::GetHostLocalIp() const { return host_local_ip_; }
+std::string LanDiscovery::GetHostLocalIp() const { return host_local_ip_; }
 
 std::string LanDiscovery::EndpointToIpString(const struct sockaddr_in& endpoint) {
     char buffer[INET_ADDRSTRLEN] = {0};

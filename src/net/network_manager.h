@@ -1,17 +1,14 @@
 #pragma once
 
-#include <optional>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "net/network_messages.h"
-
-struct _ENetHost;
-struct _ENetPeer;
-typedef struct _ENetHost ENetHost;
-typedef struct _ENetPeer ENetPeer;
+#include "net/network_transport.h"
 
 struct RemotePlayerInfo {
     int player_id = -1;
@@ -55,7 +52,7 @@ enum class ClientConnectionState {
 
 class NetworkManager {
   public:
-    NetworkManager();
+    explicit NetworkManager(std::unique_ptr<INetworkTransport> transport = nullptr);
     ~NetworkManager();
 
     bool StartHost(int port);
@@ -112,26 +109,25 @@ class NetworkManager {
         int last_keyframe_snapshot_id_sent = 0;
     };
 
-    bool EnsureEnetInitialized();
-    void SendPacketToPeer(ENetPeer* peer, const std::vector<uint8_t>& packet_data, bool reliable, uint8_t channel,
-                          bool is_snapshot);
-    void BroadcastPacket(const std::vector<uint8_t>& packet_data, bool reliable, uint8_t channel, bool is_snapshot);
+    void SendPacketToPeer(NetworkPeerId peer_id, const std::vector<uint8_t>& packet_data,
+                          NetworkPacketReliability reliability, uint8_t channel, bool is_snapshot);
+    void BroadcastPacket(const std::vector<uint8_t>& packet_data, NetworkPacketReliability reliability, uint8_t channel,
+                         bool is_snapshot);
     void RegisterOutgoingPacket(size_t bytes, bool is_snapshot);
     void RegisterIncomingPacket(size_t bytes, bool is_snapshot);
     void UpdateRateTelemetry();
 
-    bool enet_initialized_ = false;
+    std::unique_ptr<INetworkTransport> transport_;
     bool is_host_ = false;
     bool connected_ = false;
 
-    ENetHost* host_ = nullptr;
-    ENetPeer* server_peer_ = nullptr;
+    NetworkPeerId server_peer_id_ = 0;
 
     int next_remote_player_id_ = 1;
     std::string local_player_name_ = "Player";
     int assigned_local_player_id_ = -1;
 
-    std::unordered_map<ENetPeer*, PeerInfo> peers_;
+    std::unordered_map<NetworkPeerId, PeerInfo> peers_;
     std::unordered_map<int, ServerSnapshotMessage> host_snapshot_history_;
     std::unordered_map<int, ServerSnapshotMessage> client_snapshot_history_;
     int last_client_applied_snapshot_id_ = 0;

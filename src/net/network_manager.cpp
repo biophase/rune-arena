@@ -3,17 +3,17 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <memory>
 #include <unordered_map>
-
-#include <enet/enet.h>
 
 #include "core/constants.h"
 #include "net/binary_protocol.h"
+#include "net/enet_transport.h"
 
 namespace {
 
-constexpr enet_uint8 kChannelReliable = 0;
-constexpr enet_uint8 kChannelRealtime = 1;
+constexpr uint8_t kChannelReliable = 0;
+constexpr uint8_t kChannelRealtime = 1;
 
 void NetLog(const char* fmt, ...) {
     va_list args;
@@ -21,12 +21,6 @@ void NetLog(const char* fmt, ...) {
     std::vprintf(fmt, args);
     std::printf("\n");
     va_end(args);
-}
-
-std::string AddressToString(const ENetAddress& address) {
-    char ip[64] = {};
-    enet_address_get_host_ip(&address, ip, sizeof(ip));
-    return std::string(ip);
 }
 
 bool AreEqual(const PlayerSnapshot& a, const PlayerSnapshot& b) {
@@ -446,39 +440,16 @@ void TrimSnapshotHistory(std::unordered_map<int, ServerSnapshotMessage>& history
 
 }  // namespace
 
-NetworkManager::NetworkManager() = default;
+NetworkManager::NetworkManager(std::unique_ptr<INetworkTransport> transport)
+    : transport_(transport != nullptr ? std::move(transport) : std::make_unique<ENetTransport>()) {}
 
 NetworkManager::~NetworkManager() { Stop(); }
 
-bool NetworkManager::EnsureEnetInitialized() {
-    if (enet_initialized_) {
-        return true;
-    }
-
-    if (enet_initialize() != 0) {
-        return false;
-    }
-
-    enet_initialized_ = true;
-    return true;
-}
-
 bool NetworkManager::StartHost(int port) {
     Stop();
-    if (!EnsureEnetInitialized()) {
-        last_debug_message_ = "enet initialization failed";
+    if (!transport_->StartHost(port)) {
+        last_debug_message_ = transport_->GetLastError();
         NetLog("[NET] Host start failed: %s", last_debug_message_.c_str());
-        return false;
-    }
-
-    ENetAddress address;
-    address.host = ENET_HOST_ANY;
-    address.port = static_cast<enet_uint16>(port);
-
-    host_ = enet_host_create(&address, 16, 2, 0, 0);
-    if (!host_) {
-        last_debug_message_ = "failed to bind/listen on UDP port (in use or blocked)";
-        NetLog("[NET] Host start failed on UDP %d: %s", port, last_debug_message_.c_str());
         return false;
     }
 
@@ -493,15 +464,8 @@ bool NetworkManager::StartHost(int port) {
 
 bool NetworkManager::StartClient() {
     Stop();
-    if (!EnsureEnetInitialized()) {
-        last_debug_message_ = "enet initialization failed";
-        NetLog("[NET] Client start failed: %s", last_debug_message_.c_str());
-        return false;
-    }
-
-    host_ = enet_host_create(nullptr, 1, 2, 0, 0);
-    if (!host_) {
-        last_debug_message_ = "failed to create ENet client host";
+    if (!transport_->StartClient()) {
+        last_debug_message_ = transport_->GetLastError();
         NetLog("[NET] Client start failed: %s", last_debug_message_.c_str());
         return false;
     }
@@ -514,15 +478,7 @@ bool NetworkManager::StartClient() {
 }
 
 bool NetworkManager::ConnectToHost(const std::string& ip, int port) {
-    if (!host_ || is_host_) {
-        return false;
-    }
-
-    ENetAddress address;
-    address.port = static_cast<enet_uint16>(port);
-    if (enet_address_set_host(&address, ip.c_str()) != 0) {
-        last_debug_message_ = "failed to resolve host address";
-        client_connection_state_ = ClientConnectionState::Disconnected;
+    if (transport_ == nullptr || !transport_->IsRunning() || is_host_) {
         return false;
     }
 
@@ -538,25 +494,25 @@ bool NetworkManager::ConnectToHost(const std::string& ip, int port) {
     latest_map_transfer_complete_.reset();
     client_connection_state_ = ClientConnectionState::ConnectingTransport;
     last_debug_message_ = "connecting transport";
+    server_peer_id_ = 0;
 
-    server_peer_ = enet_host_connect(host_, &address, 2, 0);
-    if (server_peer_) {
+    // Future SteamTransport should plug in here without changing session/gameplay code.
+    if (transport_->ConnectToHost(ip, port)) {
         NetLog("[NET] Client connecting to %s:%d", ip.c_str(), port);
     } else {
         NetLog("[NET] Client failed to start connect to %s:%d", ip.c_str(), port);
         client_connection_state_ = ClientConnectionState::Disconnected;
-        last_debug_message_ = "connect start failed";
+        last_debug_message_ = transport_->GetLastError();
     }
-    return server_peer_ != nullptr;
+    return client_connection_state_ != ClientConnectionState::Disconnected;
 }
 
 void NetworkManager::Stop() {
-    if (host_) {
-        enet_host_destroy(host_);
-        host_ = nullptr;
+    if (transport_ != nullptr) {
+        transport_->Stop();
     }
 
-    server_peer_ = nullptr;
+    server_peer_id_ = 0;
     peers_.clear();
     host_snapshot_history_.clear();
     client_snapshot_history_.clear();
@@ -586,54 +542,48 @@ void NetworkManager::Stop() {
     rate_window_packets_sent_ = 0;
     rate_window_packets_received_ = 0;
     rate_window_reconciliation_corrections_ = 0;
-    last_rate_update_ms_ = enet_time_get();
+    last_rate_update_ms_ = transport_ != nullptr ? transport_->GetTimeMilliseconds() : 0;
     telemetry_ = NetTelemetry{};
-
-    if (enet_initialized_) {
-        enet_deinitialize();
-        enet_initialized_ = false;
-    }
 }
 
 void NetworkManager::SetLocalPlayerName(const std::string& player_name) { local_player_name_ = player_name; }
 
 void NetworkManager::Poll() {
-    if (!host_) {
+    if (transport_ == nullptr || !transport_->IsRunning()) {
         return;
     }
 
-    ENetEvent event;
-    while (enet_host_service(host_, &event, 0) > 0) {
+    NetworkEvent event;
+    while (transport_->PollEvent(&event)) {
         switch (event.type) {
-            case ENET_EVENT_TYPE_CONNECT: {
+            case NetworkEventType::Connected: {
                 if (is_host_) {
                     PeerInfo info;
                     info.player_id = next_remote_player_id_++;
                     info.name = "Player" + std::to_string(info.player_id);
-                    peers_[event.peer] = info;
-                    NetLog("[NET] Host transport connect from %s:%u -> assigned temp id=%d",
-                           AddressToString(event.peer->address).c_str(), event.peer->address.port, info.player_id);
+                    peers_[event.peer_id] = info;
+                    NetLog("[NET] Host transport connect from %s:%u -> assigned temp id=%d", event.address.c_str(),
+                           event.port, info.player_id);
                 } else {
+                    server_peer_id_ = event.peer_id;
                     connected_ = true;
                     client_connection_state_ = ClientConnectionState::WaitingJoinAck;
                     last_debug_message_ = "transport connected, waiting join_ack";
-                    SendPacketToPeer(server_peer_, binary::EncodeJoinPacket(local_player_name_), true, kChannelReliable,
-                                     false);
+                    SendPacketToPeer(server_peer_id_, binary::EncodeJoinPacket(local_player_name_),
+                                     NetworkPacketReliability::Reliable, kChannelReliable, false);
                     NetLog("[NET] Client transport connected, sent join name='%s'", local_player_name_.c_str());
                 }
                 break;
             }
-            case ENET_EVENT_TYPE_RECEIVE: {
+            case NetworkEventType::Received: {
                 binary::DecodedPacketHeader header;
-                if (!binary::DecodePacketHeader(event.packet->data, event.packet->dataLength, header)) {
-                    NetLog("[NET] Dropped malformed packet (%zu bytes)", static_cast<size_t>(event.packet->dataLength));
-                    enet_packet_destroy(event.packet);
+                if (!binary::DecodePacketHeader(event.payload.data(), event.payload.size(), header)) {
+                    NetLog("[NET] Dropped malformed packet (%zu bytes)", event.payload.size());
                     break;
                 }
                 if (!header.version_ok) {
                     last_debug_message_ = "protocol version mismatch";
                     NetLog("[NET] Dropped packet with protocol version mismatch");
-                    enet_packet_destroy(event.packet);
                     break;
                 }
 
@@ -641,21 +591,20 @@ void NetworkManager::Poll() {
                     switch (header.type) {
                         case binary::PacketType::Join: {
                             const auto name = binary::DecodeJoinPayload(header.payload, header.payload_size);
-                            const auto it = peers_.find(event.peer);
+                            const auto it = peers_.find(event.peer_id);
                             if (name.has_value() && it != peers_.end()) {
                                 it->second.name = *name;
-                                SendPacketToPeer(event.peer, binary::EncodeJoinAckPacket(it->second.player_id), true,
-                                                 kChannelReliable, false);
+                                SendPacketToPeer(event.peer_id, binary::EncodeJoinAckPacket(it->second.player_id),
+                                                 NetworkPacketReliability::Reliable, kChannelReliable, false);
                                 NetLog("[NET] Host received join from '%s' (%s), sent join_ack player_id=%d",
-                                       it->second.name.c_str(), AddressToString(event.peer->address).c_str(),
-                                       it->second.player_id);
+                                       it->second.name.c_str(), event.address.c_str(), it->second.player_id);
                             }
                             break;
                         }
                         case binary::PacketType::ClientMove: {
                             auto move = binary::DecodeClientMovePayload(header.payload, header.payload_size);
                             if (move.has_value()) {
-                                auto it = peers_.find(event.peer);
+                                auto it = peers_.find(event.peer_id);
                                 if (it != peers_.end()) {
                                     it->second.last_acked_snapshot_id =
                                         std::max(it->second.last_acked_snapshot_id, move->last_received_snapshot_id);
@@ -667,7 +616,7 @@ void NetworkManager::Poll() {
                         case binary::PacketType::ClientAction: {
                             auto action = binary::DecodeClientActionPayload(header.payload, header.payload_size);
                             if (action.has_value()) {
-                                auto it = peers_.find(event.peer);
+                                auto it = peers_.find(event.peer_id);
                                 if (it != peers_.end()) {
                                     it->second.last_acked_snapshot_id =
                                         std::max(it->second.last_acked_snapshot_id, action->last_received_snapshot_id);
@@ -801,31 +750,26 @@ void NetworkManager::Poll() {
                     }
                 }
 
-                RegisterIncomingPacket(event.packet->dataLength, header.type == binary::PacketType::Snapshot);
-
-                enet_packet_destroy(event.packet);
+                RegisterIncomingPacket(event.payload.size(), header.type == binary::PacketType::Snapshot);
                 break;
             }
-            case ENET_EVENT_TYPE_DISCONNECT: {
+            case NetworkEventType::Disconnected: {
                 if (is_host_) {
-                    NetLog("[NET] Host disconnect from %s:%u", AddressToString(event.peer->address).c_str(),
-                           event.peer->address.port);
-                    const auto it = peers_.find(event.peer);
+                    NetLog("[NET] Host disconnect from %s:%u", event.address.c_str(), event.port);
+                    const auto it = peers_.find(event.peer_id);
                     if (it != peers_.end()) {
                         disconnected_remote_players_.push_back({it->second.player_id, it->second.name});
                         peers_.erase(it);
                     }
                 } else {
                     connected_ = false;
-                    server_peer_ = nullptr;
+                    server_peer_id_ = 0;
                     client_connection_state_ = ClientConnectionState::Disconnected;
                     last_debug_message_ = "disconnected";
                     NetLog("[NET] Client disconnected from host");
                 }
                 break;
             }
-            case ENET_EVENT_TYPE_NONE:
-                break;
         }
     }
     UpdateRateTelemetry();
@@ -835,7 +779,7 @@ bool NetworkManager::IsHost() const { return is_host_; }
 
 bool NetworkManager::IsConnected() const {
     if (is_host_) {
-        return host_ != nullptr;
+        return transport_ != nullptr && transport_->IsRunning();
     }
     return connected_;
 }
@@ -849,21 +793,23 @@ bool NetworkManager::HasReceivedLobbyState() const { return client_received_lobb
 const std::string& NetworkManager::GetLastDebugMessage() const { return last_debug_message_; }
 
 void NetworkManager::SendClientMove(const ClientMoveMessage& message) {
-    if (is_host_ || !server_peer_) {
+    if (is_host_ || server_peer_id_ == 0) {
         return;
     }
     ClientMoveMessage outbound = message;
     outbound.last_received_snapshot_id = last_client_applied_snapshot_id_;
-    SendPacketToPeer(server_peer_, binary::EncodeClientMovePacket(outbound), false, kChannelRealtime, false);
+    SendPacketToPeer(server_peer_id_, binary::EncodeClientMovePacket(outbound), NetworkPacketReliability::Unreliable,
+                     kChannelRealtime, false);
 }
 
 void NetworkManager::SendClientAction(const ClientActionMessage& message) {
-    if (is_host_ || !server_peer_) {
+    if (is_host_ || server_peer_id_ == 0) {
         return;
     }
     ClientActionMessage outbound = message;
     outbound.last_received_snapshot_id = last_client_applied_snapshot_id_;
-    SendPacketToPeer(server_peer_, binary::EncodeClientActionPacket(outbound), true, kChannelReliable, false);
+    SendPacketToPeer(server_peer_id_, binary::EncodeClientActionPacket(outbound), NetworkPacketReliability::Reliable,
+                     kChannelReliable, false);
 }
 
 std::vector<ClientMoveMessage> NetworkManager::ConsumeHostMoveInputs() {
@@ -914,14 +860,14 @@ void NetworkManager::BroadcastSnapshot(const ServerSnapshotMessage& message) {
                 ServerSnapshotMessage delta = BuildDeltaSnapshot(base_it->second, full);
                 const std::vector<uint8_t> delta_packet = binary::EncodeSnapshotPacket(delta);
                 if (delta_packet.size() < full_packet.size()) {
-                    SendPacketToPeer(peer, delta_packet, false, kChannelRealtime, true);
+                    SendPacketToPeer(peer, delta_packet, NetworkPacketReliability::Unreliable, kChannelRealtime, true);
                     telemetry_.delta_snapshots_sent_total += 1;
                     sent = true;
                 }
             }
         }
         if (!sent) {
-            SendPacketToPeer(peer, full_packet, false, kChannelRealtime, true);
+            SendPacketToPeer(peer, full_packet, NetworkPacketReliability::Unreliable, kChannelRealtime, true);
             telemetry_.keyframe_snapshots_sent_total += 1;
             peer_info.last_keyframe_snapshot_id_sent = full.snapshot_id;
         }
@@ -938,7 +884,8 @@ void NetworkManager::BroadcastLobbyState(const LobbyStateMessage& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastPacket(binary::EncodeLobbyStatePacket(message), true, kChannelReliable, false);
+    BroadcastPacket(binary::EncodeLobbyStatePacket(message), NetworkPacketReliability::Reliable, kChannelReliable,
+                    false);
 }
 
 std::optional<LobbyStateMessage> NetworkManager::ConsumeLobbyState() {
@@ -951,7 +898,8 @@ void NetworkManager::BroadcastMatchStart(const MatchStartMessage& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastPacket(binary::EncodeMatchStartPacket(message), true, kChannelReliable, false);
+    BroadcastPacket(binary::EncodeMatchStartPacket(message), NetworkPacketReliability::Reliable, kChannelReliable,
+                    false);
 }
 
 std::optional<MatchStartMessage> NetworkManager::ConsumeMatchStart() {
@@ -961,10 +909,11 @@ std::optional<MatchStartMessage> NetworkManager::ConsumeMatchStart() {
 }
 
 void NetworkManager::SendChatSubmit(const ChatSubmitMessage& message) {
-    if (is_host_ || !connected_ || server_peer_ == nullptr) {
+    if (is_host_ || !connected_ || server_peer_id_ == 0) {
         return;
     }
-    SendPacketToPeer(server_peer_, binary::EncodeChatSubmitPacket(message), true, kChannelReliable, false);
+    SendPacketToPeer(server_peer_id_, binary::EncodeChatSubmitPacket(message), NetworkPacketReliability::Reliable,
+                     kChannelReliable, false);
 }
 
 std::vector<ChatSubmitMessage> NetworkManager::ConsumeHostChatSubmits() {
@@ -977,7 +926,8 @@ void NetworkManager::BroadcastConsoleMessage(const ConsoleMessageNet& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastPacket(binary::EncodeConsoleMessagePacket(message), true, kChannelReliable, false);
+    BroadcastPacket(binary::EncodeConsoleMessagePacket(message), NetworkPacketReliability::Reliable, kChannelReliable,
+                    false);
 }
 
 void NetworkManager::SendConsoleMessageToPlayer(int player_id, const ConsoleMessageNet& message) {
@@ -986,7 +936,8 @@ void NetworkManager::SendConsoleMessageToPlayer(int player_id, const ConsoleMess
     }
     for (const auto& [peer, info] : peers_) {
         if (info.player_id == player_id) {
-            SendPacketToPeer(peer, binary::EncodeConsoleMessagePacket(message), true, kChannelReliable, false);
+            SendPacketToPeer(peer, binary::EncodeConsoleMessagePacket(message), NetworkPacketReliability::Reliable,
+                             kChannelReliable, false);
             return;
         }
     }
@@ -1002,21 +953,24 @@ void NetworkManager::BroadcastMapTransferBegin(const MapTransferBeginMessage& me
     if (!is_host_) {
         return;
     }
-    BroadcastPacket(binary::EncodeMapTransferBeginPacket(message), true, kChannelReliable, false);
+    BroadcastPacket(binary::EncodeMapTransferBeginPacket(message), NetworkPacketReliability::Reliable,
+                    kChannelReliable, false);
 }
 
 void NetworkManager::BroadcastMapTransferChunk(const MapTransferChunkMessage& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastPacket(binary::EncodeMapTransferChunkPacket(message), true, kChannelReliable, false);
+    BroadcastPacket(binary::EncodeMapTransferChunkPacket(message), NetworkPacketReliability::Reliable,
+                    kChannelReliable, false);
 }
 
 void NetworkManager::BroadcastMapTransferComplete(const MapTransferCompleteMessage& message) {
     if (!is_host_) {
         return;
     }
-    BroadcastPacket(binary::EncodeMapTransferCompletePacket(message), true, kChannelReliable, false);
+    BroadcastPacket(binary::EncodeMapTransferCompletePacket(message), NetworkPacketReliability::Reliable,
+                    kChannelReliable, false);
 }
 
 std::optional<MapTransferBeginMessage> NetworkManager::ConsumeMapTransferBegin() {
@@ -1060,33 +1014,25 @@ void NetworkManager::AddReconciliationCorrection() {
     rate_window_reconciliation_corrections_ += 1;
 }
 
-void NetworkManager::SendPacketToPeer(ENetPeer* peer, const std::vector<uint8_t>& packet_data, bool reliable,
-                                      uint8_t channel, bool is_snapshot) {
-    if (!peer) {
+void NetworkManager::SendPacketToPeer(NetworkPeerId peer_id, const std::vector<uint8_t>& packet_data,
+                                      NetworkPacketReliability reliability, uint8_t channel, bool is_snapshot) {
+    if (peer_id == 0 || transport_ == nullptr) {
         return;
     }
 
-    ENetPacket* packet =
-        enet_packet_create(packet_data.data(), packet_data.size(), reliable ? ENET_PACKET_FLAG_RELIABLE : 0);
-    if (packet) {
-        enet_peer_send(peer, channel, packet);
+    if (transport_->SendPacket(peer_id, packet_data, reliability, channel)) {
         RegisterOutgoingPacket(packet_data.size(), is_snapshot);
-        enet_host_flush(host_);
     }
 }
 
-void NetworkManager::BroadcastPacket(const std::vector<uint8_t>& packet_data, bool reliable, uint8_t channel,
-                                     bool is_snapshot) {
-    if (!host_) {
+void NetworkManager::BroadcastPacket(const std::vector<uint8_t>& packet_data, NetworkPacketReliability reliability,
+                                     uint8_t channel, bool is_snapshot) {
+    if (transport_ == nullptr) {
         return;
     }
 
-    ENetPacket* packet =
-        enet_packet_create(packet_data.data(), packet_data.size(), reliable ? ENET_PACKET_FLAG_RELIABLE : 0);
-    if (packet) {
-        enet_host_broadcast(host_, channel, packet);
+    if (transport_->BroadcastPacket(packet_data, reliability, channel)) {
         RegisterOutgoingPacket(packet_data.size(), is_snapshot);
-        enet_host_flush(host_);
     }
 }
 
@@ -1119,7 +1065,7 @@ void NetworkManager::RegisterIncomingPacket(size_t bytes, bool is_snapshot) {
 }
 
 void NetworkManager::UpdateRateTelemetry() {
-    const uint32_t now = enet_time_get();
+    const uint32_t now = transport_ != nullptr ? transport_->GetTimeMilliseconds() : 0;
     if (last_rate_update_ms_ == 0) {
         last_rate_update_ms_ = now;
         return;

@@ -4,25 +4,20 @@
 #include <unordered_map>
 #include <vector>
 
-struct DiscoveredHost {
-    std::string name;
-    std::string ip;
-    int port = 0;
-    double last_seen_seconds = 0.0;
-};
+#include "net/discovery_service.h"
 
-class LanDiscovery {
+class LanDiscovery : public IDiscoveryService {
   public:
     LanDiscovery();
-    ~LanDiscovery();
+    ~LanDiscovery() override;
 
-    bool StartHostBroadcaster(const std::string& host_name, int game_port);
-    bool StartClientListener();
-    void Stop();
+    bool StartHostBroadcaster(const std::string& host_name, int game_port) override;
+    bool StartClientListener() override;
+    void Stop() override;
 
-    void Update();
-    std::vector<DiscoveredHost> GetHosts() const;
-    const std::string& GetHostLocalIp() const;
+    void Update() override;
+    std::vector<DiscoveredHost> GetHosts() const override;
+    std::string GetHostLocalIp() const override;
 
   private:
     bool EnsureSocketApiInitialized();
