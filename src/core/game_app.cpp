@@ -4268,7 +4268,7 @@ void GameApp::StartAsHost() {
     render_player_positions_.clear();
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
-    volatile_cast_caster_fx_.clear();
+    player_attached_animations_.clear();
     storm_arc_visuals_.clear();
     fire_storm_cast_impact_played_.clear();
     fire_storm_cast_arcs_spawned_.clear();
@@ -4278,7 +4278,7 @@ void GameApp::StartAsHost() {
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
-    volatile_cast_caster_fx_.clear();
+    player_attached_animations_.clear();
     pending_local_inventory_sync_.reset();
     pending_local_inventory_sync_dirty_ = false;
     pending_client_map_transfer_.reset();
@@ -4323,7 +4323,7 @@ void GameApp::StartAsClient(const std::string& ip, int port) {
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = GetTime();
-    volatile_cast_caster_fx_.clear();
+    player_attached_animations_.clear();
     console_entries_.clear();
     chat_input_active_ = false;
     chat_input_buffer_.clear();
@@ -4354,7 +4354,7 @@ void GameApp::ReturnToMainMenu() {
     render_player_positions_.clear();
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
-    volatile_cast_caster_fx_.clear();
+    player_attached_animations_.clear();
     console_entries_.clear();
     chat_input_active_ = false;
     chat_input_buffer_.clear();
@@ -4449,7 +4449,7 @@ void GameApp::StartMatchAsHost() {
     render_player_positions_.clear();
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
-    volatile_cast_caster_fx_.clear();
+    player_attached_animations_.clear();
     console_entries_.clear();
     chat_input_active_ = false;
     chat_input_buffer_.clear();
@@ -9629,27 +9629,38 @@ void GameApp::SpawnVolatileCastCasterFx(int player_id) {
         return;
     }
 
-    VolatileCastCasterFx effect;
-    effect.age_seconds = 0.0f;
-    effect.duration_seconds = 0.25f;
-
-    int frame_count = 0;
-    float fps = 0.0f;
-    if (sprite_metadata_.IsLoaded() &&
-        sprite_metadata_.GetAnimationStats("volatile_cast_effect", "default", frame_count, fps) &&
-        frame_count > 0) {
-        effect.duration_seconds = static_cast<float>(frame_count) / std::max(0.001f, fps);
-    }
-
-    volatile_cast_caster_fx_[player_id] = effect;
+    SpawnPlayerAttachedAnimation(player_id, "volatile_cast_effect", 0.0f, 0.0f);
     PlaySfxIfVisible(sfx_volatile_cast_.sound, sfx_volatile_cast_.loaded, player->pos);
 }
 
+void GameApp::SpawnPlayerAttachedAnimation(int player_id, const std::string& animation_key, float offset_x,
+                                           float offset_y) {
+    if (player_id < 0 || animation_key.empty() || !sprite_metadata_.IsLoaded() ||
+        !sprite_metadata_.HasAnimation(animation_key)) {
+        return;
+    }
+
+    player_attached_animations_.erase(
+        std::remove_if(player_attached_animations_.begin(), player_attached_animations_.end(),
+                       [&](const PlayerAttachedAnimation& animation) {
+                           return animation.player_id == player_id && animation.animation_key == animation_key;
+                       }),
+        player_attached_animations_.end());
+
+    PlayerAttachedAnimation animation;
+    animation.player_id = player_id;
+    animation.animation_key = animation_key;
+    animation.offset_x = offset_x;
+    animation.offset_y = offset_y;
+    animation.duration_seconds = GetAnimationDurationSeconds(sprite_metadata_, animation_key, "default", 1, 0.25f);
+    player_attached_animations_.push_back(std::move(animation));
+}
+
 void GameApp::UpdateVolatileCastCasterFx(float dt) {
-    for (auto it = volatile_cast_caster_fx_.begin(); it != volatile_cast_caster_fx_.end();) {
-        it->second.age_seconds += dt;
-        if (it->second.age_seconds >= it->second.duration_seconds) {
-            it = volatile_cast_caster_fx_.erase(it);
+    for (auto it = player_attached_animations_.begin(); it != player_attached_animations_.end();) {
+        it->age_seconds += dt;
+        if (it->age_seconds >= it->duration_seconds || FindPlayerById(it->player_id) == nullptr) {
+            it = player_attached_animations_.erase(it);
         } else {
             ++it;
         }
@@ -11121,6 +11132,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         Particle,
         HammerImpact,
         Player,
+        PlayerAttachedAnimation,
     };
 
     struct RenderItem {
@@ -11162,8 +11174,11 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             case RenderKind::HammerImpact:
                 return 13;
             case RenderKind::Player:
-            default:
                 return 14;
+            case RenderKind::PlayerAttachedAnimation:
+                return 15;
+            default:
+                return 16;
         }
     };
 
@@ -11504,6 +11519,19 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             continue;
         }
         items.push_back({RenderKind::Player, draw_pos.y + 16.0f, i});
+    }
+
+    for (size_t i = 0; i < player_attached_animations_.size(); ++i) {
+        const PlayerAttachedAnimation& animation = player_attached_animations_[i];
+        const Player* player = FindPlayerById(animation.player_id);
+        if (player == nullptr || !player->alive) {
+            continue;
+        }
+        const Vector2 draw_pos = GetRenderPlayerPosition(player->id);
+        if (!point_visible(draw_pos)) {
+            continue;
+        }
+        items.push_back({RenderKind::PlayerAttachedAnimation, draw_pos.y + 16.0f, i});
     }
 
     std::sort(items.begin(), items.end(), [&](const RenderItem& a, const RenderItem& b) {
@@ -12152,6 +12180,19 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                     const int name_y = static_cast<int>(health_bar.y - static_cast<float>(name_font_size) - 2.0f);
                     DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
                 }
+                break;
+            }
+            case RenderKind::PlayerAttachedAnimation: {
+                if (item.index >= player_attached_animations_.size()) {
+                    break;
+                }
+                const PlayerAttachedAnimation& animation = player_attached_animations_[item.index];
+                const Player* player = FindPlayerById(animation.player_id);
+                if (player == nullptr || !player->alive) {
+                    break;
+                }
+                RenderPlayerAttachedAnimation(animation.animation_key, animation.age_seconds, animation.offset_x,
+                                              animation.offset_y, GetRenderPlayerPosition(player->id));
                 break;
             }
         }
@@ -12917,8 +12958,6 @@ void GameApp::RenderPlayerOverlays() {
         const Player& player = *overlay.player;
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
         const Rectangle sprite_rect = GetPlayerSpriteRect(draw_pos);
-
-        RenderVolatileCastCasterFx(player, draw_pos);
 
         Rectangle health_bar = {draw_pos.x - Constants::kPlayerHealthBarWidth * 0.5f,
                                 sprite_rect.y - Constants::kPlayerHealthBarOffsetY + 20.0f,
@@ -14603,21 +14642,19 @@ void GameApp::RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) 
     }
 }
 
-void GameApp::RenderVolatileCastCasterFx(const Player& player, Vector2 draw_pos) const {
-    const auto effect_it = volatile_cast_caster_fx_.find(player.id);
-    if (effect_it == volatile_cast_caster_fx_.end() || !sprite_metadata_.IsLoaded() ||
-        !sprite_metadata_.HasAnimation("volatile_cast_effect")) {
+void GameApp::RenderPlayerAttachedAnimation(const std::string& animation_key, float age_seconds, float offset_x,
+                                            float offset_y, Vector2 draw_pos) const {
+    if (!sprite_metadata_.IsLoaded() || !sprite_metadata_.HasAnimation(animation_key)) {
         return;
     }
 
-    const Rectangle src =
-        InsetSourceRect(sprite_metadata_.GetFrame("volatile_cast_effect", "default", effect_it->second.age_seconds),
-                        Constants::kAtlasSampleInsetPixels);
-    const float frame_width =
-        static_cast<float>(sprite_metadata_.GetCellWidth() > 0 ? sprite_metadata_.GetCellWidth() : 32);
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const Rectangle src = InsetSourceRect(sprite_metadata_.GetFrame(animation_key, "default", age_seconds),
+                                          Constants::kAtlasSampleInsetPixels);
+    const float frame_width = static_cast<float>(sprite_metadata_.GetCellWidth() > 0 ? sprite_metadata_.GetCellWidth() : 32);
     const float frame_height =
         static_cast<float>(sprite_metadata_.GetCellHeight() > 0 ? sprite_metadata_.GetCellHeight() : 32);
     const Rectangle dst = SnapRect(
-        {draw_pos.x - frame_width * 0.5f, draw_pos.y - frame_height * 0.5f, frame_width, frame_height});
-    DrawTexturePro(sprite_metadata_.GetTexture(), src, dst, {0, 0}, 0.0f, WHITE);
+        {draw_pos.x - frame_width * 0.5f + offset_x, draw_pos.y - frame_height * 0.5f + offset_y, frame_width, frame_height});
+    DrawTexturePro(texture, src, dst, {0, 0}, 0.0f, WHITE);
 }

@@ -316,6 +316,7 @@ class GameApp {
     bool CanPlayerStartGrapplingPreview(const Player& player) const;
     void PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const;
     bool HasVisibleIdleFireStormDummy() const;
+    void SpawnPlayerAttachedAnimation(int player_id, const std::string& animation_key, float offset_x, float offset_y);
     void LoadAudioAssets();
     void UnloadAudioAssets();
     void UpdateAudioFrame();
@@ -368,7 +369,8 @@ class GameApp {
     bool CastRuntimeSpell(const SpellRuntimeMatch& match);
     Rectangle GetPlayerSpriteRect(Vector2 draw_pos, const std::string& layer_name = "main") const;
     void RenderPlayerModularLayers(const Player& player, Vector2 draw_pos) const;
-    void RenderVolatileCastCasterFx(const Player& player, Vector2 draw_pos) const;
+    void RenderPlayerAttachedAnimation(const std::string& animation_key, float age_seconds, float offset_x,
+                                       float offset_y, Vector2 draw_pos) const;
     std::string GetClientLobbyStatusText() const;
     std::string GetPlayerDisplayName(int player_id) const;
     Rectangle GetCameraWorldCullRect(float padding_world = 0.0f) const;
@@ -458,11 +460,15 @@ class GameApp {
     };
     std::vector<ConsoleEntry> console_entries_;
     std::unordered_map<int, PlayerActionState> previous_player_action_states_;
-    struct VolatileCastCasterFx {
+    struct PlayerAttachedAnimation {
+        int player_id = -1;
+        std::string animation_key;
         float age_seconds = 0.0f;
         float duration_seconds = 0.0f;
+        float offset_x = 0.0f;
+        float offset_y = 0.0f;
     };
-    std::unordered_map<int, VolatileCastCasterFx> volatile_cast_caster_fx_;
+    std::vector<PlayerAttachedAnimation> player_attached_animations_;
     std::unordered_map<int, int> previous_player_hp_;
     std::unordered_map<int, float> player_damage_flash_remaining_;
     std::unordered_map<int, int> previous_object_hp_;
