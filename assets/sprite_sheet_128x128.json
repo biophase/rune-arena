@@ -49,7 +49,7 @@
     "fire_flower_idle": {
       "facings": {
         "default": {
-          "frames": [[0,67]],
+          "frames": [[0,67],[0,68]],
           "fps": 1
         }
       }

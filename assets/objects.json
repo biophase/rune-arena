@@ -92,10 +92,100 @@
         "gradient_start": 0.2
       }
     },
+    "lilly_pad": {
+      "type": "Decoration",
+      "map_key": [34, 150, 175],
+      "terrain_tile": "tile_water",
+      "sprite": { "sheet": "base32", "idle": "lilly_pad_idle" },
+      "walkable": true,
+      "stops_projectiles": false,
+      "wind": {
+        "strength_pixels": 2,
+        "speed_multiplier": 0.7,
+        "gradient_start": 0.2
+      }
+    },
+    "flowers_1": {
+      "type": "Decoration",
+      "map_key": [27, 150, 175],
+      "sprite": { "sheet": "base32", "idle": "flowers_1" },
+      "flat": true,
+      "walkable": true,
+      "stops_projectiles": false,
+      "wind": {
+        "strength_pixels": 3.0,
+        "speed_multiplier": 1.0,
+        "gradient_start": 0.3
+      }
+    },
+    "flowers_2": {
+      "type": "Decoration",
+      "map_key": [28, 150, 175],
+      "sprite": { "sheet": "base32", "idle": "flowers_2" },
+      "flat": true,
+      "walkable": true,
+      "stops_projectiles": false,
+      "wind": {
+        "strength_pixels": 3.0,
+        "speed_multiplier": 1.0,
+        "gradient_start": 0.3
+      }
+    },
+    "flowers_3": {
+      "type": "Decoration",
+      "map_key": [29, 150, 175],
+      "sprite": { "sheet": "base32", "idle": "flowers_3" },
+      "flat": true,
+      "walkable": true,
+      "stops_projectiles": false,
+      "wind": {
+        "strength_pixels": 3.0,
+        "speed_multiplier": 1.0,
+        "gradient_start": 0.3
+      }
+    },
+    "flowers_4": {
+      "type": "Decoration",
+      "map_key": [30, 150, 175],
+      "sprite": { "sheet": "base32", "idle": "flowers_4" },
+      "flat": true,
+      "walkable": true,
+      "stops_projectiles": false,
+      "wind": {
+        "strength_pixels": 3.0,
+        "speed_multiplier": 1.0,
+        "gradient_start": 0.3
+      }
+    },
+    "stones_1": {
+      "type": "Decoration",
+      "map_key": [31, 150, 175],
+      "sprite": { "sheet": "base32", "idle": "stones_1" },
+      "flat": true,
+      "walkable": true,
+      "stops_projectiles": false
+    },
+    "stones_2": {
+      "type": "Decoration",
+      "map_key": [32, 150, 175],
+      "sprite": { "sheet": "base32", "idle": "stones_2" },
+      "flat": true,
+      "walkable": true,
+      "stops_projectiles": false
+    },
+    "stones_3": {
+      "type": "Decoration",
+      "map_key": [33, 150, 175],
+      "sprite": { "sheet": "base32", "idle": "stones_3" },
+      "flat": true,
+      "walkable": true,
+      "stops_projectiles": false
+    },
     "altar_rune_slot_generic": {
       "type": "Decoration",
       "map_key": [215, 195, 85],
       "sprite": { "sheet": "base32", "idle": "altar_rune_slot_generic" },
+      "flat": true,
       "walkable": true,
       "stops_projectiles": false
     },
@@ -103,6 +193,7 @@
       "type": "Decoration",
       "map_key": [216, 139, 86],
       "sprite": { "sheet": "base32", "idle": "altar_output_simple" },
+      "flat": true,
       "walkable": true,
       "stops_projectiles": false
     },
@@ -116,10 +207,9 @@
         "hp": 50,
         "on_destroy": {
           "drops": [
-            { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
-            { "object_id": "hammer_item", "chance": 0.3, "min": 1, "max": 1 },
-            { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
-            { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
+            { "object_id": "sword_item", "chance": 0.5, "min": 1, "max": 1 },
+            { "object_id": "hammer_item", "chance": 0.5, "min": 1, "max": 1 }
+
           ]
         }
       }
@@ -127,7 +217,7 @@
     "vase_2": {
       "type": "Destructible",
       "map_key": [107, 88, 40],
-      "sprite": { "sheet": "tall32x64", "idle": "vase_2", "death": "vase_destroyed", "shadow": "shadow_vase" },
+      "sprite": { "sheet": "tall32x64", "idle": "vabse_2", "death": "vase_destroyed", "shadow": "shadow_vase" },
       "walkable": true,
       "stops_projectiles": true,
       "destructible": {
@@ -152,10 +242,8 @@
         "hp": 50,
         "on_destroy": {
           "drops": [
-            { "object_id": "sword_item", "chance": 0.3, "min": 1, "max": 1 },
-            { "object_id": "hammer_item", "chance": 0.3, "min": 1, "max": 1 },
-            { "object_id": "health_small", "chance": 0.25, "min": 1, "max": 1 },
-            { "object_id": "mana_small", "chance": 0.25, "min": 1, "max": 1 }
+            { "object_id": "health_small", "chance": 0.3, "min": 1, "max": 1 },
+            { "object_id": "mana_small", "chance": 0.3, "min": 1, "max": 1 }
           ]
         }
       }

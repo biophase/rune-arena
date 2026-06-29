@@ -338,6 +338,7 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
     payload.WriteI32(message.snapshot_id);
     payload.WriteI32(message.base_snapshot_id);
     payload.WriteBool(message.is_delta);
+    payload.WriteF32(message.simulation_time_seconds);
     payload.WriteF32(message.time_remaining);
     payload.WriteBool(message.zone_enabled);
     payload.WriteF32(message.shrink_tiles_per_second);
@@ -493,6 +494,34 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteBool(projectile.alive);
     }
 
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.fire_spirits.size(), 65535)));
+    for (size_t i = 0; i < message.fire_spirits.size() && i < 65535; ++i) {
+        const auto& spirit = message.fire_spirits[i];
+        payload.WriteI32(spirit.id);
+        payload.WriteI32(spirit.flower_object_id);
+        payload.WriteI32(spirit.owner_player_id);
+        payload.WriteI32(spirit.owner_team);
+        payload.WriteI32(spirit.state);
+        payload.WriteF32(spirit.pos_x);
+        payload.WriteF32(spirit.pos_y);
+        payload.WriteF32(spirit.vel_x);
+        payload.WriteF32(spirit.vel_y);
+        payload.WriteF32(spirit.target_world_x);
+        payload.WriteF32(spirit.target_world_y);
+        payload.WriteI32(spirit.spawn_order);
+        payload.WriteF32(spirit.age_seconds);
+        payload.WriteF32(spirit.launch_world_x);
+        payload.WriteF32(spirit.launch_world_y);
+        payload.WriteF32(spirit.impact_world_x);
+        payload.WriteF32(spirit.impact_world_y);
+        payload.WriteF32(spirit.launch_time_seconds);
+        payload.WriteF32(spirit.impact_time_seconds);
+        payload.WriteF32(spirit.travel_duration_seconds);
+        payload.WriteF32(spirit.peak_height);
+        payload.WriteF32(spirit.projectile_animation_time);
+        payload.WriteBool(spirit.alive);
+    }
+
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.ice_walls.size(), 65535)));
     for (size_t i = 0; i < message.ice_walls.size() && i < 65535; ++i) {
         const auto& wall = message.ice_walls[i];
@@ -635,6 +664,10 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
     for (size_t i = 0; i < message.removed_projectile_ids.size() && i < 65535; ++i) {
         payload.WriteI32(message.removed_projectile_ids[i]);
     }
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_fire_spirit_ids.size(), 65535)));
+    for (size_t i = 0; i < message.removed_fire_spirit_ids.size() && i < 65535; ++i) {
+        payload.WriteI32(message.removed_fire_spirit_ids[i]);
+    }
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.removed_ice_wall_ids.size(), 65535)));
     for (size_t i = 0; i < message.removed_ice_wall_ids.size() && i < 65535; ++i) {
         payload.WriteI32(message.removed_ice_wall_ids[i]);
@@ -672,6 +705,7 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
     ServerSnapshotMessage out;
     if (!reader.ReadI32(out.server_tick) || !reader.ReadI32(out.snapshot_id) ||
         !reader.ReadI32(out.base_snapshot_id) || !reader.ReadBool(out.is_delta) ||
+        !reader.ReadF32(out.simulation_time_seconds) ||
         !reader.ReadF32(out.time_remaining) || !reader.ReadBool(out.zone_enabled) ||
         !reader.ReadF32(out.shrink_tiles_per_second) ||
         !reader.ReadF32(out.min_arena_radius_tiles) || !reader.ReadF32(out.arena_radius_tiles) ||
@@ -849,6 +883,27 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         out.projectiles.push_back(projectile);
     }
 
+    uint16_t fire_spirit_count = 0;
+    if (!reader.ReadU16(fire_spirit_count)) return std::nullopt;
+    out.fire_spirits.reserve(fire_spirit_count);
+    for (uint16_t i = 0; i < fire_spirit_count; ++i) {
+        FireSpiritSnapshot spirit;
+        if (!reader.ReadI32(spirit.id) || !reader.ReadI32(spirit.flower_object_id) ||
+            !reader.ReadI32(spirit.owner_player_id) || !reader.ReadI32(spirit.owner_team) ||
+            !reader.ReadI32(spirit.state) || !reader.ReadF32(spirit.pos_x) || !reader.ReadF32(spirit.pos_y) ||
+            !reader.ReadF32(spirit.vel_x) || !reader.ReadF32(spirit.vel_y) ||
+            !reader.ReadF32(spirit.target_world_x) || !reader.ReadF32(spirit.target_world_y) ||
+            !reader.ReadI32(spirit.spawn_order) || !reader.ReadF32(spirit.age_seconds) ||
+            !reader.ReadF32(spirit.launch_world_x) || !reader.ReadF32(spirit.launch_world_y) ||
+            !reader.ReadF32(spirit.impact_world_x) || !reader.ReadF32(spirit.impact_world_y) ||
+            !reader.ReadF32(spirit.launch_time_seconds) || !reader.ReadF32(spirit.impact_time_seconds) ||
+            !reader.ReadF32(spirit.travel_duration_seconds) || !reader.ReadF32(spirit.peak_height) ||
+            !reader.ReadF32(spirit.projectile_animation_time) || !reader.ReadBool(spirit.alive)) {
+            return std::nullopt;
+        }
+        out.fire_spirits.push_back(spirit);
+    }
+
     uint16_t wall_count = 0;
     if (!reader.ReadU16(wall_count)) return std::nullopt;
     out.ice_walls.reserve(wall_count);
@@ -1019,6 +1074,15 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
         out.removed_projectile_ids.push_back(id);
     }
 
+    uint16_t removed_fire_spirit_count = 0;
+    if (!reader.ReadU16(removed_fire_spirit_count)) return std::nullopt;
+    out.removed_fire_spirit_ids.reserve(removed_fire_spirit_count);
+    for (uint16_t i = 0; i < removed_fire_spirit_count; ++i) {
+        int32_t id = 0;
+        if (!reader.ReadI32(id)) return std::nullopt;
+        out.removed_fire_spirit_ids.push_back(id);
+    }
+
     uint16_t removed_wall_count = 0;
     if (!reader.ReadU16(removed_wall_count)) return std::nullopt;
     out.removed_ice_wall_ids.reserve(removed_wall_count);
@@ -1089,6 +1153,7 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
 std::vector<uint8_t> EncodeLobbyStatePacket(const LobbyStateMessage& message) {
     BufferWriter payload;
     payload.WriteBool(message.host_can_start);
+    payload.WriteBool(message.allow_cheats);
     payload.WriteI32(message.mode_type);
     payload.WriteI32(message.round_time_seconds);
     payload.WriteI32(message.best_of_target_kills);
@@ -1111,7 +1176,7 @@ std::vector<uint8_t> EncodeLobbyStatePacket(const LobbyStateMessage& message) {
 std::optional<LobbyStateMessage> DecodeLobbyStatePayload(const uint8_t* payload_data, size_t payload_size) {
     BufferReader reader(payload_data, payload_size);
     LobbyStateMessage out;
-    if (!reader.ReadBool(out.host_can_start) || !reader.ReadI32(out.mode_type) ||
+    if (!reader.ReadBool(out.host_can_start) || !reader.ReadBool(out.allow_cheats) || !reader.ReadI32(out.mode_type) ||
         !reader.ReadI32(out.round_time_seconds) || !reader.ReadI32(out.best_of_target_kills) ||
         !reader.ReadBool(out.zone_enabled) || !reader.ReadF32(out.shrink_tiles_per_second) ||
         !reader.ReadF32(out.shrink_start_seconds) ||

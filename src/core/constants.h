@@ -5,6 +5,13 @@
 
 namespace Constants {
 
+enum class TrailAnimationMode {
+    Static = 0,
+    GlobalAnimated = 1,
+    PerSegmentAnimated = 2,
+    WidthDriven = 3,
+};
+
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
 constexpr int kDefaultPort = 7967;
@@ -57,6 +64,40 @@ constexpr float kProjectileSpeed = 420.0f;
 constexpr int kProjectileDamage = 34;
 constexpr float kFireBoltExplosionRadius = 20.0f;
 constexpr float kFireBoltExplosionFallbackDuration = 0.5f;
+constexpr int kFireSpiritMaxPerFlower = 3;
+constexpr float kFireSpiritSendCooldownSeconds = 0.8f;
+constexpr float kFireSpiritSpawnCooldownSeconds = 3.0f;
+constexpr float kFireSpiritTargetRangeTiles = 12.0f;
+constexpr float kFireSpiritTravelBaseSeconds = 0.18f;
+constexpr float kFireSpiritTravelSecondsPerPixel = 0.0035f;
+constexpr float kFireSpiritArcPeakHeight = 72.0f;
+constexpr float kFireSpiritExplosionRadiusTiles = 3.5f;
+constexpr int kFireSpiritExplosionDamage = kProjectileDamage;
+constexpr float kFireSpiritIdleAcceleration = 260.0f;
+constexpr float kFireSpiritIdleOrbitForce = 56.0f;
+constexpr float kFireSpiritIdleDamping = 4.0f;
+constexpr float kFireSpiritIdleMaxSpeed = 120.0f;
+constexpr float kFireSpiritRepulsionRadius = 28.0f;
+constexpr float kFireSpiritRepulsionStrength = 640.0f;
+constexpr int kFireSpiritSpawnOffsetX = 66;
+constexpr int kFireSpiritSpawnOffsetY = 55;
+constexpr int kFireSpiritIdleAnchorOffsetX = 63;
+constexpr int kFireSpiritIdleAnchorOffsetY = 22;
+constexpr float kFireSpiritTrailBasePointSpacing = 4.0f;
+constexpr float kFireSpiritTrailCurvatureSensitivity = 1.25f;
+constexpr float kFireSpiritTrailHalfWidth = 4.0f;
+constexpr float kFireSpiritTrailLifetimeSeconds = 1.2;
+constexpr float kFireSpiritSparkSpacing = 5.0f;
+constexpr float kFireSpiritSparkSpeed = 200.0f;
+constexpr float kFireSpiritSparkDrag = 6.0f;
+constexpr float kFireSpiritSparkSize = 16.0f;
+constexpr float kFireSpiritSparkDirectionNoiseStdDevRadians = 0.1f;
+constexpr bool kFireSpiritTrailEnableDeadLinger = true;
+constexpr float kFireSpiritTrailDeadLingerSeconds = 3.0f;
+constexpr bool kFireSpiritTrailEnableLowResRender = true;
+constexpr int kFireSpiritTrailRenderScale = 2;
+constexpr TrailAnimationMode kFireSpiritTrailAnimationMode = TrailAnimationMode::WidthDriven;
+constexpr int kFireSpiritTrailMaxSamples = 64;
 constexpr int kIceWaveShardCount = 5;
 constexpr float kIceWaveFanAngleDegrees = 35.0f;
 constexpr float kIceWaveRangeTiles = 6.0f;
@@ -222,6 +263,7 @@ constexpr unsigned char kGlobalShadowAlpha = 50;
 constexpr float kPlayerHealthBarWidth = 32.0f;
 constexpr float kPlayerHealthBarHeight = 4.0f;
 constexpr float kPlayerHealthBarOffsetY = -20.0f;
+constexpr float kPlayerResourceBarGap = -1.0f;
 constexpr int kCatalystChargeMaxHeld = 3;
 constexpr float kCatalystChargeMovementPenaltyPerStack = 0.15f;
 constexpr float kCatalystChargeRangePenaltyTilesPerStack = 2.0f;
@@ -399,6 +441,7 @@ constexpr std::array<const char*, 5> kSfxFootstepDirtPaths = {
     "assets/sfx/ogg/SFX/Footsteps/Dirt/Dirt Walk 5.ogg",
 };
 constexpr const char* kFireStormAmbientPath = "assets/sfx/EM_FIRE_HOLD_4s.ogg";
+constexpr const char* kChargingLoopPath = "assets/sfx/charge_sfx_loop.wav";
 constexpr const char* kBgmForestDayPath = "assets/sfx/ogg/BGS Loops/Forest Day/Forest Day.ogg";
 constexpr const char* kBgmOutsideGamePath = "assets/sfx/ogg/BGS Loops/Cave/Cave Storm.ogg";
 
@@ -436,6 +479,10 @@ constexpr float kFireStormAmbientVolume = 0.42f;
 constexpr float kFireStormAmbientLoopStartSeconds = 0.20f;
 constexpr float kFireStormAmbientLoopEndSeconds = 3.10f;
 constexpr float kFireStormAmbientFadeSeconds = 0.20f;
+constexpr float kChargingLoopVolume = 0.68f;
+constexpr float kChargingLoopFadeSeconds = 1.0f;
+constexpr float kChargingLoopCrossfadeSeconds = 1.0f;
+constexpr float kChargingLoopOutsideFadeViewportFraction = 0.35f;
 constexpr float kFireStormImpactDelaySeconds = 0.9f;
 
 constexpr const char* kConfigFolderName = "RuneArena";

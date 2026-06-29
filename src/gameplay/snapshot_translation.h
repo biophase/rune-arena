@@ -3,6 +3,7 @@
 #include <string>
 
 #include "game/player.h"
+#include "game/fire_spirit.h"
 #include "game/projectile.h"
 #include "game/rune.h"
 #include "game/ice_wall.h"
@@ -22,6 +23,7 @@ void ApplyPlayerSnapshot(Player* player, const PlayerSnapshot& snapshot, const s
 RuneSnapshot BuildRuneSnapshot(const Rune& rune);
 CastleSnapshot BuildCastleSnapshot(const CastleState& castle);
 ProjectileSnapshot BuildProjectileSnapshot(const Projectile& projectile);
+FireSpiritSnapshot BuildFireSpiritSnapshot(const FireSpirit& spirit);
 IceWallSnapshot BuildIceWallSnapshot(const IceWallPiece& wall);
 MapObjectSnapshot BuildMapObjectSnapshot(const MapObjectInstance& object);
 FireStormDummySnapshot BuildFireStormDummySnapshot(const FireStormDummy& dummy);

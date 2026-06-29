@@ -50,6 +50,7 @@ class SpriteMetadataLoader {
     bool HasDualGridAnimation(const std::string& animation_name) const;
     bool HasBitmaskAnimation(const std::string& animation_name) const;
     Rectangle GetFrame(const std::string& animation_name, const std::string& facing, float time_seconds) const;
+    Rectangle GetFrameByIndex(const std::string& animation_name, const std::string& facing, int frame_index) const;
     bool HasDualGridLayer(const std::string& animation_name, int mask, SpriteFrameLayer layer) const;
     bool GetDualGridFrame(const std::string& animation_name, int mask, float time_seconds, SpriteFrameLayer layer,
                           Rectangle& out_frame) const;

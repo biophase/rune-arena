@@ -498,6 +498,23 @@ Rectangle SpriteMetadataLoader::GetFrame(const std::string& animation_name, cons
     return frame;
 }
 
+Rectangle SpriteMetadataLoader::GetFrameByIndex(const std::string& animation_name, const std::string& facing,
+                                                int frame_index) const {
+    const SpriteFacingData* facing_data = ResolveFacing(animation_name, facing);
+    if (!facing_data) {
+        return Rectangle{0, 0, static_cast<float>(cell_width_), static_cast<float>(cell_height_)};
+    }
+
+    const std::vector<Rectangle>* frames = SelectFramesForLayer(*facing_data, SpriteFrameLayer::Single);
+    if (!frames || frames->empty()) {
+        return Rectangle{0, 0, static_cast<float>(cell_width_), static_cast<float>(cell_height_)};
+    }
+
+    const int wrapped_index =
+        std::clamp(frame_index, 0, static_cast<int>(frames->size()) - 1);
+    return (*frames)[static_cast<size_t>(wrapped_index)];
+}
+
 bool SpriteMetadataLoader::HasDualGridLayer(const std::string& animation_name, int mask, SpriteFrameLayer layer) const {
     const SpriteFacingData* data = ResolveDualGridVariant(animation_name, mask);
     if (!data) {

@@ -68,6 +68,7 @@ struct ObjectPrototype {
     bool walkable = true;
     bool stops_projectiles = false;
     bool masked_occluder = false;
+    bool flat_render = false;
     bool has_collision_box_override = false;
     int collision_box_x = 0;
     int collision_box_y = 0;

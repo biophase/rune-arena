@@ -212,6 +212,32 @@ struct ProjectileSnapshot {
     bool alive = true;
 };
 
+struct FireSpiritSnapshot {
+    int id = -1;
+    int flower_object_id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
+    int state = 0;
+    float pos_x = 0.0f;
+    float pos_y = 0.0f;
+    float vel_x = 0.0f;
+    float vel_y = 0.0f;
+    float target_world_x = 0.0f;
+    float target_world_y = 0.0f;
+    int spawn_order = 0;
+    float age_seconds = 0.0f;
+    float launch_world_x = 0.0f;
+    float launch_world_y = 0.0f;
+    float impact_world_x = 0.0f;
+    float impact_world_y = 0.0f;
+    float launch_time_seconds = 0.0f;
+    float impact_time_seconds = 0.0f;
+    float travel_duration_seconds = 0.0f;
+    float peak_height = 0.0f;
+    float projectile_animation_time = 0.0f;
+    bool alive = true;
+};
+
 struct IceWallSnapshot {
     int id = -1;
     int owner_player_id = -1;
@@ -311,6 +337,7 @@ struct ServerSnapshotMessage {
     int snapshot_id = 0;
     int base_snapshot_id = 0;
     bool is_delta = false;
+    float simulation_time_seconds = 0.0f;
     float time_remaining = 0.0f;
     bool zone_enabled = true;
     float shrink_tiles_per_second = 0.0f;
@@ -331,6 +358,8 @@ struct ServerSnapshotMessage {
     std::vector<int> removed_rune_ids;
     std::vector<ProjectileSnapshot> projectiles;
     std::vector<int> removed_projectile_ids;
+    std::vector<FireSpiritSnapshot> fire_spirits;
+    std::vector<int> removed_fire_spirit_ids;
     std::vector<IceWallSnapshot> ice_walls;
     std::vector<int> removed_ice_wall_ids;
     std::vector<MapObjectSnapshot> map_objects;
@@ -355,6 +384,7 @@ struct LobbyPlayerInfo {
 struct LobbyStateMessage {
     std::vector<LobbyPlayerInfo> players;
     bool host_can_start = false;
+    bool allow_cheats = false;
     int mode_type = 0;
     int round_time_seconds = 0;
     int best_of_target_kills = 0;

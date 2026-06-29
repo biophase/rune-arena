@@ -10,6 +10,7 @@
 #include "game/composite_effect.h"
 #include "game/damage_popup.h"
 #include "game/earth_roots_group.h"
+#include "game/fire_spirit.h"
 #include "game/fire_storm_cast.h"
 #include "game/fire_storm_dummy.h"
 #include "game/grappling_hook.h"
@@ -62,6 +63,7 @@ struct GameState {
     std::vector<Player> players;
     std::vector<Rune> runes;
     std::vector<Projectile> projectiles;
+    std::vector<FireSpirit> fire_spirits;
     std::vector<Explosion> explosions;
     std::vector<LightningEffect> lightning_effects;
     std::vector<IceWallPiece> ice_walls;

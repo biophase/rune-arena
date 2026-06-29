@@ -116,6 +116,9 @@ class GameApp {
     void BroadcastConsoleMessageToAll(const ConsoleMessage& message);
     void SendConsoleMessageToPlayer(int player_id, const ConsoleMessage& message);
     void SendConsoleMessageToTeam(int team, const ConsoleMessage& message);
+    bool TryHandleCheatCommand(const ChatSubmitMessage& message, const Player& sender);
+    std::string ResolveSpawnCheatPrototypeId(const std::string& item_name) const;
+    void SendCheatCommandFeedback(int player_id, const std::string& text, Color color);
     void HandleHostChatSubmit(const ChatSubmitMessage& message);
     void HandleDisconnectedRemotePlayers();
     void MaybeBroadcastMatchCountdown();
@@ -136,6 +139,7 @@ class GameApp {
     void UpdateIceWalls(float dt);
     void UpdateRunes(float dt);
     void UpdateCastles(float dt);
+    void UpdateFireSpirits(float dt);
     void UpdatePlayerStatusEffects(Player& player, float dt);
     void UpdateProjectiles(float dt);
     void UpdateExplosions(float dt);
@@ -187,6 +191,7 @@ class GameApp {
     void SpawnFireStormConvertedRuneAtCell(int owner_player_id, int owner_team, const GridCoord& cell, bool source_rune);
     void SpawnStormArcVisuals(const FireStormCast& cast);
     void SpawnStormArcSparkParticle(Vector2 world_pos, float visual_z);
+    void SpawnFireSpiritSparkParticle(Vector2 world_pos, Vector2 travel_dir);
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
                                    float idle_lifetime_seconds);
     int SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell);
@@ -227,6 +232,8 @@ class GameApp {
 
     Player* FindPlayerById(int id);
     const Player* FindPlayerById(int id) const;
+    FireSpirit* FindFireSpiritById(int id);
+    const FireSpirit* FindFireSpiritById(int id) const;
     MapObjectInstance* FindMapObjectById(int id);
     const MapObjectInstance* FindMapObjectById(int id) const;
     const ObjectPrototype* FindObjectPrototype(const std::string& prototype_id) const;
@@ -270,10 +277,16 @@ class GameApp {
     void RenderMap();
     void RenderMapForeground();
     void RenderGroundMapObjects();
+    void RenderParticleInstance(const Particle& particle);
+    void RenderTopLayerParticles();
     void EnsureWorldLayerRenderTarget();
+    void EnsureFireSpiritTrailRenderTarget();
     void EnsureShadowLayerRenderTarget();
     void UpdateObjectShadowLayer();
     void DrawObjectShadowLayer();
+    void RenderFireSpiritTrailGeometry(bool debug_trail_geometry);
+    void RenderFireSpiritTrailTarget();
+    void DrawFireSpiritTrailLayer();
     enum class DepthSortedRenderPass {
         UnderInfluenceOverlay,
         OverInfluenceOverlay,
@@ -287,6 +300,8 @@ class GameApp {
     void RenderIceWalls();
     void RenderPlayers();
     void RenderPlayerOverlays();
+    void RenderPlayerOverheadUi(const Player& player, Vector2 draw_pos);
+    void RenderOverheadResourceBar(const Rectangle& bar, float value, float max_value, Color fill_color) const;
     void RenderMeleeAttacks();
     void RenderGrapplingHooks();
     void RenderProjectiles();
@@ -316,10 +331,16 @@ class GameApp {
     bool CanPlayerStartGrapplingPreview(const Player& player) const;
     void PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const;
     bool HasVisibleIdleFireStormDummy() const;
+    float GetFireSpiritSimTimeSeconds() const;
+    Vector2 GetFireFlowerSpiritWorldPoint(const MapObjectInstance& flower, int offset_x, int offset_y) const;
+    Vector2 EvaluateFireSpiritRenderWorld(const FireSpirit& spirit, float simulation_time_seconds,
+                                          float* out_arc_height = nullptr) const;
+    void UpdateFireSpiritTrail(FireSpirit& spirit, float dt, float simulation_time_seconds);
     void SpawnPlayerAttachedAnimation(int player_id, const std::string& animation_key, float offset_x, float offset_y);
     void LoadAudioAssets();
     void UnloadAudioAssets();
     void UpdateAudioFrame();
+    void UpdateChargingLoopAudio();
     void UpdateLocalFootstepAudio();
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
     const ActiveModularAttackVisual* FindActiveModularAttackVisual(int player_id) const;
@@ -361,6 +382,7 @@ class GameApp {
     Rectangle GetPlayerCollisionRect(const Player& player) const;
     Rectangle GetPlayerCollisionRect(Vector2 center) const;
     float GetPlayerCollisionSupportDistance(Vector2 direction) const;
+    Vector2 GetPlayerMeleeRotationOrigin(const Player& player) const;
     bool LoadModularTreeAssetMetadata();
     Rectangle GetModularTreeSpriteRect(const MapObjectInstance& object, const char* layer_name = "trunk") const;
     float GetMapObjectWindPhaseOffset(const MapObjectInstance& object) const;
@@ -451,6 +473,12 @@ class GameApp {
     };
     std::vector<HammerImpactEffect> hammer_impact_effects_;
     std::vector<StormArcVisual> storm_arc_visuals_;
+    struct FireFlowerRuntimeState {
+        float send_cooldown_remaining = 0.0f;
+        float spawn_cooldown_remaining = 0.0f;
+        std::vector<int> owned_spirit_ids;
+    };
+    std::unordered_map<int, FireFlowerRuntimeState> fire_flower_runtime_states_;
     std::unordered_map<int, bool> fire_storm_cast_impact_triggered_;
     std::unordered_map<int, bool> fire_storm_cast_arcs_spawned_;
     std::unordered_map<int, bool> fire_storm_cast_conversion_sfx_triggered_;
@@ -494,6 +522,8 @@ class GameApp {
     int local_input_tick_ = 0;
     int local_input_seq_ = 0;
     int host_server_tick_ = 0;
+    double last_snapshot_simulation_time_seconds_ = 0.0;
+    double last_snapshot_received_local_time_seconds_ = 0.0;
     double snapshot_accumulator_ = 0.0;
     double lobby_broadcast_accumulator_ = 0.0;
     int winning_team_ = -1;
@@ -561,6 +591,7 @@ class GameApp {
     int lobby_round_time_seconds_ = Constants::kDefaultMatchDurationSeconds;
     int lobby_best_of_target_kills_ = Constants::kDefaultBestOfTargetKills;
     bool lobby_zone_enabled_ = true;
+    bool lobby_allow_cheats_ = false;
     float lobby_shrink_tiles_per_second_ = Constants::kDefaultShrinkTilesPerSecond;
     float lobby_shrink_start_seconds_ = Constants::kDefaultShrinkStartSeconds;
     float lobby_min_arena_radius_tiles_ = Constants::kDefaultMinArenaRadiusTiles;
@@ -635,6 +666,8 @@ class GameApp {
         GridCoord cell;
         std::optional<int> blocked_player_id = std::nullopt;
         int reserved_object_id = -1;
+        std::optional<int> owner_player_id = std::nullopt;
+        std::optional<int> owner_team = std::nullopt;
     };
     std::vector<PendingObjectSpawn> pending_object_spawns_;
     struct DroppedItemPickupBlock {
@@ -653,6 +686,10 @@ class GameApp {
     bool has_menu_background_texture_ = false;
     RenderTexture2D world_layer_target_ = {};
     bool has_world_layer_target_ = false;
+    RenderTexture2D fire_spirit_trail_target_ = {};
+    bool has_fire_spirit_trail_target_ = false;
+    RenderTexture2D fire_spirit_trail_lowres_target_ = {};
+    bool has_fire_spirit_trail_lowres_target_ = false;
     RenderTexture2D shadow_layer_target_ = {};
     bool has_shadow_layer_target_ = false;
     Shader occluder_reveal_shader_ = {};
@@ -827,6 +864,17 @@ class GameApp {
     Music fire_storm_ambient_ = {};
     bool has_fire_storm_ambient_ = false;
     float fire_storm_ambient_gain_ = 0.0f;
+    Sound charging_loop_base_sound_ = {};
+    bool has_charging_loop_base_sound_ = false;
+    std::array<Sound, 2> charging_loop_instances_{};
+    std::array<bool, 2> has_charging_loop_instances_ = {false, false};
+    std::array<float, 2> charging_loop_elapsed_seconds_ = {0.0f, 0.0f};
+    float charging_loop_duration_seconds_ = 0.0f;
+    float charging_loop_gain_ = 0.0f;
+    int charging_loop_primary_index_ = 0;
+    int charging_loop_secondary_index_ = 1;
+    bool charging_loop_crossfade_active_ = false;
+    float charging_loop_crossfade_elapsed_seconds_ = 0.0f;
     Vector2 local_footstep_prev_pos_ = {0.0f, 0.0f};
     bool has_local_footstep_prev_pos_ = false;
     float local_footstep_distance_accumulator_ = 0.0f;

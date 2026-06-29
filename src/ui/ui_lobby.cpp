@@ -17,7 +17,7 @@ std::string FormatMmSs(int total_seconds) {
 
 LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_host, const std::string& host_display_ip,
                         int mode_type, int round_time_seconds, int best_of_target_kills,
-                        bool zone_enabled, float shrink_tiles_per_second, float shrink_start_seconds,
+                        bool zone_enabled, bool allow_cheats, float shrink_tiles_per_second, float shrink_start_seconds,
                         float min_arena_radius_tiles,
                         const std::string& mode_name, const std::string& connection_status,
                         const std::string& selected_map_label, const std::string& map_options_text,
@@ -54,25 +54,27 @@ LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_ho
         zone_enabled ? TextFormat("%.0f tiles", min_arena_radius_tiles) : "Disabled";
     DrawText(TextFormat("Zone: %s", zone_enabled ? "Enabled" : "Disabled"), panel_x + 20, panel_y + 152, 20,
              Color{196, 205, 228, 255});
-    DrawText(TextFormat("Arena Shrink: %s", shrink_rate_text.c_str()), panel_x + 20, panel_y + 182, 20,
+    DrawText(TextFormat("Allow Cheats: %s", allow_cheats ? "Enabled" : "Disabled"), panel_x + 20, panel_y + 172, 20,
              Color{196, 205, 228, 255});
-    DrawText(TextFormat("Shrink Starts: %s", shrink_start_text.c_str()), panel_x + 20, panel_y + 212, 20,
+    DrawText(TextFormat("Arena Shrink: %s", shrink_rate_text.c_str()), panel_x + 20, panel_y + 202, 20,
              Color{196, 205, 228, 255});
-    DrawText(TextFormat("Min Zone Radius: %s", min_radius_text.c_str()), panel_x + 20, panel_y + 242, 20,
+    DrawText(TextFormat("Shrink Starts: %s", shrink_start_text.c_str()), panel_x + 20, panel_y + 232, 20,
              Color{196, 205, 228, 255});
-    DrawText(TextFormat("Status: %s", connection_status.c_str()), panel_x + 20, panel_y + 272, 18,
+    DrawText(TextFormat("Min Zone Radius: %s", min_radius_text.c_str()), panel_x + 20, panel_y + 262, 20,
+             Color{196, 205, 228, 255});
+    DrawText(TextFormat("Status: %s", connection_status.c_str()), panel_x + 20, panel_y + 292, 18,
              Color{168, 220, 188, 255});
-    DrawText(TextFormat("Map: %s", selected_map_label.c_str()), panel_x + 20, panel_y + 300, 18,
+    DrawText(TextFormat("Map: %s", selected_map_label.c_str()), panel_x + 20, panel_y + 320, 18,
              Color{196, 205, 228, 255});
 
-    DrawText("Players", panel_x + 20, panel_y + 334, 22, RAYWHITE);
+    DrawText("Players", panel_x + 20, panel_y + 354, 22, RAYWHITE);
     for (size_t i = 0; i < player_names.size(); ++i) {
-        const int y = panel_y + 366 + static_cast<int>(i) * 30;
+        const int y = panel_y + 386 + static_cast<int>(i) * 30;
         DrawRectangle(panel_x + 20, y, 430, 24, Color{39, 43, 53, 255});
         DrawText(player_names[i].c_str(), panel_x + 28, y + 4, 16, Color{230, 232, 236, 255});
     }
     if (player_names.empty()) {
-        DrawText("(no players yet)", panel_x + 28, panel_y + 366 + 4, 16, Color{170, 176, 190, 255});
+        DrawText("(no players yet)", panel_x + 28, panel_y + 386 + 4, 16, Color{170, 176, 190, 255});
     }
 
     const Rectangle preview_bounds = {static_cast<float>(panel_x + 728), static_cast<float>(panel_y + 58), 220.0f, 220.0f};
@@ -130,28 +132,31 @@ LobbyUiResult DrawLobby(const std::vector<std::string>& player_names, bool is_ho
         if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 152), 110, 32}, "Toggle")) {
             result.request_toggle_zone_enabled = true;
         }
+        if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 172), 110, 32}, "Toggle")) {
+            result.request_toggle_allow_cheats = true;
+        }
         if (zone_enabled) {
-            if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 182), 52, 32}, "-")) {
+            if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 202), 52, 32}, "-")) {
                 result.request_decrease_shrink_rate = true;
             }
-            if (GuiButton({static_cast<float>(panel_x + 578), static_cast<float>(panel_y + 182), 52, 32}, "+")) {
+            if (GuiButton({static_cast<float>(panel_x + 578), static_cast<float>(panel_y + 202), 52, 32}, "+")) {
                 result.request_increase_shrink_rate = true;
             }
-            if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 212), 52, 32}, "-")) {
+            if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 232), 52, 32}, "-")) {
                 result.request_decrease_shrink_start = true;
             }
-            if (GuiButton({static_cast<float>(panel_x + 578), static_cast<float>(panel_y + 212), 52, 32}, "+")) {
+            if (GuiButton({static_cast<float>(panel_x + 578), static_cast<float>(panel_y + 232), 52, 32}, "+")) {
                 result.request_increase_shrink_start = true;
             }
-            if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 242), 52, 32}, "-")) {
+            if (GuiButton({static_cast<float>(panel_x + 520), static_cast<float>(panel_y + 262), 52, 32}, "-")) {
                 result.request_decrease_min_radius = true;
             }
-            if (GuiButton({static_cast<float>(panel_x + 578), static_cast<float>(panel_y + 242), 52, 32}, "+")) {
+            if (GuiButton({static_cast<float>(panel_x + 578), static_cast<float>(panel_y + 262), 52, 32}, "+")) {
                 result.request_increase_min_radius = true;
             }
         }
     } else {
-        DrawText("Waiting for host to start...", panel_x + 520, panel_y + 366, 16, Color{195, 200, 214, 255});
+        DrawText("Waiting for host to start...", panel_x + 520, panel_y + 386, 16, Color{195, 200, 214, 255});
     }
 
     if (GuiButton({static_cast<float>(panel_x + 728), static_cast<float>(panel_y + 510), 220, 36}, "Leave")) {

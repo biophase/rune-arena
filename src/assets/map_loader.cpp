@@ -199,13 +199,6 @@ bool LoadLayeredMap(const fs::path& map_dir, const ObjectsDatabase* objects_db, 
                     continue;
                 }
 
-                const size_t index = static_cast<size_t>(y * out_map.width + x);
-                if (proto->has_terrain_tile_override) {
-                    out_map.tiles[index] = proto->terrain_tile;
-                    if (proto->terrain_is_spawn_point || proto->terrain_tile == TileType::SpawnPoint) {
-                        out_map.spawn_points.push_back({x, y});
-                    }
-                }
                 out_map.object_seeds.push_back(MapObjectSeed{proto->id, {x, y}});
             }
         }

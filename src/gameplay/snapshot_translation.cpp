@@ -210,6 +210,34 @@ ProjectileSnapshot BuildProjectileSnapshot(const Projectile& projectile) {
     return snapshot;
 }
 
+FireSpiritSnapshot BuildFireSpiritSnapshot(const FireSpirit& spirit) {
+    FireSpiritSnapshot snapshot;
+    snapshot.id = spirit.id;
+    snapshot.flower_object_id = spirit.flower_object_id;
+    snapshot.owner_player_id = spirit.owner_player_id;
+    snapshot.owner_team = spirit.owner_team;
+    snapshot.state = static_cast<int>(spirit.state);
+    snapshot.pos_x = spirit.pos.x;
+    snapshot.pos_y = spirit.pos.y;
+    snapshot.vel_x = spirit.vel.x;
+    snapshot.vel_y = spirit.vel.y;
+    snapshot.target_world_x = spirit.target_world.x;
+    snapshot.target_world_y = spirit.target_world.y;
+    snapshot.spawn_order = spirit.spawn_order;
+    snapshot.age_seconds = spirit.age_seconds;
+    snapshot.launch_world_x = spirit.launch_world.x;
+    snapshot.launch_world_y = spirit.launch_world.y;
+    snapshot.impact_world_x = spirit.impact_world.x;
+    snapshot.impact_world_y = spirit.impact_world.y;
+    snapshot.launch_time_seconds = spirit.launch_time_seconds;
+    snapshot.impact_time_seconds = spirit.impact_time_seconds;
+    snapshot.travel_duration_seconds = spirit.travel_duration_seconds;
+    snapshot.peak_height = spirit.peak_height;
+    snapshot.projectile_animation_time = spirit.projectile_animation_time;
+    snapshot.alive = spirit.alive;
+    return snapshot;
+}
+
 IceWallSnapshot BuildIceWallSnapshot(const IceWallPiece& wall) {
     IceWallSnapshot snapshot;
     snapshot.id = wall.id;

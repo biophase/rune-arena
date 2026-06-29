@@ -1,6 +1,7 @@
 #include "core/game_app.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +20,7 @@
 #include <raymath.h>
 #include <rlgl.h>
 
+#include "collision/spatial_hash_grid.h"
 #include "collision/collision_world.h"
 #include "core/constants.h"
 #include "gameplay/action_intent.h"
@@ -50,6 +52,23 @@ bool IsOutsideZoneDamageSource(const char* source) {
 }
 
 bool IsModularTreePrototypeId(const std::string& prototype_id) { return prototype_id == "tree_1"; }
+
+std::string ToLowerAscii(std::string text) {
+    for (char& ch : text) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return text;
+}
+
+std::string NormalizeSpawnCheatName(std::string text) {
+    text = ToLowerAscii(std::move(text));
+    for (char& ch : text) {
+        if (ch == '-' || ch == ' ') {
+            ch = '_';
+        }
+    }
+    return text;
+}
 
 float GetIceWallDeathAnimationSampleTime(const SpriteMetadataLoader& metadata, float hp) {
     int death_frame_count = 0;
@@ -412,6 +431,11 @@ float EvaluateStormArcHeight(float normalized_time) {
     return std::sin(t * PI) * Constants::kFireStormStormArcPeakHeight;
 }
 
+float EvaluateFireSpiritArcHeight(float normalized_time, float peak_height) {
+    const float t = std::clamp(normalized_time, 0.0f, 1.0f);
+    return std::sin(t * PI) * std::max(0.0f, peak_height);
+}
+
 struct OccluderRevealCircle {
     Vector2 screen_center = {0.0f, 0.0f};
     float inner_radius_px = 0.0f;
@@ -427,12 +451,23 @@ constexpr int kConsoleCharsPerLine = 48;
 constexpr float kConsoleLifetimeSeconds = 5.0f;
 constexpr int kChatMaxChars = 180;
 
+struct TeamVisualStyle {
+    Color primary_color;
+    const char* display_name;
+};
+
+const TeamVisualStyle& GetTeamVisualStyle(int team) {
+    static const TeamVisualStyle kBlueStyle{{120, 170, 255, 255}, "Blue"};
+    static const TeamVisualStyle kRedStyle{{255, 120, 120, 255}, "Red"};
+    return team == Constants::kTeamRed ? kRedStyle : kBlueStyle;
+}
+
 Color TeamUiColor(int team) {
-    return team == Constants::kTeamRed ? Color{255, 120, 120, 255} : Color{120, 170, 255, 255};
+    return GetTeamVisualStyle(team).primary_color;
 }
 
 const char* TeamDisplayName(int team) {
-    return team == Constants::kTeamRed ? "Red" : "Blue";
+    return GetTeamVisualStyle(team).display_name;
 }
 
 ConsoleTextSpanMessage MakeConsoleSpan(std::string text, Color color) {
@@ -1369,8 +1404,8 @@ bool BlocksRunePlacementAtCell(const MapObjectInstance& object, const GridCoord&
     return object.cell == cell;
 }
 
-bool IsGroundSortedMapObjectPrototypeId(const std::string& prototype_id) {
-    return prototype_id == "altar_rune_slot_generic" || prototype_id == "altar_output_simple";
+bool IsFlatRenderedMapObjectPrototype(const ObjectPrototype* proto) {
+    return proto != nullptr && proto->flat_render;
 }
 
 int GetSpriteSheetHeight(SpriteSheetType sheet_type) {
@@ -1710,6 +1745,16 @@ void GameApp::Shutdown() {
         UnloadRenderTexture(world_layer_target_);
         world_layer_target_ = {};
         has_world_layer_target_ = false;
+    }
+    if (has_fire_spirit_trail_target_) {
+        UnloadRenderTexture(fire_spirit_trail_target_);
+        fire_spirit_trail_target_ = {};
+        has_fire_spirit_trail_target_ = false;
+    }
+    if (has_fire_spirit_trail_lowres_target_) {
+        UnloadRenderTexture(fire_spirit_trail_lowres_target_);
+        fire_spirit_trail_lowres_target_ = {};
+        has_fire_spirit_trail_lowres_target_ = false;
     }
     if (has_influence_zone_distance_red_from_texture_) {
         UnloadTexture(influence_zone_distance_red_from_texture_);
@@ -2722,6 +2767,30 @@ void GameApp::LoadAudioAssets() {
     if (has_fire_storm_ambient_) {
         SeekMusicStream(fire_storm_ambient_, Constants::kFireStormAmbientLoopStartSeconds);
     }
+    {
+        const std::string resolved = ResolveRuntimePath(Constants::kChargingLoopPath);
+        if (FileExists(resolved.c_str())) {
+            charging_loop_base_sound_ = LoadSound(resolved.c_str());
+            has_charging_loop_base_sound_ = IsLoadedSound(charging_loop_base_sound_);
+            if (has_charging_loop_base_sound_) {
+                if (charging_loop_base_sound_.stream.sampleRate > 0) {
+                    charging_loop_duration_seconds_ =
+                        static_cast<float>(charging_loop_base_sound_.frameCount) /
+                        static_cast<float>(charging_loop_base_sound_.stream.sampleRate);
+                } else {
+                    charging_loop_duration_seconds_ = 0.0f;
+                }
+                SetSoundVolume(charging_loop_base_sound_, 0.0f);
+                for (size_t i = 0; i < charging_loop_instances_.size(); ++i) {
+                    charging_loop_instances_[i] = LoadSoundAlias(charging_loop_base_sound_);
+                    has_charging_loop_instances_[i] = IsSoundValid(charging_loop_instances_[i]);
+                    if (has_charging_loop_instances_[i]) {
+                        SetSoundVolume(charging_loop_instances_[i], 0.0f);
+                    }
+                }
+            }
+        }
+    }
 
     const std::string bgm_path = ResolveRuntimePath(Constants::kBgmForestDayPath);
     if (FileExists(bgm_path.c_str())) {
@@ -2802,6 +2871,18 @@ void GameApp::UnloadAudioAssets() {
         UnloadMusicStream(fire_storm_ambient_);
         has_fire_storm_ambient_ = false;
     }
+    for (size_t i = 0; i < charging_loop_instances_.size(); ++i) {
+        if (!has_charging_loop_instances_[i]) {
+            continue;
+        }
+        StopSound(charging_loop_instances_[i]);
+        UnloadSoundAlias(charging_loop_instances_[i]);
+        has_charging_loop_instances_[i] = false;
+    }
+    if (has_charging_loop_base_sound_) {
+        UnloadSound(charging_loop_base_sound_);
+        has_charging_loop_base_sound_ = false;
+    }
 
     if (has_bgm_forest_day_) {
         StopMusicStream(bgm_forest_day_);
@@ -2815,6 +2896,13 @@ void GameApp::UnloadAudioAssets() {
     }
     bgm_forest_day_active_last_frame_ = false;
     bgm_outside_game_active_last_frame_ = false;
+    charging_loop_gain_ = 0.0f;
+    charging_loop_primary_index_ = 0;
+    charging_loop_secondary_index_ = 1;
+    charging_loop_crossfade_active_ = false;
+    charging_loop_crossfade_elapsed_seconds_ = 0.0f;
+    charging_loop_elapsed_seconds_ = {0.0f, 0.0f};
+    charging_loop_duration_seconds_ = 0.0f;
 }
 
 void GameApp::UpdateAudioFrame() {
@@ -2822,6 +2910,7 @@ void GameApp::UpdateAudioFrame() {
         return;
     }
     UpdateLocalFootstepAudio();
+    UpdateChargingLoopAudio();
     const bool should_play_outside_game_bgm = app_screen_ != AppScreen::InMatch;
     const bool should_play_in_match_bgm = app_screen_ == AppScreen::InMatch;
 
@@ -2894,6 +2983,190 @@ void GameApp::UpdateAudioFrame() {
             SeekMusicStream(fire_storm_ambient_, Constants::kFireStormAmbientLoopStartSeconds);
         }
         SetMusicVolume(fire_storm_ambient_, 0.0f);
+    }
+}
+
+void GameApp::UpdateChargingLoopAudio() {
+    if (!has_charging_loop_instances_[0] && !has_charging_loop_instances_[1]) {
+        return;
+    }
+
+    const float dt = GetFrameTime();
+    for (size_t i = 0; i < charging_loop_instances_.size(); ++i) {
+        if (has_charging_loop_instances_[i] && IsSoundPlaying(charging_loop_instances_[i])) {
+            charging_loop_elapsed_seconds_[i] += dt;
+        }
+    }
+
+    float target_gain = 0.0f;
+    if (app_screen_ == AppScreen::InMatch && state_.map.cell_size > 0 && camera_.zoom > 0.0001f) {
+        const float view_w = static_cast<float>(GetScreenWidth()) / camera_.zoom;
+        const float view_h = static_cast<float>(GetScreenHeight()) / camera_.zoom;
+        const float left = camera_.target.x - camera_.offset.x / camera_.zoom;
+        const float top = camera_.target.y - camera_.offset.y / camera_.zoom;
+        const float right = left + view_w;
+        const float bottom = top + view_h;
+        const Rectangle view_rect = {left, top, view_w, view_h};
+        const float outside_fade_distance =
+            std::max(static_cast<float>(state_.map.cell_size) * 1.5f,
+                     std::min(view_w, view_h) * Constants::kChargingLoopOutsideFadeViewportFraction);
+
+        bool found_inside = false;
+        float best_inside_center_distance = std::numeric_limits<float>::max();
+        float best_outside_edge_distance = std::numeric_limits<float>::max();
+
+        const auto distance_to_view_edge = [&](Vector2 point) {
+            const float dx = (point.x < view_rect.x)
+                                 ? (view_rect.x - point.x)
+                                 : ((point.x > view_rect.x + view_rect.width) ? (point.x - (view_rect.x + view_rect.width))
+                                                                                : 0.0f);
+            const float dy = (point.y < view_rect.y)
+                                 ? (view_rect.y - point.y)
+                                 : ((point.y > view_rect.y + view_rect.height)
+                                        ? (point.y - (view_rect.y + view_rect.height))
+                                        : 0.0f);
+            return std::sqrt(dx * dx + dy * dy);
+        };
+
+        for (const Rune& rune : state_.runes) {
+            if (!rune.active || !rune.castle_charging) {
+                continue;
+            }
+            const CastleState* castle = FindCastleById(rune.castle_id);
+            if (castle == nullptr) {
+                continue;
+            }
+            const Vector2 rune_world = CellToWorldCenter(rune.cell);
+            const Vector2 castle_port = GetCastleChargePortWorld(*castle);
+            const Vector2 source_world = Vector2Lerp(rune_world, castle_port, 0.5f);
+            const bool inside = source_world.x >= left && source_world.x <= right &&
+                                source_world.y >= top && source_world.y <= bottom;
+            if (inside) {
+                const float center_distance = Vector2Distance(source_world, camera_.target);
+                if (!found_inside || center_distance < best_inside_center_distance) {
+                    found_inside = true;
+                    best_inside_center_distance = center_distance;
+                }
+                continue;
+            }
+
+            const float edge_distance = distance_to_view_edge(source_world);
+            if (edge_distance < best_outside_edge_distance) {
+                best_outside_edge_distance = edge_distance;
+            }
+        }
+
+        if (found_inside) {
+            target_gain = 1.0f;
+        } else if (best_outside_edge_distance < std::numeric_limits<float>::max() && outside_fade_distance > 0.0f) {
+            target_gain = std::clamp(1.0f - best_outside_edge_distance / outside_fade_distance, 0.0f, 1.0f);
+        }
+    }
+
+    const float fade_speed = (Constants::kChargingLoopFadeSeconds > 0.0f)
+                                 ? (1.0f / Constants::kChargingLoopFadeSeconds)
+                                 : 1000.0f;
+    if (charging_loop_gain_ < target_gain) {
+        charging_loop_gain_ = std::min(target_gain, charging_loop_gain_ + dt * fade_speed);
+    } else if (charging_loop_gain_ > target_gain) {
+        charging_loop_gain_ = std::max(target_gain, charging_loop_gain_ - dt * fade_speed);
+    }
+
+    const auto stop_instance = [&](int index) {
+        if (index < 0 || index >= static_cast<int>(charging_loop_instances_.size()) ||
+            !has_charging_loop_instances_[static_cast<size_t>(index)]) {
+            return;
+        }
+        if (IsSoundPlaying(charging_loop_instances_[static_cast<size_t>(index)])) {
+            StopSound(charging_loop_instances_[static_cast<size_t>(index)]);
+        }
+        charging_loop_elapsed_seconds_[static_cast<size_t>(index)] = 0.0f;
+        SetSoundVolume(charging_loop_instances_[static_cast<size_t>(index)], 0.0f);
+    };
+    const auto start_instance = [&](int index) {
+        if (index < 0 || index >= static_cast<int>(charging_loop_instances_.size()) ||
+            !has_charging_loop_instances_[static_cast<size_t>(index)]) {
+            return false;
+        }
+        StopSound(charging_loop_instances_[static_cast<size_t>(index)]);
+        charging_loop_elapsed_seconds_[static_cast<size_t>(index)] = 0.0f;
+        PlaySound(charging_loop_instances_[static_cast<size_t>(index)]);
+        return true;
+    };
+
+    if (target_gain > 0.001f) {
+        const bool primary_playing =
+            has_charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)] &&
+            IsSoundPlaying(charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)]);
+        const bool secondary_playing =
+            has_charging_loop_instances_[static_cast<size_t>(charging_loop_secondary_index_)] &&
+            IsSoundPlaying(charging_loop_instances_[static_cast<size_t>(charging_loop_secondary_index_)]);
+        if (!primary_playing && !secondary_playing) {
+            charging_loop_primary_index_ = 0;
+            charging_loop_secondary_index_ = 1;
+            charging_loop_crossfade_active_ = false;
+            charging_loop_crossfade_elapsed_seconds_ = 0.0f;
+            start_instance(charging_loop_primary_index_);
+        }
+    }
+
+    if (charging_loop_crossfade_active_) {
+        charging_loop_crossfade_elapsed_seconds_ += dt;
+        const float crossfade_t =
+            (Constants::kChargingLoopCrossfadeSeconds > 0.0f)
+                ? std::clamp(charging_loop_crossfade_elapsed_seconds_ / Constants::kChargingLoopCrossfadeSeconds, 0.0f, 1.0f)
+                : 1.0f;
+        const float primary_mix = 1.0f - crossfade_t;
+        const float secondary_mix = crossfade_t;
+        if (has_charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)]) {
+            SetSoundVolume(charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)],
+                           Constants::kChargingLoopVolume * charging_loop_gain_ * primary_mix);
+        }
+        if (has_charging_loop_instances_[static_cast<size_t>(charging_loop_secondary_index_)]) {
+            SetSoundVolume(charging_loop_instances_[static_cast<size_t>(charging_loop_secondary_index_)],
+                           Constants::kChargingLoopVolume * charging_loop_gain_ * secondary_mix);
+        }
+        if (crossfade_t >= 0.999f) {
+            stop_instance(charging_loop_primary_index_);
+            std::swap(charging_loop_primary_index_, charging_loop_secondary_index_);
+            charging_loop_crossfade_active_ = false;
+            charging_loop_crossfade_elapsed_seconds_ = 0.0f;
+        }
+    } else {
+        if (has_charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)]) {
+            SetSoundVolume(charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)],
+                           Constants::kChargingLoopVolume * charging_loop_gain_);
+        }
+        if (has_charging_loop_instances_[static_cast<size_t>(charging_loop_secondary_index_)]) {
+            SetSoundVolume(charging_loop_instances_[static_cast<size_t>(charging_loop_secondary_index_)], 0.0f);
+        }
+
+        if (charging_loop_gain_ > 0.001f &&
+            has_charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)]) {
+            const float music_length = charging_loop_duration_seconds_;
+            const float crossfade_window = std::max(0.02f, Constants::kChargingLoopCrossfadeSeconds);
+            if (music_length > crossfade_window &&
+                IsSoundPlaying(charging_loop_instances_[static_cast<size_t>(charging_loop_primary_index_)]) &&
+                charging_loop_elapsed_seconds_[static_cast<size_t>(charging_loop_primary_index_)] >=
+                    music_length - crossfade_window) {
+                const int next_index = charging_loop_secondary_index_;
+                if (has_charging_loop_instances_[static_cast<size_t>(next_index)] &&
+                    !IsSoundPlaying(charging_loop_instances_[static_cast<size_t>(next_index)])) {
+                    if (start_instance(next_index)) {
+                        charging_loop_crossfade_active_ = true;
+                        charging_loop_crossfade_elapsed_seconds_ = 0.0f;
+                    }
+                }
+            }
+        }
+    }
+    if (charging_loop_gain_ <= 0.001f) {
+        stop_instance(0);
+        stop_instance(1);
+        charging_loop_primary_index_ = 0;
+        charging_loop_secondary_index_ = 1;
+        charging_loop_crossfade_active_ = false;
+        charging_loop_crossfade_elapsed_seconds_ = 0.0f;
     }
 }
 
@@ -3520,6 +3793,7 @@ void GameApp::UpdateLobby(float dt) {
 
         LobbyStateMessage lobby_state;
         lobby_state.host_can_start = true;
+        lobby_state.allow_cheats = lobby_allow_cheats_;
         lobby_state.shrink_tiles_per_second = lobby_shrink_tiles_per_second_;
         lobby_state.min_arena_radius_tiles = lobby_min_arena_radius_tiles_;
         lobby_state.shrink_start_seconds = lobby_shrink_start_seconds_;
@@ -3555,6 +3829,7 @@ void GameApp::UpdateLobby(float dt) {
             lobby_round_time_seconds_ = lobby_update->round_time_seconds;
             lobby_best_of_target_kills_ = lobby_update->best_of_target_kills;
             lobby_zone_enabled_ = lobby_update->zone_enabled;
+            lobby_allow_cheats_ = lobby_update->allow_cheats;
             lobby_shrink_tiles_per_second_ = lobby_update->shrink_tiles_per_second;
             lobby_shrink_start_seconds_ = lobby_update->shrink_start_seconds;
             lobby_min_arena_radius_tiles_ = lobby_update->min_arena_radius_tiles;
@@ -3691,6 +3966,7 @@ void GameApp::UpdateMatch(float dt) {
             }
         }
         UpdateGrapplingHooks(dt);
+        UpdateFireSpirits(dt);
         UpdateClientVisualSmoothing(dt);
         UpdateDamagePopups(dt);
     }
@@ -4054,8 +4330,8 @@ void GameApp::Render() {
             const std::string lobby_mode_name =
                 (lobby_mode_type_ == MatchModeType::BestOfKills) ? "Best Of" : most_kills_mode_.GetUiName();
             const LobbyUiResult lobby_ui =
-                DrawLobby(lobby_player_names_, false, host_display_ip_, static_cast<int>(lobby_mode_type_),
-                          lobby_round_time_seconds_, lobby_best_of_target_kills_, lobby_zone_enabled_,
+            DrawLobby(lobby_player_names_, false, host_display_ip_, static_cast<int>(lobby_mode_type_),
+                          lobby_round_time_seconds_, lobby_best_of_target_kills_, lobby_zone_enabled_, lobby_allow_cheats_,
                           lobby_shrink_tiles_per_second_, lobby_shrink_start_seconds_, lobby_min_arena_radius_tiles_,
                           lobby_mode_name, GetClientLobbyStatusText(), GetSelectedLobbyMapLabel(), BuildLobbyMapOptionsText(),
                           lobby_selected_map_index_, lobby_map_dropdown_edit_mode_, &lobby_map_preview_texture_,
@@ -4071,7 +4347,7 @@ void GameApp::Render() {
                 (lobby_mode_type_ == MatchModeType::BestOfKills) ? "Best Of" : most_kills_mode_.GetUiName();
             const LobbyUiResult lobby_ui = DrawLobby(lobby_player_names_, network_manager_.IsHost(), host_display_ip_,
                                                      static_cast<int>(lobby_mode_type_), lobby_round_time_seconds_,
-                                                     lobby_best_of_target_kills_, lobby_zone_enabled_,
+                                                     lobby_best_of_target_kills_, lobby_zone_enabled_, lobby_allow_cheats_,
                                                      lobby_shrink_tiles_per_second_, lobby_shrink_start_seconds_,
                                                      lobby_min_arena_radius_tiles_,
                                                      lobby_mode_name,
@@ -4098,6 +4374,9 @@ void GameApp::Render() {
             if (network_manager_.IsHost() && lobby_ui.request_toggle_zone_enabled) {
                 lobby_zone_enabled_ = !lobby_zone_enabled_;
                 mode_settings_changed = true;
+            }
+            if (network_manager_.IsHost() && lobby_ui.request_toggle_allow_cheats) {
+                lobby_allow_cheats_ = !lobby_allow_cheats_;
             }
             if (network_manager_.IsHost() && lobby_ui.request_decrease_round_time) {
                 lobby_round_time_seconds_ =
@@ -4275,6 +4554,7 @@ void GameApp::StartAsHost() {
     fire_storm_cast_conversion_sfx_triggered_.clear();
     known_player_names_.clear();
     known_player_names_[0] = settings_.player_name;
+    lobby_allow_cheats_ = false;
     lobby_broadcast_accumulator_ = 0.0;
     snapshot_accumulator_ = 0.0;
     connect_attempt_start_seconds_ = 0.0;
@@ -4376,6 +4656,7 @@ void GameApp::ReturnToMainMenu() {
     expected_match_transfer_id_ = 0;
     expected_match_map_key_.clear();
     winning_team_ = -1;
+    lobby_allow_cheats_ = false;
     last_match_countdown_announcement_seconds_ = 11;
     host_server_tick_ = 0;
     local_input_seq_ = 0;
@@ -4577,6 +4858,88 @@ void GameApp::SendConsoleMessageToTeam(int team, const ConsoleMessage& message) 
     }
 }
 
+void GameApp::SendCheatCommandFeedback(int player_id, const std::string& text, Color color) {
+    ConsoleMessage console;
+    console.lifetime_seconds = 3.5f;
+    console.spans.push_back(MakeConsoleSpan("[Cheats] ", color));
+    console.spans.push_back(MakeConsoleSpan(text, RAYWHITE));
+    SendConsoleMessageToPlayer(player_id, console);
+}
+
+std::string GameApp::ResolveSpawnCheatPrototypeId(const std::string& item_name) const {
+    const std::string normalized = NormalizeSpawnCheatName(item_name);
+    if (normalized.empty()) {
+        return "";
+    }
+
+    if (FindObjectPrototype(normalized) != nullptr) {
+        return normalized;
+    }
+
+    static const std::unordered_map<std::string, std::string> kAliases = {
+        {"enemy", "training_dummy"},
+        {"sword", "sword_item"},
+        {"hammer", "hammer_item"},
+        {"hook", "grappling_hook_item"},
+        {"ghook", "grappling_hook_item"},
+        {"grappling_hook", "grappling_hook_item"},
+        {"grapple", "grappling_hook_item"},
+        {"health", "health_small"},
+        {"health_potion", "health_small"},
+        {"health_potion_small", "health_small"},
+        {"potion", "health_small"},
+        {"hp_potion", "health_small"},
+        {"mana", "mana_small"},
+        {"mana_potion", "mana_small"},
+        {"mana_potion_small", "mana_small"},
+        {"mp_potion", "mana_small"},
+        {"catalyst", "catalyst_charge_pickup"},
+        {"catalyst_charge", "catalyst_charge_pickup"},
+    };
+
+    const auto it = kAliases.find(normalized);
+    if (it != kAliases.end() && FindObjectPrototype(it->second) != nullptr) {
+        return it->second;
+    }
+    return "";
+}
+
+bool GameApp::TryHandleCheatCommand(const ChatSubmitMessage& message, const Player& sender) {
+    if (!lobby_allow_cheats_ || message.text.empty() || message.text[0] != '/') {
+        return false;
+    }
+
+    if (message.text.rfind("/spawn", 0) != 0) {
+        return false;
+    }
+
+    const std::string item_name =
+        (message.text.size() > 6 && message.text[6] == ' ') ? message.text.substr(7) : std::string{};
+    const std::string prototype_id = ResolveSpawnCheatPrototypeId(item_name);
+    if (prototype_id.empty()) {
+        SendCheatCommandFeedback(sender.id,
+                                 item_name.empty() ? "Usage: /spawn <item_name>"
+                                                   : TextFormat("Unknown spawn item '%s'", item_name.c_str()),
+                                 Color{255, 140, 140, 255});
+        return true;
+    }
+    const std::string normalized_item_name = NormalizeSpawnCheatName(item_name);
+    if (normalized_item_name == "enemy") {
+        PendingObjectSpawn spawn;
+        spawn.prototype_id = prototype_id;
+        spawn.cell = WorldToCell(sender.pos);
+        spawn.owner_player_id = 1000000 + sender.id;
+        spawn.owner_team = sender.team == Constants::kTeamRed ? Constants::kTeamBlue : Constants::kTeamRed;
+        pending_object_spawns_.push_back(spawn);
+    } else {
+        pending_object_spawns_.push_back({prototype_id, WorldToCell(sender.pos)});
+    }
+    SendCheatCommandFeedback(sender.id,
+                             TextFormat("Spawned %s", normalized_item_name == "enemy" ? "enemy" : prototype_id.c_str()),
+                             Color{140, 255, 180, 255});
+    return true;
+}
+
 void GameApp::DrainIncomingConsoleMessages() {
     for (const auto& message : network_manager_.ConsumeConsoleMessages()) {
         AddConsoleMessage(message.message);
@@ -4616,6 +4979,9 @@ void GameApp::HandleHostChatSubmit(const ChatSubmitMessage& message) {
     }
     const Player* sender = FindPlayerById(message.sender_player_id);
     if (sender == nullptr) {
+        return;
+    }
+    if (TryHandleCheatCommand(message, *sender)) {
         return;
     }
 
@@ -4842,6 +5208,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         previous_projectile_velocities[projectile.id] = projectile.vel;
         previous_projectile_animation_keys[projectile.id] = projectile.animation_key;
     }
+    std::unordered_map<int, FireSpirit> previous_fire_spirits_by_id;
+    previous_fire_spirits_by_id.reserve(state_.fire_spirits.size());
+    for (const auto& spirit : state_.fire_spirits) {
+        previous_fire_spirits_by_id.emplace(spirit.id, spirit);
+    }
     std::unordered_map<int, IceWallState> previous_wall_states;
     previous_wall_states.reserve(state_.ice_walls.size());
     for (const auto& wall : state_.ice_walls) {
@@ -4891,6 +5262,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
     }
 
+    state_.match.elapsed_seconds = snapshot.simulation_time_seconds;
     state_.match.time_remaining = snapshot.time_remaining;
     state_.match.zone_enabled = snapshot.zone_enabled;
     state_.match.shrink_tiles_per_second = snapshot.shrink_tiles_per_second;
@@ -5088,6 +5460,50 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         projectile.emitter_frame_counter = projectile_snapshot.emitter_frame_counter;
         projectile.alive = projectile_snapshot.alive;
         state_.projectiles.push_back(projectile);
+    }
+    last_snapshot_simulation_time_seconds_ = snapshot.simulation_time_seconds;
+    last_snapshot_received_local_time_seconds_ = GetTime();
+    state_.fire_spirits.clear();
+    for (const auto& spirit_snapshot : snapshot.fire_spirits) {
+        FireSpirit spirit;
+        spirit.id = spirit_snapshot.id;
+        spirit.flower_object_id = spirit_snapshot.flower_object_id;
+        spirit.owner_player_id = spirit_snapshot.owner_player_id;
+        spirit.owner_team = spirit_snapshot.owner_team;
+        spirit.state = static_cast<FireSpiritState>(spirit_snapshot.state);
+        spirit.pos = {spirit_snapshot.pos_x, spirit_snapshot.pos_y};
+        spirit.vel = {spirit_snapshot.vel_x, spirit_snapshot.vel_y};
+        spirit.target_world = {spirit_snapshot.target_world_x, spirit_snapshot.target_world_y};
+        spirit.spawn_order = spirit_snapshot.spawn_order;
+        spirit.age_seconds = spirit_snapshot.age_seconds;
+        spirit.launch_world = {spirit_snapshot.launch_world_x, spirit_snapshot.launch_world_y};
+        spirit.impact_world = {spirit_snapshot.impact_world_x, spirit_snapshot.impact_world_y};
+        spirit.launch_time_seconds = spirit_snapshot.launch_time_seconds;
+        spirit.impact_time_seconds = spirit_snapshot.impact_time_seconds;
+        spirit.travel_duration_seconds = spirit_snapshot.travel_duration_seconds;
+        spirit.peak_height = spirit_snapshot.peak_height;
+        spirit.projectile_animation_time = spirit_snapshot.projectile_animation_time;
+        spirit.alive = spirit_snapshot.alive;
+        if (const auto previous_it = previous_fire_spirits_by_id.find(spirit.id);
+            previous_it != previous_fire_spirits_by_id.end()) {
+            const bool previous_has_trail =
+                previous_it->second.state == FireSpiritState::Projectile || previous_it->second.state == FireSpiritState::Dead;
+            const bool current_has_trail =
+                spirit.state == FireSpiritState::Projectile || spirit.state == FireSpiritState::Dead;
+            if (previous_has_trail && current_has_trail) {
+                spirit.trail_samples = previous_it->second.trail_samples;
+                spirit.trail_distance_accumulator = previous_it->second.trail_distance_accumulator;
+                spirit.spark_distance_accumulator = previous_it->second.spark_distance_accumulator;
+                spirit.last_trail_sample_world = previous_it->second.last_trail_sample_world;
+                spirit.has_last_trail_sample_world = previous_it->second.has_last_trail_sample_world;
+                spirit.dead_trail_linger_remaining = previous_it->second.dead_trail_linger_remaining;
+                if (Constants::kFireSpiritTrailEnableDeadLinger &&
+                    previous_it->second.state != FireSpiritState::Dead && spirit.state == FireSpiritState::Dead) {
+                    spirit.dead_trail_linger_remaining = Constants::kFireSpiritTrailDeadLingerSeconds;
+                }
+            }
+        }
+        state_.fire_spirits.push_back(std::move(spirit));
     }
     if (!network_manager_.IsHost()) {
         std::unordered_set<int> current_projectile_ids;
@@ -5601,6 +6017,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     for (const auto& projectile : state_.projectiles) {
         max_entity_id = std::max(max_entity_id, projectile.id);
     }
+    for (const auto& spirit : state_.fire_spirits) {
+        max_entity_id = std::max(max_entity_id, spirit.id);
+    }
     for (const auto& wall : state_.ice_walls) {
         max_entity_id = std::max(max_entity_id, wall.id);
     }
@@ -5640,6 +6059,7 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
     snapshot.snapshot_id = snapshot.server_tick;
     snapshot.base_snapshot_id = 0;
     snapshot.is_delta = false;
+    snapshot.simulation_time_seconds = state_.match.elapsed_seconds;
     snapshot.time_remaining = state_.match.time_remaining;
     snapshot.zone_enabled = state_.match.zone_enabled;
     snapshot.shrink_tiles_per_second = state_.match.shrink_tiles_per_second;
@@ -5664,6 +6084,9 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
 
     for (const auto& projectile : state_.projectiles) {
         snapshot.projectiles.push_back(SnapshotTranslation::BuildProjectileSnapshot(projectile));
+    }
+    for (const auto& spirit : state_.fire_spirits) {
+        snapshot.fire_spirits.push_back(SnapshotTranslation::BuildFireSpiritSnapshot(spirit));
     }
 
     for (const auto& wall : state_.ice_walls) {
@@ -5850,6 +6273,7 @@ void GameApp::SimulateHostGameplay(float dt) {
     UpdateGrapplingHooks(dt);
     UpdateExplosions(dt);
     UpdateMapObjects(dt);
+    UpdateFireSpirits(dt);
     UpdateRespawns(dt);
     UpdateDamagePopups(dt);
     most_kills_mode_.Update(state_, event_queue_, dt);
@@ -7274,6 +7698,16 @@ void GameApp::UpdateMapObjects(float dt) {
 
     for (const auto& pending : pending_object_spawns_) {
         const int object_id = SpawnObjectInstanceAtCell(pending.prototype_id, pending.cell, pending.reserved_object_id);
+        if (object_id >= 0) {
+            if (MapObjectInstance* object = FindMapObjectById(object_id); object != nullptr) {
+                if (pending.owner_player_id.has_value()) {
+                    object->owner_player_id = *pending.owner_player_id;
+                }
+                if (pending.owner_team.has_value()) {
+                    object->owner_team = *pending.owner_team;
+                }
+            }
+        }
         if (object_id >= 0 && pending.blocked_player_id.has_value()) {
             RegisterPickupBlockForDroppedObject(
                 object_id, *pending.blocked_player_id, CellToWorldCenter(pending.cell),
@@ -7286,6 +7720,420 @@ void GameApp::UpdateMapObjects(float dt) {
         std::remove_if(state_.map_objects.begin(), state_.map_objects.end(),
                        [](const MapObjectInstance& object) { return !object.alive; }),
         state_.map_objects.end());
+}
+
+void GameApp::UpdateFireSpirits(float dt) {
+    const float simulation_time_seconds = GetFireSpiritSimTimeSeconds();
+
+    if (network_manager_.IsHost()) {
+        std::unordered_set<int> active_flower_ids;
+        for (const auto& object : state_.map_objects) {
+            if (!object.alive || object.prototype_id != "fire_flower") {
+                continue;
+            }
+            active_flower_ids.insert(object.id);
+        }
+
+        for (auto it = fire_flower_runtime_states_.begin(); it != fire_flower_runtime_states_.end();) {
+            if (active_flower_ids.find(it->first) != active_flower_ids.end()) {
+                ++it;
+                continue;
+            }
+            for (int spirit_id : it->second.owned_spirit_ids) {
+                if (FireSpirit* spirit = FindFireSpiritById(spirit_id); spirit != nullptr) {
+                    spirit->alive = false;
+                    spirit->state = FireSpiritState::Dead;
+                }
+            }
+            it = fire_flower_runtime_states_.erase(it);
+        }
+
+        std::unordered_map<int, size_t> spirit_index_by_id;
+        spirit_index_by_id.reserve(state_.fire_spirits.size());
+        SpatialHashGrid spirit_grid(Constants::kSpatialCellSize);
+        for (size_t i = 0; i < state_.fire_spirits.size(); ++i) {
+            FireSpirit& spirit = state_.fire_spirits[i];
+            spirit_index_by_id[spirit.id] = i;
+            if (!spirit.alive || spirit.state != FireSpiritState::Idle) {
+                continue;
+            }
+            spirit_grid.Insert(spirit.id, spirit.pos, Constants::kFireSpiritRepulsionRadius);
+        }
+
+        for (const auto& object : state_.map_objects) {
+            if (!object.alive || object.prototype_id != "fire_flower") {
+                continue;
+            }
+            FireFlowerRuntimeState& runtime = fire_flower_runtime_states_[object.id];
+            runtime.send_cooldown_remaining = std::max(0.0f, runtime.send_cooldown_remaining - dt);
+            runtime.spawn_cooldown_remaining = std::max(0.0f, runtime.spawn_cooldown_remaining - dt);
+            runtime.owned_spirit_ids.erase(
+                std::remove_if(runtime.owned_spirit_ids.begin(), runtime.owned_spirit_ids.end(),
+                               [&](int spirit_id) {
+                                   const auto spirit_it = spirit_index_by_id.find(spirit_id);
+                                   return spirit_it == spirit_index_by_id.end() ||
+                                          !state_.fire_spirits[spirit_it->second].alive ||
+                                          state_.fire_spirits[spirit_it->second].flower_object_id != object.id;
+                               }),
+                runtime.owned_spirit_ids.end());
+
+            if (object.state == MapObjectState::Active &&
+                runtime.spawn_cooldown_remaining <= 0.0f &&
+                static_cast<int>(runtime.owned_spirit_ids.size()) < Constants::kFireSpiritMaxPerFlower) {
+                FireSpirit spirit;
+                spirit.id = state_.next_entity_id++;
+                spirit.flower_object_id = object.id;
+                spirit.owner_player_id = object.owner_player_id;
+                spirit.owner_team = object.owner_team;
+                spirit.state = FireSpiritState::Idle;
+                spirit.pos = GetFireFlowerSpiritWorldPoint(object, Constants::kFireSpiritSpawnOffsetX,
+                                                           Constants::kFireSpiritSpawnOffsetY);
+                spirit.target_world = GetFireFlowerSpiritWorldPoint(object, Constants::kFireSpiritIdleAnchorOffsetX,
+                                                                    Constants::kFireSpiritIdleAnchorOffsetY);
+                spirit.spawn_order = spirit.id;
+                spirit.alive = true;
+                spirit.has_last_trail_sample_world = false;
+                spirit.trail_samples.clear();
+                state_.fire_spirits.push_back(spirit);
+                spirit_index_by_id[spirit.id] = state_.fire_spirits.size() - 1;
+                spirit_grid.Insert(spirit.id, spirit.pos, Constants::kFireSpiritRepulsionRadius);
+                runtime.owned_spirit_ids.push_back(spirit.id);
+                runtime.spawn_cooldown_remaining = Constants::kFireSpiritSpawnCooldownSeconds;
+            }
+
+            if (object.state != MapObjectState::Active || runtime.send_cooldown_remaining > 0.0f) {
+                continue;
+            }
+
+            const Vector2 flower_world =
+                GetFireFlowerSpiritWorldPoint(object, Constants::kFireSpiritIdleAnchorOffsetX,
+                                              Constants::kFireSpiritIdleAnchorOffsetY);
+            const float max_target_range = Constants::kFireSpiritTargetRangeTiles * static_cast<float>(state_.map.cell_size);
+            float best_distance = max_target_range;
+            Vector2 best_target_world = {};
+            bool found_target = false;
+
+            for (const auto& player : state_.players) {
+                if (!player.alive || player.team == object.owner_team) {
+                    continue;
+                }
+                const float distance = Vector2Distance(flower_world, player.pos);
+                if (distance <= best_distance) {
+                    best_distance = distance;
+                    best_target_world = player.pos;
+                    found_target = true;
+                }
+            }
+            for (const auto& target_object : state_.map_objects) {
+                if (!target_object.alive || target_object.hp <= 0 || target_object.type != ObjectType::Unit ||
+                    target_object.state != MapObjectState::Active || target_object.owner_team == object.owner_team) {
+                    continue;
+                }
+                const Vector2 target_world = CellToWorldCenter(target_object.cell);
+                const float distance = Vector2Distance(flower_world, target_world);
+                if (distance <= best_distance) {
+                    best_distance = distance;
+                    best_target_world = target_world;
+                    found_target = true;
+                }
+            }
+            if (!found_target) {
+                continue;
+            }
+
+            FireSpirit* oldest_idle_spirit = nullptr;
+            for (int spirit_id : runtime.owned_spirit_ids) {
+                FireSpirit* spirit = FindFireSpiritById(spirit_id);
+                if (spirit != nullptr && spirit->alive && spirit->state == FireSpiritState::Idle) {
+                    oldest_idle_spirit = spirit;
+                    break;
+                }
+            }
+            if (oldest_idle_spirit == nullptr) {
+                continue;
+            }
+
+            oldest_idle_spirit->state = FireSpiritState::Projectile;
+            oldest_idle_spirit->launch_world = oldest_idle_spirit->pos;
+            oldest_idle_spirit->impact_world = best_target_world;
+            oldest_idle_spirit->target_world = best_target_world;
+            oldest_idle_spirit->launch_time_seconds = simulation_time_seconds;
+            const float travel_distance =
+                Vector2Distance(oldest_idle_spirit->launch_world, oldest_idle_spirit->impact_world);
+            oldest_idle_spirit->travel_duration_seconds =
+                Constants::kFireSpiritTravelBaseSeconds + travel_distance * Constants::kFireSpiritTravelSecondsPerPixel;
+            oldest_idle_spirit->impact_time_seconds =
+                oldest_idle_spirit->launch_time_seconds + oldest_idle_spirit->travel_duration_seconds;
+            oldest_idle_spirit->peak_height = Constants::kFireSpiritArcPeakHeight;
+            oldest_idle_spirit->projectile_animation_time = 0.0f;
+            oldest_idle_spirit->vel = {0.0f, 0.0f};
+            oldest_idle_spirit->trail_samples.clear();
+            oldest_idle_spirit->trail_distance_accumulator = 0.0f;
+            oldest_idle_spirit->spark_distance_accumulator = 0.0f;
+            oldest_idle_spirit->has_last_trail_sample_world = true;
+            oldest_idle_spirit->last_trail_sample_world = oldest_idle_spirit->launch_world;
+            const Vector2 initial_delta =
+                Vector2Subtract(oldest_idle_spirit->impact_world, oldest_idle_spirit->launch_world);
+            if (Vector2LengthSqr(initial_delta) > 0.0001f) {
+                const Vector2 initial_dir = Vector2Normalize(initial_delta);
+                const Vector2 back_sample =
+                    Vector2Subtract(oldest_idle_spirit->launch_world,
+                                    Vector2Scale(initial_dir, Constants::kFireSpiritTrailBasePointSpacing));
+                oldest_idle_spirit->trail_samples.push_back({back_sample, 0.0f});
+            }
+            oldest_idle_spirit->trail_samples.push_back({oldest_idle_spirit->launch_world, 0.0f});
+            runtime.send_cooldown_remaining = Constants::kFireSpiritSendCooldownSeconds;
+        }
+
+        for (auto& spirit : state_.fire_spirits) {
+            if (!spirit.alive) {
+                continue;
+            }
+            spirit.age_seconds += dt;
+            if (spirit.state == FireSpiritState::Idle) {
+                const MapObjectInstance* flower = FindMapObjectById(spirit.flower_object_id);
+                if (flower == nullptr || !flower->alive) {
+                    spirit.alive = false;
+                    spirit.state = FireSpiritState::Dead;
+                    continue;
+                }
+                spirit.target_world = GetFireFlowerSpiritWorldPoint(*flower, Constants::kFireSpiritIdleAnchorOffsetX,
+                                                                    Constants::kFireSpiritIdleAnchorOffsetY);
+                Vector2 acceleration = {0.0f, 0.0f};
+                const Vector2 to_target = Vector2Subtract(spirit.target_world, spirit.pos);
+                if (Vector2LengthSqr(to_target) > 0.0001f) {
+                    const Vector2 target_dir = Vector2Normalize(to_target);
+                    acceleration = Vector2Scale(target_dir, Constants::kFireSpiritIdleAcceleration);
+                    acceleration = Vector2Add(
+                        acceleration,
+                        Vector2Scale(Vector2{-target_dir.y, target_dir.x}, Constants::kFireSpiritIdleOrbitForce));
+                }
+
+                for (int other_id : spirit_grid.Query(spirit.pos, Constants::kFireSpiritRepulsionRadius)) {
+                    if (other_id == spirit.id) {
+                        continue;
+                    }
+                    const auto other_it = spirit_index_by_id.find(other_id);
+                    if (other_it == spirit_index_by_id.end()) {
+                        continue;
+                    }
+                    const FireSpirit& other = state_.fire_spirits[other_it->second];
+                    if (!other.alive || other.state != FireSpiritState::Idle) {
+                        continue;
+                    }
+                    Vector2 away = Vector2Subtract(spirit.pos, other.pos);
+                    float distance = Vector2Length(away);
+                    if (distance <= 0.001f) {
+                        away = {1.0f, 0.0f};
+                        distance = 1.0f;
+                    }
+                    if (distance >= Constants::kFireSpiritRepulsionRadius) {
+                        continue;
+                    }
+                    const float normalized = 1.0f - distance / Constants::kFireSpiritRepulsionRadius;
+                    acceleration = Vector2Add(acceleration, Vector2Scale(Vector2Normalize(away),
+                                                                         Constants::kFireSpiritRepulsionStrength *
+                                                                             normalized));
+                }
+
+                spirit.vel = Vector2Add(spirit.vel, Vector2Scale(acceleration, dt));
+                spirit.vel = Vector2Scale(spirit.vel, std::max(0.0f, 1.0f - Constants::kFireSpiritIdleDamping * dt));
+                const float speed = Vector2Length(spirit.vel);
+                if (speed > Constants::kFireSpiritIdleMaxSpeed) {
+                    spirit.vel = Vector2Scale(Vector2Normalize(spirit.vel), Constants::kFireSpiritIdleMaxSpeed);
+                }
+                spirit.pos = Vector2Add(spirit.pos, Vector2Scale(spirit.vel, dt));
+            } else if (spirit.state == FireSpiritState::Projectile) {
+                float arc_height = 0.0f;
+                const Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, simulation_time_seconds, &arc_height);
+                spirit.pos = Vector2Lerp(
+                    spirit.launch_world, spirit.impact_world,
+                    std::clamp((simulation_time_seconds - spirit.launch_time_seconds) /
+                                   std::max(0.001f, spirit.travel_duration_seconds),
+                               0.0f, 1.0f));
+                spirit.projectile_animation_time += dt;
+                UpdateFireSpiritTrail(spirit, dt, simulation_time_seconds);
+                if (simulation_time_seconds < spirit.impact_time_seconds) {
+                    (void)render_world;
+                    continue;
+                }
+
+                const float explosion_radius_world =
+                    Constants::kFireSpiritExplosionRadiusTiles * static_cast<float>(state_.map.cell_size);
+                for (auto& player : state_.players) {
+                    if (!player.alive || player.team == spirit.owner_team) {
+                        continue;
+                    }
+                    if (Vector2Distance(player.pos, spirit.impact_world) <= explosion_radius_world) {
+                        ApplyDamageToPlayer(player, spirit.owner_player_id, Constants::kFireSpiritExplosionDamage,
+                                            "fire_spirit", true, spirit.impact_world);
+                    }
+                }
+                for (auto& object : state_.map_objects) {
+                    if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit ||
+                        object.state != MapObjectState::Active || object.owner_team == spirit.owner_team) {
+                        continue;
+                    }
+                    if (Vector2Distance(CellToWorldCenter(object.cell), spirit.impact_world) <= explosion_radius_world) {
+                        ApplyObjectDamage(object.id, Constants::kFireSpiritExplosionDamage, spirit.owner_player_id,
+                                          "fire_spirit", spirit.impact_world);
+                    }
+                }
+                PlaySfxIfVisible(sfx_fire_storm_impact_.sound, sfx_fire_storm_impact_.loaded, spirit.impact_world);
+                spirit.state = FireSpiritState::Dead;
+                if (Constants::kFireSpiritTrailEnableDeadLinger) {
+                    spirit.dead_trail_linger_remaining = Constants::kFireSpiritTrailDeadLingerSeconds;
+                    spirit.has_last_trail_sample_world = false;
+                } else {
+                    spirit.alive = false;
+                }
+            }
+        }
+    } else {
+        for (auto& spirit : state_.fire_spirits) {
+            if (!spirit.alive) {
+                continue;
+            }
+            if (spirit.state == FireSpiritState::Projectile) {
+                const float t =
+                    std::clamp((simulation_time_seconds - spirit.launch_time_seconds) /
+                                   std::max(0.001f, spirit.travel_duration_seconds),
+                               0.0f, 1.0f);
+                spirit.pos = Vector2Lerp(spirit.launch_world, spirit.impact_world, t);
+                spirit.projectile_animation_time += dt;
+                UpdateFireSpiritTrail(spirit, dt, simulation_time_seconds);
+            }
+        }
+    }
+
+    for (auto& spirit : state_.fire_spirits) {
+        const bool dead_lingering =
+            Constants::kFireSpiritTrailEnableDeadLinger && spirit.state == FireSpiritState::Dead && spirit.alive;
+        if (dead_lingering) {
+            spirit.dead_trail_linger_remaining = std::max(0.0f, spirit.dead_trail_linger_remaining - dt);
+        }
+        for (auto& sample : spirit.trail_samples) {
+            sample.age_seconds += dt;
+        }
+        spirit.trail_samples.erase(
+            std::remove_if(spirit.trail_samples.begin(), spirit.trail_samples.end(),
+                           [](const FireSpiritTrailSample& sample) {
+                               return sample.age_seconds >= Constants::kFireSpiritTrailLifetimeSeconds;
+                               }),
+            spirit.trail_samples.end());
+
+        if (dead_lingering && spirit.dead_trail_linger_remaining <= 0.0f) {
+            spirit.alive = false;
+        }
+    }
+
+    state_.fire_spirits.erase(
+        std::remove_if(state_.fire_spirits.begin(), state_.fire_spirits.end(),
+                       [](const FireSpirit& spirit) { return !spirit.alive; }),
+        state_.fire_spirits.end());
+}
+
+float GameApp::GetFireSpiritSimTimeSeconds() const {
+    if (network_manager_.IsHost()) {
+        return state_.match.elapsed_seconds;
+    }
+    return static_cast<float>(last_snapshot_simulation_time_seconds_ + (GetTime() - last_snapshot_received_local_time_seconds_));
+}
+
+Vector2 GameApp::GetFireFlowerSpiritWorldPoint(const MapObjectInstance& flower, int offset_x, int offset_y) const {
+    const ObjectPrototype* proto = FindObjectPrototype(flower.prototype_id);
+    if (proto == nullptr) {
+        return CellToWorldCenter(flower.cell);
+    }
+    const Rectangle rect =
+        GetMapObjectSpriteRect(flower, proto, static_cast<float>(GetSpriteSheetWidth(proto->sprite_sheet)),
+                               static_cast<float>(GetSpriteSheetHeight(proto->sprite_sheet)), 1.0f, false);
+    return {rect.x + static_cast<float>(offset_x), rect.y + static_cast<float>(offset_y)};
+}
+
+Vector2 GameApp::EvaluateFireSpiritRenderWorld(const FireSpirit& spirit, float simulation_time_seconds,
+                                               float* out_arc_height) const {
+    if (spirit.state != FireSpiritState::Projectile) {
+        if (out_arc_height != nullptr) {
+            *out_arc_height = 0.0f;
+        }
+        return spirit.pos;
+    }
+    const float t =
+        std::clamp((simulation_time_seconds - spirit.launch_time_seconds) /
+                       std::max(0.001f, spirit.travel_duration_seconds),
+                   0.0f, 1.0f);
+    Vector2 world = Vector2Lerp(spirit.launch_world, spirit.impact_world, t);
+    const float arc_height = EvaluateFireSpiritArcHeight(t, spirit.peak_height);
+    world.y -= arc_height;
+    if (out_arc_height != nullptr) {
+        *out_arc_height = arc_height;
+    }
+    return world;
+}
+
+void GameApp::UpdateFireSpiritTrail(FireSpirit& spirit, float dt, float simulation_time_seconds) {
+    (void)dt;
+    if (!spirit.alive || spirit.state == FireSpiritState::Idle) {
+        spirit.trail_samples.clear();
+        spirit.trail_distance_accumulator = 0.0f;
+        spirit.spark_distance_accumulator = 0.0f;
+        spirit.has_last_trail_sample_world = false;
+        return;
+    }
+    if (spirit.state != FireSpiritState::Projectile) {
+        return;
+    }
+
+    const Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, simulation_time_seconds);
+    if (!spirit.has_last_trail_sample_world) {
+        spirit.last_trail_sample_world = render_world;
+        spirit.has_last_trail_sample_world = true;
+        spirit.trail_samples.push_back({render_world, 0.0f});
+        return;
+    }
+
+    const Vector2 delta = Vector2Subtract(render_world, spirit.last_trail_sample_world);
+    const float distance = Vector2Length(delta);
+    if (distance <= 0.001f) {
+        return;
+    }
+    spirit.trail_distance_accumulator += distance;
+    spirit.spark_distance_accumulator += distance;
+    const Vector2 travel_dir = Vector2Normalize(delta);
+
+    float spacing = Constants::kFireSpiritTrailBasePointSpacing;
+    if (spirit.trail_samples.size() >= 2) {
+        const Vector2 prev_delta = Vector2Subtract(spirit.trail_samples.back().world,
+                                                   spirit.trail_samples[spirit.trail_samples.size() - 2].world);
+        if (Vector2LengthSqr(prev_delta) > 0.0001f) {
+            const Vector2 prev_dir = Vector2Normalize(prev_delta);
+            const Vector2 dir = Vector2Normalize(delta);
+            const float angle = std::acos(std::clamp(Vector2DotProduct(prev_dir, dir), -1.0f, 1.0f));
+            const float angle_ratio = angle / PI;
+            spacing /= (1.0f + angle_ratio * Constants::kFireSpiritTrailCurvatureSensitivity);
+        }
+    }
+    spacing = std::max(2.0f, spacing);
+
+    while (spirit.trail_distance_accumulator >= spacing) {
+        spirit.trail_distance_accumulator -= spacing;
+        const float t = 1.0f - (spirit.trail_distance_accumulator / distance);
+        const Vector2 sample_world = Vector2Lerp(spirit.last_trail_sample_world, render_world, std::clamp(t, 0.0f, 1.0f));
+        spirit.trail_samples.push_back({sample_world, 0.0f});
+        if (static_cast<int>(spirit.trail_samples.size()) > Constants::kFireSpiritTrailMaxSamples) {
+            spirit.trail_samples.erase(spirit.trail_samples.begin());
+        }
+    }
+    const float spark_spacing = std::max(0.001f, Constants::kFireSpiritSparkSpacing);
+    while (spirit.spark_distance_accumulator >= spark_spacing) {
+        spirit.spark_distance_accumulator -= spark_spacing;
+        const float t = 1.0f - (spirit.spark_distance_accumulator / distance);
+        const Vector2 spark_world =
+            Vector2Lerp(spirit.last_trail_sample_world, render_world, std::clamp(t, 0.0f, 1.0f));
+        SpawnFireSpiritSparkParticle(spark_world, travel_dir);
+    }
+    spirit.last_trail_sample_world = render_world;
 }
 
 void GameApp::SpawnDamagePopup(Vector2 world_pos, int amount, bool is_heal) {
@@ -9185,6 +10033,39 @@ void GameApp::SpawnStormArcSparkParticle(Vector2 world_pos, float visual_z) {
     state_.particles.push_back(particle);
 }
 
+void GameApp::SpawnFireSpiritSparkParticle(Vector2 world_pos, Vector2 travel_dir) {
+    if (!sprite_metadata_.IsLoaded() || !sprite_metadata_.HasAnimation("spark_particle_born")) {
+        return;
+    }
+
+    Vector2 direction = travel_dir;
+    if (Vector2LengthSqr(direction) <= 0.0001f) {
+        direction = {1.0f, 0.0f};
+    } else {
+        direction = Vector2Normalize(direction);
+    }
+    std::normal_distribution<float> angle_noise_dist(0.0f, Constants::kFireSpiritSparkDirectionNoiseStdDevRadians);
+    direction = Vector2Rotate(direction, angle_noise_dist(visual_rng_));
+
+    Particle particle;
+    particle.pos = world_pos;
+    particle.vel = Vector2Scale(Vector2Negate(direction), Constants::kFireSpiritSparkSpeed);
+    particle.acc = {0.0f, 0.0f};
+    particle.drag = Constants::kFireSpiritSparkDrag;
+    particle.velocity_decay = 0.0f;
+    particle.size = Constants::kFireSpiritSparkSize;
+    particle.alpha = 255;
+    particle.animation_key = "spark_particle_born";
+    particle.death_animation_key = "spark_particle_death";
+    particle.facing = "default";
+    particle.age_seconds = 0.0f;
+    particle.max_cycles = 1;
+    particle.use_visual_z = false;
+    particle.render_on_top = true;
+    particle.alive = true;
+    state_.particles.push_back(particle);
+}
+
 void GameApp::UpdateFireStormArcVisuals(float dt) {
     if (dt <= 0.0f) {
         return;
@@ -9309,6 +10190,26 @@ void GameApp::UpdateParticles(float dt) {
             continue;
         }
 
+        if (!particle.use_visual_z && IsSparkParticleAnimation(particle.animation_key)) {
+            const float animation_seconds =
+                GetAnimationDurationSeconds(sprite_metadata_, particle.animation_key, particle.facing, particle.max_cycles, 0.0f);
+            if (particle.animation_key == "spark_particle_born") {
+                if (animation_seconds <= 0.0f || particle.age_seconds >= animation_seconds) {
+                    if (!particle.death_animation_key.empty()) {
+                        particle.animation_key = particle.death_animation_key;
+                        particle.age_seconds = 0.0f;
+                    } else {
+                        particle.alive = false;
+                    }
+                }
+            } else if (particle.animation_key == particle.death_animation_key) {
+                if (animation_seconds <= 0.0f || particle.age_seconds >= animation_seconds) {
+                    particle.alive = false;
+                }
+            }
+            continue;
+        }
+
         int frame_count = 0;
         float fps = 1.0f;
         float lifetime_seconds = particle.lifetime_seconds > 0.0f
@@ -9418,9 +10319,7 @@ void GameApp::HandleMeleeHit(Player& attacker) {
         return;
     }
     const float rotation = GetPlayerLockedMeleeAimRadians(attacker);
-    const Rectangle attacker_collision = GetPlayerCollisionRect(attacker);
-    const Vector2 melee_origin = {attacker_collision.x + attacker_collision.width * 0.5f,
-                                  attacker_collision.y + attacker_collision.height * 0.5f};
+    const Vector2 melee_origin = GetPlayerMeleeRotationOrigin(attacker);
 
     for (auto& target : state_.players) {
         if (!target.alive || target.team == attacker.team || target.id == attacker.id) {
@@ -10424,10 +11323,26 @@ const Player* GameApp::FindPlayerById(int id) const {
     return it == state_.players.end() ? nullptr : &(*it);
 }
 
+FireSpirit* GameApp::FindFireSpiritById(int id) {
+    auto it = std::find_if(state_.fire_spirits.begin(), state_.fire_spirits.end(),
+                           [&](const FireSpirit& spirit) { return spirit.id == id; });
+    return it == state_.fire_spirits.end() ? nullptr : &(*it);
+}
+
+const FireSpirit* GameApp::FindFireSpiritById(int id) const {
+    auto it = std::find_if(state_.fire_spirits.begin(), state_.fire_spirits.end(),
+                           [&](const FireSpirit& spirit) { return spirit.id == id; });
+    return it == state_.fire_spirits.end() ? nullptr : &(*it);
+}
+
 void GameApp::RenderWorld() {
     UpdateCameraTarget();
     UpdateObjectShadowLayer();
     EnsureWorldLayerRenderTarget();
+    if (Constants::kFireSpiritTrailEnableLowResRender) {
+        EnsureFireSpiritTrailRenderTarget();
+        RenderFireSpiritTrailTarget();
+    }
     if (!has_world_layer_target_) {
         return;
     }
@@ -10453,7 +11368,14 @@ void GameApp::RenderWorld() {
     RenderNonTerrainDepthSorted(DepthSortedRenderPass::UnderInfluenceOverlay);
     RenderInfluenceZoneOverlay();
     RenderInfluenceZoneAnimatedTiles();
+    EndMode2D();
+
+    BeginMode2D(camera_);
     RenderNonTerrainDepthSorted(DepthSortedRenderPass::OverInfluenceOverlay);
+    if (Constants::kFireSpiritTrailEnableLowResRender) {
+        DrawFireSpiritTrailLayer();
+    }
+    RenderTopLayerParticles();
     RenderLocalGrapplingPreview();
     RenderMeleeAttacks();
     RenderDamagePopups();
@@ -10470,6 +11392,306 @@ void GameApp::RenderWorld() {
     RenderPlayerOverlays();
     RenderDebugCollisionOverlay();
     EndMode2D();
+}
+
+void GameApp::EnsureFireSpiritTrailRenderTarget() {
+    if (!Constants::kFireSpiritTrailEnableLowResRender) {
+        if (has_fire_spirit_trail_target_) {
+            UnloadRenderTexture(fire_spirit_trail_target_);
+            fire_spirit_trail_target_ = {};
+            has_fire_spirit_trail_target_ = false;
+        }
+        if (has_fire_spirit_trail_lowres_target_) {
+            UnloadRenderTexture(fire_spirit_trail_lowres_target_);
+            fire_spirit_trail_lowres_target_ = {};
+            has_fire_spirit_trail_lowres_target_ = false;
+        }
+        return;
+    }
+
+    const int scale = std::max(1, Constants::kFireSpiritTrailRenderScale);
+    const int full_width = std::max(1, GetScreenWidth());
+    const int full_height = std::max(1, GetScreenHeight());
+    const int lowres_width = std::max(1, GetScreenWidth() / scale);
+    const int lowres_height = std::max(1, GetScreenHeight() / scale);
+    const bool full_size_ok = has_fire_spirit_trail_target_ && fire_spirit_trail_target_.texture.width == full_width &&
+                              fire_spirit_trail_target_.texture.height == full_height;
+    const bool lowres_size_ok = has_fire_spirit_trail_lowres_target_ &&
+                                fire_spirit_trail_lowres_target_.texture.width == lowres_width &&
+                                fire_spirit_trail_lowres_target_.texture.height == lowres_height;
+    if (full_size_ok && lowres_size_ok) {
+        return;
+    }
+
+    if (has_fire_spirit_trail_target_) {
+        UnloadRenderTexture(fire_spirit_trail_target_);
+        fire_spirit_trail_target_ = {};
+        has_fire_spirit_trail_target_ = false;
+    }
+    if (has_fire_spirit_trail_lowres_target_) {
+        UnloadRenderTexture(fire_spirit_trail_lowres_target_);
+        fire_spirit_trail_lowres_target_ = {};
+        has_fire_spirit_trail_lowres_target_ = false;
+    }
+
+    fire_spirit_trail_target_ = LoadRenderTexture(full_width, full_height);
+    has_fire_spirit_trail_target_ = (fire_spirit_trail_target_.id != 0);
+    if (has_fire_spirit_trail_target_) {
+        SetTextureFilter(fire_spirit_trail_target_.texture, TEXTURE_FILTER_BILINEAR);
+    }
+
+    fire_spirit_trail_lowres_target_ = LoadRenderTexture(lowres_width, lowres_height);
+    has_fire_spirit_trail_lowres_target_ = (fire_spirit_trail_lowres_target_.id != 0);
+    if (has_fire_spirit_trail_lowres_target_) {
+        // The final upscale should stay blocky after the downsample pass.
+        SetTextureFilter(fire_spirit_trail_lowres_target_.texture, TEXTURE_FILTER_POINT);
+    }
+}
+
+void GameApp::RenderFireSpiritTrailGeometry(bool debug_trail_geometry) {
+    if (!sprite_metadata_.IsLoaded()) {
+        return;
+    }
+
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const auto shared_trail_frame_time = [&]() {
+        switch (Constants::kFireSpiritTrailAnimationMode) {
+            case Constants::TrailAnimationMode::Static:
+            case Constants::TrailAnimationMode::WidthDriven:
+                return 0.0f;
+            case Constants::TrailAnimationMode::PerSegmentAnimated:
+            case Constants::TrailAnimationMode::GlobalAnimated:
+            default:
+                return render_time_seconds_;
+        }
+    }();
+    Rectangle src = {};
+    float u0 = 0.0f;
+    float v_top = 0.0f;
+    float u1 = 0.0f;
+    float v_bottom = 0.0f;
+    if (!debug_trail_geometry) {
+        if (!sprite_metadata_.HasAnimation("fire_trail")) {
+            return;
+        }
+        src = sprite_metadata_.GetFrame("fire_trail", "default", shared_trail_frame_time);
+        u0 = src.x / static_cast<float>(texture.width);
+        v_top = src.y / static_cast<float>(texture.height);
+        u1 = (src.x + src.width) / static_cast<float>(texture.width);
+        v_bottom = (src.y + src.height) / static_cast<float>(texture.height);
+        rlDisableBackfaceCulling();
+        rlSetTexture(texture.id);
+        rlBegin(RL_TRIANGLES);
+    } else {
+        rlDisableBackfaceCulling();
+    }
+    const auto emit_debug_triangle = [&](Vector2 p0, Vector2 p1, Vector2 p2, Color color) {
+        DrawTriangle(p0, p1, p2, color);
+    };
+    const auto emit_textured_triangle = [&](Vector2 p0, float tu0, float tv0, Vector2 p1, float tu1, float tv1,
+                                            Vector2 p2, float tu2, float tv2) {
+        rlTexCoord2f(tu0, tv0);
+        rlVertex2f(p0.x, p0.y);
+        rlTexCoord2f(tu1, tv1);
+        rlVertex2f(p1.x, p1.y);
+        rlTexCoord2f(tu2, tv2);
+        rlVertex2f(p2.x, p2.y);
+    };
+    const auto sample_width = [&](const FireSpiritTrailSample& sample) {
+        return Constants::kFireSpiritTrailHalfWidth *
+               std::clamp(1.0f - sample.age_seconds / Constants::kFireSpiritTrailLifetimeSeconds, 0.0f, 1.0f);
+    };
+    int trail_frame_count = 0;
+    float trail_fps_unused = 0.0f;
+    const bool has_trail_frame_stats =
+        sprite_metadata_.GetAnimationStats("fire_trail", "default", trail_frame_count, trail_fps_unused) &&
+        trail_frame_count > 0;
+    const auto compute_trail_direction = [&](const FireSpirit& spirit, size_t sample_index) {
+        const Vector2 sample_world = spirit.trail_samples[sample_index].world;
+        Vector2 tangent = {0.0f, 0.0f};
+        if (sample_index > 0) {
+            const Vector2 prev = Vector2Subtract(sample_world, spirit.trail_samples[sample_index - 1].world);
+            if (Vector2LengthSqr(prev) > 0.0001f) {
+                tangent = Vector2Add(tangent, Vector2Normalize(prev));
+            }
+        }
+        if (sample_index + 1 < spirit.trail_samples.size()) {
+            const Vector2 next = Vector2Subtract(spirit.trail_samples[sample_index + 1].world, sample_world);
+            if (Vector2LengthSqr(next) > 0.0001f) {
+                tangent = Vector2Add(tangent, Vector2Normalize(next));
+            }
+        }
+        if (Vector2LengthSqr(tangent) <= 0.0001f) {
+            if (sample_index > 0) {
+                tangent = Vector2Subtract(sample_world, spirit.trail_samples[sample_index - 1].world);
+            } else if (sample_index + 1 < spirit.trail_samples.size()) {
+                tangent = Vector2Subtract(spirit.trail_samples[sample_index + 1].world, sample_world);
+            }
+        }
+        if (Vector2LengthSqr(tangent) <= 0.0001f) {
+            return Vector2{1.0f, 0.0f};
+        }
+        return Vector2Normalize(tangent);
+    };
+
+    for (const FireSpirit& spirit : state_.fire_spirits) {
+        const bool render_dead_trail =
+            Constants::kFireSpiritTrailEnableDeadLinger && spirit.state == FireSpiritState::Dead &&
+            !spirit.trail_samples.empty();
+        if (!spirit.alive || spirit.trail_samples.size() < 2 ||
+            (spirit.state != FireSpiritState::Projectile && !render_dead_trail)) {
+            continue;
+        }
+
+        std::vector<Vector2> trail_normals;
+        trail_normals.reserve(spirit.trail_samples.size());
+        for (size_t sample_index = 0; sample_index < spirit.trail_samples.size(); ++sample_index) {
+            const Vector2 tangent = compute_trail_direction(spirit, sample_index);
+            Vector2 normal = {-tangent.y, tangent.x};
+            if (!trail_normals.empty() && Vector2DotProduct(normal, trail_normals.back()) < 0.0f) {
+                normal = Vector2Negate(normal);
+            }
+            trail_normals.push_back(normal);
+        }
+
+        for (size_t j = 1; j < spirit.trail_samples.size(); ++j) {
+            const FireSpiritTrailSample& a = spirit.trail_samples[j - 1];
+            const FireSpiritTrailSample& b = spirit.trail_samples[j];
+            float width_a = sample_width(a);
+            float width_b = sample_width(b);
+            if (width_a <= 0.01f && width_b <= 0.01f) {
+                continue;
+            }
+
+            const Vector2 v0 = Vector2Add(a.world, Vector2Scale(trail_normals[j - 1], width_a));
+            const Vector2 v1 = Vector2Subtract(a.world, Vector2Scale(trail_normals[j - 1], width_a));
+            const Vector2 v2 = Vector2Subtract(b.world, Vector2Scale(trail_normals[j], width_b));
+            const Vector2 v3 = Vector2Add(b.world, Vector2Scale(trail_normals[j], width_b));
+
+            if (debug_trail_geometry) {
+                const Color fill = (spirit.owner_team == 1) ? Color{255, 96, 48, 255} : Color{255, 220, 80, 255};
+                const Color outline = fill;
+                emit_debug_triangle(v3, v2, v1, fill);
+                emit_debug_triangle(v3, v1, v0, fill);
+                DrawLineEx(v0, v1, 1.0f, outline);
+                DrawLineEx(v1, v2, 1.0f, outline);
+                DrawLineEx(v2, v3, 1.0f, outline);
+                DrawLineEx(v3, v0, 1.0f, outline);
+            } else {
+                float segment_u0 = u0;
+                float segment_v_top = v_top;
+                float segment_u1 = u1;
+                float segment_v_bottom = v_bottom;
+                if (Constants::kFireSpiritTrailAnimationMode == Constants::TrailAnimationMode::PerSegmentAnimated ||
+                    Constants::kFireSpiritTrailAnimationMode == Constants::TrailAnimationMode::WidthDriven) {
+                    Rectangle segment_src = {};
+                    if (Constants::kFireSpiritTrailAnimationMode == Constants::TrailAnimationMode::PerSegmentAnimated) {
+                        segment_src = sprite_metadata_.GetFrame("fire_trail", "default", b.age_seconds);
+                    } else if (has_trail_frame_stats) {
+                        const float average_width_ratio =
+                            std::clamp((width_a + width_b) / (2.0f * Constants::kFireSpiritTrailHalfWidth), 0.0f, 1.0f);
+                        const float progress = 1.0f - average_width_ratio;
+                        const int frame_index = std::clamp(
+                            static_cast<int>(progress * static_cast<float>(trail_frame_count)), 0, trail_frame_count - 1);
+                        segment_src = sprite_metadata_.GetFrameByIndex("fire_trail", "default", frame_index);
+                    } else {
+                        segment_src = sprite_metadata_.GetFrame("fire_trail", "default", 0.0f);
+                    }
+                    segment_u0 = segment_src.x / static_cast<float>(texture.width);
+                    segment_v_top = segment_src.y / static_cast<float>(texture.height);
+                    segment_u1 = (segment_src.x + segment_src.width) / static_cast<float>(texture.width);
+                    segment_v_bottom = (segment_src.y + segment_src.height) / static_cast<float>(texture.height);
+                }
+                rlColor4ub(255, 255, 255, 255);
+                emit_textured_triangle(v3, segment_u0, segment_v_top, v2, segment_u0, segment_v_bottom, v1,
+                                       segment_u1, segment_v_bottom);
+                emit_textured_triangle(v3, segment_u0, segment_v_top, v1, segment_u1, segment_v_bottom, v0,
+                                       segment_u1, segment_v_top);
+            }
+        }
+    }
+    if (!debug_trail_geometry) {
+        rlEnd();
+        rlSetTexture(0);
+    }
+    rlEnableBackfaceCulling();
+}
+
+void GameApp::RenderFireSpiritTrailTarget() {
+    if (!Constants::kFireSpiritTrailEnableLowResRender || !has_fire_spirit_trail_target_ ||
+        !has_fire_spirit_trail_lowres_target_) {
+        return;
+    }
+
+    BeginTextureMode(fire_spirit_trail_target_);
+    ClearBackground(BLANK);
+    BeginMode2D(camera_);
+    RenderFireSpiritTrailGeometry(show_network_debug_panel_);
+    EndMode2D();
+    EndTextureMode();
+
+    BeginTextureMode(fire_spirit_trail_lowres_target_);
+    ClearBackground(BLANK);
+    const Rectangle full_src = {0.0f, 0.0f, static_cast<float>(fire_spirit_trail_target_.texture.width),
+                                -static_cast<float>(fire_spirit_trail_target_.texture.height)};
+    const Rectangle lowres_dst = {0.0f, 0.0f, static_cast<float>(fire_spirit_trail_lowres_target_.texture.width),
+                                  static_cast<float>(fire_spirit_trail_lowres_target_.texture.height)};
+    // Render textures already contain alpha-applied RGB. Composite them as premultiplied-alpha,
+    // otherwise semi-transparent trail texels darken as if sampled over black on each RT hop.
+    rlSetBlendFactorsSeparate(RL_ONE, RL_ONE_MINUS_SRC_ALPHA, RL_ONE, RL_ONE_MINUS_SRC_ALPHA, RL_FUNC_ADD,
+                              RL_FUNC_ADD);
+    BeginBlendMode(BLEND_CUSTOM_SEPARATE);
+    DrawTexturePro(fire_spirit_trail_target_.texture, full_src, lowres_dst, {0.0f, 0.0f}, 0.0f, WHITE);
+    EndBlendMode();
+    EndTextureMode();
+}
+
+void GameApp::DrawFireSpiritTrailLayer() {
+    if (!Constants::kFireSpiritTrailEnableLowResRender || !has_fire_spirit_trail_lowres_target_) {
+        return;
+    }
+
+    const Rectangle src = {0.0f, 0.0f, static_cast<float>(fire_spirit_trail_lowres_target_.texture.width),
+                           -static_cast<float>(fire_spirit_trail_lowres_target_.texture.height)};
+    const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+    rlSetBlendFactorsSeparate(RL_ONE, RL_ONE_MINUS_SRC_ALPHA, RL_ONE, RL_ONE_MINUS_SRC_ALPHA, RL_FUNC_ADD,
+                              RL_FUNC_ADD);
+    BeginBlendMode(BLEND_CUSTOM_SEPARATE);
+    DrawTexturePro(fire_spirit_trail_lowres_target_.texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+    EndBlendMode();
+}
+
+void GameApp::RenderParticleInstance(const Particle& particle) {
+    const bool has_texture = sprite_metadata_.IsLoaded();
+    const Texture2D texture = sprite_metadata_.GetTexture();
+    const Vector2 render_center = GetParticleRenderCenter(particle, GetTime());
+    if (has_texture && sprite_metadata_.HasAnimation(particle.animation_key)) {
+        const Rectangle src =
+            InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
+                            Constants::kAtlasSampleInsetPixels);
+        const float particle_size =
+            particle.size > 0.0f ? particle.size : (particle.animation_key == "static_upgrade" ? 48.0f : 32.0f);
+        const bool rotated_particle = std::fabs(particle.rotation_degrees) > 0.001f;
+        Rectangle dst = rotated_particle
+                            ? Rectangle{render_center.x, render_center.y, particle_size, particle_size}
+                            : Rectangle{render_center.x - particle_size * 0.5f, render_center.y - particle_size * 0.5f,
+                                        particle_size, particle_size};
+        dst = SnapRect(dst);
+        const Vector2 origin =
+            rotated_particle ? Vector2{particle_size * 0.5f, particle_size * 0.5f} : Vector2{0.0f, 0.0f};
+        DrawTexturePro(texture, src, dst, origin, particle.rotation_degrees, Color{255, 255, 255, particle.alpha});
+    } else {
+        DrawCircleV(render_center, 4.0f, Color{190, 190, 190, 160});
+    }
+}
+
+void GameApp::RenderTopLayerParticles() {
+    for (const auto& particle : state_.particles) {
+        if (!particle.alive || !particle.render_on_top) {
+            continue;
+        }
+        RenderParticleInstance(particle);
+    }
 }
 
 void GameApp::RenderLocalGrapplingPreview() {
@@ -10588,12 +11810,12 @@ void GameApp::RenderGroundMapObjects() {
     const Texture2D huge_texture = sprite_metadata_128x128_.GetTexture();
 
     for (const auto& object : state_.map_objects) {
-        if (!object.alive || !IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
+        if (!object.alive) {
             continue;
         }
 
         const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
-        if (proto == nullptr) {
+        if (!IsFlatRenderedMapObjectPrototype(proto)) {
             continue;
         }
 
@@ -10928,7 +12150,9 @@ void GameApp::RenderInfluenceZoneOverlay() {
         const Texture2D& target_texture = has_to ? to_texture : draw_texture;
         const float draw_blend_t = (has_from && has_to) ? blend_t : 1.0f;
         const Rectangle src = {0.0f, 0.0f, static_cast<float>(draw_texture.width), static_cast<float>(draw_texture.height)};
-        const Rectangle dst = {0.0f, 0.0f, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+        // This draw happens under BeginMode2D(camera_), so the destination rectangle is in world space.
+        // Using screen-space dimensions clips the overlay to the first visible screen-width chunk of the map.
+        const Rectangle dst = {0.0f, 0.0f, map_size_world[0], map_size_world[1]};
         rlDrawRenderBatchActive();
         BeginShaderMode(influence_zone_overlay_shader_);
         SetShaderValueV(influence_zone_overlay_shader_, influence_zone_overlay_tint_loc_, tint, SHADER_UNIFORM_VEC4, 1);
@@ -11128,6 +12352,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         LightningSegment,
         GrapplingHookSegment,
         Projectile,
+        FireSpiritIdle,
+        FireSpiritTrail,
+        FireSpiritProjectile,
         FireStormArc,
         Particle,
         HammerImpact,
@@ -11167,18 +12394,24 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 return 9;
             case RenderKind::Projectile:
                 return 10;
-            case RenderKind::FireStormArc:
+            case RenderKind::FireSpiritIdle:
                 return 11;
-            case RenderKind::Particle:
+            case RenderKind::FireSpiritTrail:
                 return 12;
-            case RenderKind::HammerImpact:
+            case RenderKind::FireSpiritProjectile:
                 return 13;
-            case RenderKind::Player:
+            case RenderKind::FireStormArc:
                 return 14;
-            case RenderKind::PlayerAttachedAnimation:
+            case RenderKind::Particle:
                 return 15;
-            default:
+            case RenderKind::HammerImpact:
                 return 16;
+            case RenderKind::Player:
+                return 17;
+            case RenderKind::PlayerAttachedAnimation:
+                return 18;
+            default:
+                return 19;
         }
     };
 
@@ -11260,11 +12493,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
 
     for (size_t i = 0; i < state_.map_objects.size(); ++i) {
         const MapObjectInstance& object = state_.map_objects[i];
-        if (!object.alive || IsGroundSortedMapObjectPrototypeId(object.prototype_id)) {
-            continue;
-        }
         const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
-        if (proto == nullptr) {
+        if (!object.alive || proto == nullptr || IsFlatRenderedMapObjectPrototype(proto)) {
             continue;
         }
         const Rectangle world_rect =
@@ -11494,6 +12724,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
 
     for (size_t i = 0; i < state_.particles.size(); ++i) {
         if (!state_.particles[i].alive) {
+            continue;
+        }
+        if (state_.particles[i].render_on_top) {
             continue;
         }
         if (!point_visible(state_.particles[i].pos)) {
@@ -12072,6 +13305,132 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 }
                 break;
             }
+            case RenderKind::FireSpiritIdle: {
+                if (item.index >= state_.fire_spirits.size() || !has_texture) {
+                    break;
+                }
+                const FireSpirit& spirit = state_.fire_spirits[item.index];
+                if (!spirit.alive || spirit.state != FireSpiritState::Idle ||
+                    !sprite_metadata_.HasAnimation("fire_spirit_idle")) {
+                    break;
+                }
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame("fire_spirit_idle", "default", render_time_seconds_),
+                                    Constants::kAtlasSampleInsetPixels);
+                Rectangle dst = {spirit.pos.x - 16.0f, spirit.pos.y - 16.0f, 32.0f, 32.0f};
+                DrawTexturePro(texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
+                break;
+            }
+            case RenderKind::FireSpiritTrail: {
+                if (item.index >= state_.fire_spirits.size() || !has_texture) {
+                    break;
+                }
+                const FireSpirit& spirit = state_.fire_spirits[item.index];
+                if (!spirit.alive || spirit.state != FireSpiritState::Projectile ||
+                    item.sub_index >= spirit.trail_samples.size() || item.sub_index == 0 ||
+                    !sprite_metadata_.HasAnimation("fire_trail")) {
+                    break;
+                }
+                const FireSpiritTrailSample& a = spirit.trail_samples[item.sub_index - 1];
+                const FireSpiritTrailSample& b = spirit.trail_samples[item.sub_index];
+                Vector2 dir = Vector2Subtract(b.world, a.world);
+                const float len = Vector2Length(dir);
+                if (len <= 0.001f) {
+                    break;
+                }
+                dir = Vector2Scale(dir, 1.0f / len);
+                const Vector2 normal = {-dir.y, dir.x};
+                const float width_a = Constants::kFireSpiritTrailHalfWidth *
+                                      std::clamp(1.0f - a.age_seconds / Constants::kFireSpiritTrailLifetimeSeconds,
+                                                 0.0f, 1.0f);
+                const float width_b = Constants::kFireSpiritTrailHalfWidth *
+                                      std::clamp(1.0f - b.age_seconds / Constants::kFireSpiritTrailLifetimeSeconds,
+                                                 0.0f, 1.0f);
+                if (width_a <= 0.01f && width_b <= 0.01f) {
+                    break;
+                }
+                const Vector2 v0 = Vector2Add(a.world, Vector2Scale(normal, width_a));
+                const Vector2 v1 = Vector2Subtract(a.world, Vector2Scale(normal, width_a));
+                const Vector2 v2 = Vector2Subtract(b.world, Vector2Scale(normal, width_b));
+                const Vector2 v3 = Vector2Add(b.world, Vector2Scale(normal, width_b));
+                float trail_frame_time = render_time_seconds_;
+                switch (Constants::kFireSpiritTrailAnimationMode) {
+                    case Constants::TrailAnimationMode::Static:
+                        trail_frame_time = 0.0f;
+                        break;
+                    case Constants::TrailAnimationMode::PerSegmentAnimated:
+                        trail_frame_time = b.age_seconds;
+                        break;
+                    case Constants::TrailAnimationMode::WidthDriven:
+                        trail_frame_time = 0.0f;
+                        break;
+                    case Constants::TrailAnimationMode::GlobalAnimated:
+                    default:
+                        trail_frame_time = render_time_seconds_;
+                        break;
+                }
+                Rectangle src = {};
+                if (Constants::kFireSpiritTrailAnimationMode == Constants::TrailAnimationMode::WidthDriven) {
+                    int trail_frame_count = 0;
+                    float trail_fps_unused = 0.0f;
+                    if (sprite_metadata_.GetAnimationStats("fire_trail", "default", trail_frame_count, trail_fps_unused) &&
+                        trail_frame_count > 0) {
+                        const float average_width_ratio =
+                            std::clamp((width_a + width_b) / (2.0f * Constants::kFireSpiritTrailHalfWidth), 0.0f, 1.0f);
+                        const float progress = 1.0f - average_width_ratio;
+                        const int frame_index = std::clamp(
+                            static_cast<int>(progress * static_cast<float>(trail_frame_count)), 0, trail_frame_count - 1);
+                        src = InsetSourceRect(sprite_metadata_.GetFrameByIndex("fire_trail", "default", frame_index),
+                                              Constants::kAtlasSampleInsetPixels);
+                    } else {
+                        src = InsetSourceRect(sprite_metadata_.GetFrame("fire_trail", "default", 0.0f),
+                                              Constants::kAtlasSampleInsetPixels);
+                    }
+                } else {
+                    src = InsetSourceRect(sprite_metadata_.GetFrame("fire_trail", "default", trail_frame_time),
+                                          Constants::kAtlasSampleInsetPixels);
+                }
+                const float u0 = src.x / static_cast<float>(texture.width);
+                const float v_top = src.y / static_cast<float>(texture.height);
+                const float u1 = (src.x + src.width) / static_cast<float>(texture.width);
+                const float v_bottom = (src.y + src.height) / static_cast<float>(texture.height);
+                rlSetTexture(texture.id);
+                rlBegin(RL_QUADS);
+                rlColor4ub(255, 255, 255, 255);
+                rlTexCoord2f(u0, v_top);
+                rlVertex2f(v0.x, v0.y);
+                rlTexCoord2f(u0, v_bottom);
+                rlVertex2f(v1.x, v1.y);
+                rlTexCoord2f(u1, v_bottom);
+                rlVertex2f(v2.x, v2.y);
+                rlTexCoord2f(u1, v_top);
+                rlVertex2f(v3.x, v3.y);
+                rlEnd();
+                rlSetTexture(0);
+                break;
+            }
+            case RenderKind::FireSpiritProjectile: {
+                if (item.index >= state_.fire_spirits.size() || !has_texture) {
+                    break;
+                }
+                const FireSpirit& spirit = state_.fire_spirits[item.index];
+                if (!spirit.alive || spirit.state != FireSpiritState::Projectile ||
+                    !sprite_metadata_.HasAnimation("fire_spirit_projectile")) {
+                    break;
+                }
+                const Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, GetFireSpiritSimTimeSeconds());
+                Vector2 travel_dir = Vector2Subtract(spirit.impact_world, spirit.launch_world);
+                if (Vector2LengthSqr(travel_dir) <= 0.0001f) {
+                    travel_dir = {1.0f, 0.0f};
+                }
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame("fire_spirit_projectile", "default",
+                                                              spirit.projectile_animation_time),
+                                    Constants::kAtlasSampleInsetPixels);
+                Rectangle dst = {render_world.x, render_world.y, 32.0f, 32.0f};
+                DrawTexturePro(texture, src, SnapRect(dst), {16.0f, 16.0f}, AimToDegrees(travel_dir), WHITE);
+                break;
+            }
             case RenderKind::FireStormArc: {
                 const StormArcVisual& arc = storm_arc_visuals_[item.index];
                 if (!arc.alive || !has_texture || !sprite_metadata_.HasAnimation("storm_particle_idle")) {
@@ -12090,27 +13449,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             }
             case RenderKind::Particle: {
                 const Particle& particle = state_.particles[item.index];
-                const Vector2 render_center = GetParticleRenderCenter(particle, GetTime());
-                if (has_texture && sprite_metadata_.HasAnimation(particle.animation_key)) {
-                    const Rectangle src =
-                        InsetSourceRect(sprite_metadata_.GetFrame(particle.animation_key, particle.facing, particle.age_seconds),
-                                        Constants::kAtlasSampleInsetPixels);
-                    const float particle_size = particle.size > 0.0f
-                                                    ? particle.size
-                                                    : (particle.animation_key == "static_upgrade" ? 48.0f : 32.0f);
-                    const bool rotated_particle = std::fabs(particle.rotation_degrees) > 0.001f;
-                    Rectangle dst = rotated_particle
-                                        ? Rectangle{render_center.x, render_center.y, particle_size, particle_size}
-                                        : Rectangle{render_center.x - particle_size * 0.5f,
-                                                    render_center.y - particle_size * 0.5f, particle_size, particle_size};
-                    dst = SnapRect(dst);
-                    const Vector2 origin =
-                        rotated_particle ? Vector2{particle_size * 0.5f, particle_size * 0.5f} : Vector2{0.0f, 0.0f};
-                    DrawTexturePro(texture, src, dst, origin, particle.rotation_degrees,
-                                   Color{255, 255, 255, particle.alpha});
-                } else {
-                    DrawCircleV(render_center, 4.0f, Color{190, 190, 190, 160});
-                }
+                RenderParticleInstance(particle);
                 break;
             }
             case RenderKind::HammerImpact: {
@@ -12139,46 +13478,10 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                     break;
                 }
 
-                const Rectangle dst = GetPlayerSpriteRect(draw_pos);
-                const Rectangle sprite_rect = dst;
-
                 if (modular_player_asset_.HasTag("main", ResolvePlayerModularTag(player))) {
                     RenderPlayerModularLayers(player, draw_pos);
                 } else {
                     DrawRectangleRec(GetPlayerCollisionRect(draw_pos), BLUE);
-                }
-
-                const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
-                                        static_cast<unsigned char>(Constants::kPlayerHealthBarFillG),
-                                        static_cast<unsigned char>(Constants::kPlayerHealthBarFillB), 255};
-                const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
-                                           static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
-                                           static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
-
-                Rectangle health_bar = {draw_pos.x - Constants::kPlayerHealthBarWidth * 0.5f,
-                                        sprite_rect.y - Constants::kPlayerHealthBarOffsetY + 20.0f,
-                                        Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
-                health_bar = SnapRect(health_bar);
-                DrawRectangleRec(health_bar, bar_missing);
-
-                const float hp_ratio =
-                    std::clamp(static_cast<float>(player.hp) / static_cast<float>(Constants::kMaxHp), 0.0f, 1.0f);
-                if (hp_ratio > 0.0f) {
-                    Rectangle fill = health_bar;
-                    fill.width = std::roundf(fill.width * hp_ratio);
-                    if (fill.width > 0.0f) {
-                        DrawRectangleRec(fill, bar_fill);
-                    }
-                }
-                DrawRectangleLinesEx(health_bar, 1.0f, BLACK);
-
-                if (player.id != state_.local_player_id && !player.name.empty()) {
-                    const int name_font_size = 8;
-                    const int name_width = MeasureText(player.name.c_str(), name_font_size);
-                    const int name_x =
-                        static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(name_width)) * 0.5f);
-                    const int name_y = static_cast<int>(health_bar.y - static_cast<float>(name_font_size) - 2.0f);
-                    DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
                 }
                 break;
             }
@@ -12195,6 +13498,54 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                                               animation.offset_y, GetRenderPlayerPosition(player->id));
                 break;
             }
+        }
+    }
+
+    if (pass == DepthSortedRenderPass::OverInfluenceOverlay && has_texture) {
+        const float fire_spirit_sim_time = GetFireSpiritSimTimeSeconds();
+        if (!Constants::kFireSpiritTrailEnableLowResRender) {
+            RenderFireSpiritTrailGeometry(show_network_debug_panel_);
+        }
+        for (const auto& spirit : state_.fire_spirits) {
+            if (!spirit.alive) {
+                continue;
+            }
+            const bool render_dead_trail =
+                Constants::kFireSpiritTrailEnableDeadLinger && spirit.state == FireSpiritState::Dead &&
+                !spirit.trail_samples.empty();
+            if (spirit.state == FireSpiritState::Idle) {
+                if (!point_visible(spirit.pos) || !sprite_metadata_.HasAnimation("fire_spirit_idle")) {
+                    continue;
+                }
+                const Rectangle src =
+                    InsetSourceRect(sprite_metadata_.GetFrame("fire_spirit_idle", "default", render_time_seconds_),
+                                    Constants::kAtlasSampleInsetPixels);
+                Rectangle dst = {spirit.pos.x - 16.0f, spirit.pos.y - 16.0f, 32.0f, 32.0f};
+                DrawTexturePro(texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
+                continue;
+            }
+            if (spirit.state != FireSpiritState::Projectile && !render_dead_trail) {
+                continue;
+            }
+
+            const Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, fire_spirit_sim_time);
+            if (!point_visible(render_world)) {
+                continue;
+            }
+
+            if (render_dead_trail || !sprite_metadata_.HasAnimation("fire_spirit_projectile")) {
+                continue;
+            }
+            const Rectangle src =
+                InsetSourceRect(sprite_metadata_.GetFrame("fire_spirit_projectile", "default",
+                                                          spirit.projectile_animation_time),
+                                Constants::kAtlasSampleInsetPixels);
+            Vector2 travel_dir = Vector2Subtract(spirit.impact_world, spirit.launch_world);
+            if (Vector2LengthSqr(travel_dir) <= 0.0001f) {
+                travel_dir = {1.0f, 0.0f};
+            }
+            Rectangle dst = {render_world.x, render_world.y, 32.0f, 32.0f};
+            DrawTexturePro(texture, src, SnapRect(dst), {16.0f, 16.0f}, AimToDegrees(travel_dir), WHITE);
         }
     }
 
@@ -12945,66 +14296,78 @@ void GameApp::RenderPlayerOverlays() {
         return a.sort_y < b.sort_y;
     });
 
-    const Color bar_fill = {static_cast<unsigned char>(Constants::kPlayerHealthBarFillR),
-                            static_cast<unsigned char>(Constants::kPlayerHealthBarFillG),
-                            static_cast<unsigned char>(Constants::kPlayerHealthBarFillB), 255};
-    const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
-                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
-                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
-    const bool has_texture = sprite_metadata_.IsLoaded();
-    const Texture2D texture = sprite_metadata_.GetTexture();
-
     for (const OverlayItem& overlay : overlays) {
         const Player& player = *overlay.player;
         const Vector2 draw_pos = GetRenderPlayerPosition(player.id);
-        const Rectangle sprite_rect = GetPlayerSpriteRect(draw_pos);
+        RenderPlayerOverheadUi(player, draw_pos);
+    }
+}
 
-        Rectangle health_bar = {draw_pos.x - Constants::kPlayerHealthBarWidth * 0.5f,
-                                sprite_rect.y - Constants::kPlayerHealthBarOffsetY + 20.0f,
-                                Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
-        health_bar = SnapRect(health_bar);
-        DrawRectangleRec(health_bar, bar_missing);
+void GameApp::RenderOverheadResourceBar(const Rectangle& bar, float value, float max_value, Color fill_color) const {
+    const Color bar_missing = {static_cast<unsigned char>(Constants::kPlayerHealthBarMissingR),
+                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingG),
+                               static_cast<unsigned char>(Constants::kPlayerHealthBarMissingB), 255};
+    const Rectangle snapped_bar = SnapRect(bar);
+    DrawRectangleRec(snapped_bar, bar_missing);
 
-        const float hp_ratio = std::clamp(static_cast<float>(player.hp) / static_cast<float>(Constants::kMaxHp), 0.0f, 1.0f);
-        if (hp_ratio > 0.0f) {
-            Rectangle fill = health_bar;
-            fill.width = std::roundf(fill.width * hp_ratio);
-            if (fill.width > 0.0f) {
-                DrawRectangleRec(fill, bar_fill);
-            }
+    const float ratio = (max_value > 0.0f) ? std::clamp(value / max_value, 0.0f, 1.0f) : 0.0f;
+    if (ratio > 0.0f) {
+        Rectangle fill = snapped_bar;
+        fill.width = std::roundf(fill.width * ratio);
+        if (fill.width > 0.0f) {
+            DrawRectangleRec(fill, fill_color);
         }
-        DrawRectangleLinesEx(health_bar, 1.0f, BLACK);
+    }
+    DrawRectangleLinesEx(snapped_bar, 1.0f, BLACK);
+}
 
-        float name_anchor_y = health_bar.y;
-        const int catalyst_charges = GetPlayerRuneChargeCount(player, RuneType::Catalyst);
-        if (catalyst_charges > 0 && has_texture && sprite_metadata_.HasAnimation("catalyst_overhead_indicator")) {
-            Rectangle src = InsetSourceRect(
-                sprite_metadata_.GetFrame("catalyst_overhead_indicator", "default", render_time_seconds_),
-                Constants::kAtlasSampleInsetPixels);
-            src.x += 12.0f;
-            src.y += 12.0f;
-            src.width = 10.0f;
-            src.height = 10.0f;
-            const float icon_size = src.width;
-            const float icon_gap = Constants::kCatalystOverheadIconGap;
-            const float row_width =
-                static_cast<float>(catalyst_charges) * icon_size + static_cast<float>(catalyst_charges - 1) * icon_gap;
-            const float row_left = health_bar.x + (health_bar.width - row_width) * 0.5f;
-            const float row_y = health_bar.y - Constants::kCatalystOverheadIconRowGap - icon_size;
-            name_anchor_y = row_y;
-            for (int i = 0; i < catalyst_charges; ++i) {
-                Rectangle icon_dst = {row_left + static_cast<float>(i) * (icon_size + icon_gap), row_y, icon_size, icon_size};
-                DrawTexturePro(texture, src, SnapRect(icon_dst), {0, 0}, 0.0f, WHITE);
-            }
-        }
+void GameApp::RenderPlayerOverheadUi(const Player& player, Vector2 draw_pos) {
+    const Rectangle sprite_rect = GetPlayerSpriteRect(draw_pos);
+    const Rectangle health_bar = {draw_pos.x - Constants::kPlayerHealthBarWidth * 0.5f,
+                                  sprite_rect.y - Constants::kPlayerHealthBarOffsetY + 20.0f,
+                                  Constants::kPlayerHealthBarWidth, Constants::kPlayerHealthBarHeight};
+    const Rectangle mana_bar = {health_bar.x,
+                                health_bar.y + health_bar.height + Constants::kPlayerResourceBarGap,
+                                health_bar.width,
+                                health_bar.height};
 
-        if (player.id != state_.local_player_id && !player.name.empty()) {
-            const int name_font_size = 8;
-            const int name_width = MeasureText(player.name.c_str(), name_font_size);
-            const int name_x = static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(name_width)) * 0.5f);
-            const int name_y = static_cast<int>(name_anchor_y - static_cast<float>(name_font_size) - 2.0f);
-            DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
+    RenderOverheadResourceBar(health_bar, static_cast<float>(player.hp), static_cast<float>(Constants::kMaxHp),
+                              TeamUiColor(player.team));
+    RenderOverheadResourceBar(mana_bar, player.mana, player.max_mana,
+                              Color{static_cast<unsigned char>(Constants::kHudManaBarR),
+                                    static_cast<unsigned char>(Constants::kHudManaBarG),
+                                    static_cast<unsigned char>(Constants::kHudManaBarB), 255});
+
+    float name_anchor_y = health_bar.y;
+    const int catalyst_charges = GetPlayerRuneChargeCount(player, RuneType::Catalyst);
+    if (catalyst_charges > 0 && sprite_metadata_.IsLoaded() && sprite_metadata_.HasAnimation("catalyst_overhead_indicator")) {
+        const Texture2D texture = sprite_metadata_.GetTexture();
+        Rectangle src = InsetSourceRect(
+            sprite_metadata_.GetFrame("catalyst_overhead_indicator", "default", render_time_seconds_),
+            Constants::kAtlasSampleInsetPixels);
+        src.x += 12.0f;
+        src.y += 12.0f;
+        src.width = 10.0f;
+        src.height = 10.0f;
+        const float icon_size = src.width;
+        const float icon_gap = Constants::kCatalystOverheadIconGap;
+        const float row_width =
+            static_cast<float>(catalyst_charges) * icon_size + static_cast<float>(catalyst_charges - 1) * icon_gap;
+        const float row_left = health_bar.x + (health_bar.width - row_width) * 0.5f;
+        const float row_y = health_bar.y - Constants::kCatalystOverheadIconRowGap - icon_size;
+        name_anchor_y = row_y;
+        for (int i = 0; i < catalyst_charges; ++i) {
+            Rectangle icon_dst = {row_left + static_cast<float>(i) * (icon_size + icon_gap), row_y, icon_size, icon_size};
+            DrawTexturePro(texture, src, SnapRect(icon_dst), {0, 0}, 0.0f, WHITE);
         }
+    }
+
+    if (player.id != state_.local_player_id && !player.name.empty()) {
+        const int name_font_size = 8;
+        const int name_width = MeasureText(player.name.c_str(), name_font_size);
+        const int name_x = static_cast<int>(health_bar.x + (health_bar.width - static_cast<float>(name_width)) * 0.5f);
+        const int name_y = static_cast<int>(name_anchor_y - static_cast<float>(name_font_size) - 2.0f);
+        DrawText(player.name.c_str(), name_x, name_y, name_font_size, WHITE);
     }
 }
 
@@ -13035,9 +14398,7 @@ void GameApp::RenderDebugCollisionOverlay() {
             attack_profile != nullptr ? hit_shape_library_.FindById(attack_profile->hit_shape_id) : nullptr;
         if (player.melee_active_remaining > 0.0f && attack_profile != nullptr && hit_shape != nullptr) {
             const float rotation = GetPlayerLockedMeleeAimRadians(player);
-            const Rectangle collision_rect = GetPlayerCollisionRect(player);
-            const Vector2 melee_origin = {collision_rect.x + collision_rect.width * 0.5f,
-                                          collision_rect.y + collision_rect.height * 0.5f};
+            const Vector2 melee_origin = GetPlayerMeleeRotationOrigin(player);
             if (hit_shape->type == HitShapeType::Circle) {
                 const Vector2 center =
                     Vector2Add(melee_origin, Vector2Rotate(hit_shape->center, rotation));
@@ -14398,6 +15759,11 @@ float GameApp::GetPlayerCollisionSupportDistance(Vector2 direction) const {
     const float half_width = Constants::kPlayerHitboxWidth * 0.5f;
     const float half_height = Constants::kPlayerHitboxHeight * 0.5f;
     return std::fabs(direction.x) * half_width + std::fabs(direction.y) * half_height;
+}
+
+Vector2 GameApp::GetPlayerMeleeRotationOrigin(const Player& player) const {
+    const Rectangle collision = GetPlayerCollisionRect(player);
+    return {collision.x + collision.width * 0.5f, collision.y + collision.height * 0.5f - 4.0f};
 }
 
 bool GameApp::TryEquipItem(Player& player, const std::string& item_id, const MapObjectInstance* source_object) {

@@ -28,5 +28,6 @@ struct Particle {
     float sway_amplitude = 0.0f;
     float sway_frequency_hz = 0.0f;
     float sway_phase = 0.0f;
+    bool render_on_top = false;
     bool alive = true;
 };

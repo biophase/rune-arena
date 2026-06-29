@@ -187,6 +187,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["snapshot_id"] = message.snapshot_id;
     out["base_snapshot_id"] = message.base_snapshot_id;
     out["is_delta"] = message.is_delta;
+    out["simulation_time_seconds"] = Quantize2(message.simulation_time_seconds);
     out["time_remaining"] = message.time_remaining;
     out["zone_enabled"] = message.zone_enabled;
     out["shrink_tiles_per_second"] = message.shrink_tiles_per_second;
@@ -323,6 +324,35 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
         });
     }
 
+    out["fire_spirits"] = nlohmann::json::array();
+    for (const auto& spirit : message.fire_spirits) {
+        out["fire_spirits"].push_back({
+            {"id", spirit.id},
+            {"flower_object_id", spirit.flower_object_id},
+            {"owner_player_id", spirit.owner_player_id},
+            {"owner_team", spirit.owner_team},
+            {"state", spirit.state},
+            {"pos_x", Quantize2(spirit.pos_x)},
+            {"pos_y", Quantize2(spirit.pos_y)},
+            {"vel_x", Quantize2(spirit.vel_x)},
+            {"vel_y", Quantize2(spirit.vel_y)},
+            {"target_world_x", Quantize2(spirit.target_world_x)},
+            {"target_world_y", Quantize2(spirit.target_world_y)},
+            {"spawn_order", spirit.spawn_order},
+            {"age_seconds", Quantize2(spirit.age_seconds)},
+            {"launch_world_x", Quantize2(spirit.launch_world_x)},
+            {"launch_world_y", Quantize2(spirit.launch_world_y)},
+            {"impact_world_x", Quantize2(spirit.impact_world_x)},
+            {"impact_world_y", Quantize2(spirit.impact_world_y)},
+            {"launch_time_seconds", Quantize2(spirit.launch_time_seconds)},
+            {"impact_time_seconds", Quantize2(spirit.impact_time_seconds)},
+            {"travel_duration_seconds", Quantize2(spirit.travel_duration_seconds)},
+            {"peak_height", Quantize2(spirit.peak_height)},
+            {"projectile_animation_time", Quantize2(spirit.projectile_animation_time)},
+            {"alive", spirit.alive},
+        });
+    }
+
     out["ice_walls"] = nlohmann::json::array();
     for (const auto& wall : message.ice_walls) {
         out["ice_walls"].push_back({
@@ -452,6 +482,7 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     out["removed_player_ids"] = message.removed_player_ids;
     out["removed_rune_ids"] = message.removed_rune_ids;
     out["removed_projectile_ids"] = message.removed_projectile_ids;
+    out["removed_fire_spirit_ids"] = message.removed_fire_spirit_ids;
     out["removed_ice_wall_ids"] = message.removed_ice_wall_ids;
     out["removed_map_object_ids"] = message.removed_map_object_ids;
     out["removed_castle_ids"] = message.removed_castle_ids;
@@ -469,6 +500,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
     out.snapshot_id = json.value("snapshot_id", 0);
     out.base_snapshot_id = json.value("base_snapshot_id", 0);
     out.is_delta = json.value("is_delta", false);
+    out.simulation_time_seconds = json.value("simulation_time_seconds", 0.0f);
     out.time_remaining = json.value("time_remaining", 0.0f);
     out.zone_enabled = json.value("zone_enabled", true);
     out.shrink_tiles_per_second = json.value("shrink_tiles_per_second", 0.0f);
@@ -611,6 +643,37 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             projectile.emitter_frame_counter = item.value("emitter_frame_counter", 0);
             projectile.alive = item.value("alive", true);
             out.projectiles.push_back(projectile);
+        }
+    }
+
+    const auto fire_spirits_it = json.find("fire_spirits");
+    if (fire_spirits_it != json.end() && fire_spirits_it->is_array()) {
+        for (const auto& item : *fire_spirits_it) {
+            FireSpiritSnapshot spirit;
+            spirit.id = item.value("id", -1);
+            spirit.flower_object_id = item.value("flower_object_id", -1);
+            spirit.owner_player_id = item.value("owner_player_id", -1);
+            spirit.owner_team = item.value("owner_team", 0);
+            spirit.state = item.value("state", 0);
+            spirit.pos_x = item.value("pos_x", 0.0f);
+            spirit.pos_y = item.value("pos_y", 0.0f);
+            spirit.vel_x = item.value("vel_x", 0.0f);
+            spirit.vel_y = item.value("vel_y", 0.0f);
+            spirit.target_world_x = item.value("target_world_x", 0.0f);
+            spirit.target_world_y = item.value("target_world_y", 0.0f);
+            spirit.spawn_order = item.value("spawn_order", 0);
+            spirit.age_seconds = item.value("age_seconds", 0.0f);
+            spirit.launch_world_x = item.value("launch_world_x", 0.0f);
+            spirit.launch_world_y = item.value("launch_world_y", 0.0f);
+            spirit.impact_world_x = item.value("impact_world_x", 0.0f);
+            spirit.impact_world_y = item.value("impact_world_y", 0.0f);
+            spirit.launch_time_seconds = item.value("launch_time_seconds", 0.0f);
+            spirit.impact_time_seconds = item.value("impact_time_seconds", 0.0f);
+            spirit.travel_duration_seconds = item.value("travel_duration_seconds", 0.0f);
+            spirit.peak_height = item.value("peak_height", 0.0f);
+            spirit.projectile_animation_time = item.value("projectile_animation_time", 0.0f);
+            spirit.alive = item.value("alive", true);
+            out.fire_spirits.push_back(spirit);
         }
     }
 
@@ -768,6 +831,12 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             out.removed_projectile_ids.push_back(item.get<int>());
         }
     }
+    const auto removed_fire_spirits_it = json.find("removed_fire_spirit_ids");
+    if (removed_fire_spirits_it != json.end() && removed_fire_spirits_it->is_array()) {
+        for (const auto& item : *removed_fire_spirits_it) {
+            out.removed_fire_spirit_ids.push_back(item.get<int>());
+        }
+    }
     const auto removed_walls_it = json.find("removed_ice_wall_ids");
     if (removed_walls_it != json.end() && removed_walls_it->is_array()) {
         for (const auto& item : *removed_walls_it) {
@@ -817,6 +886,7 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
 nlohmann::json ToJson(const LobbyStateMessage& message) {
     nlohmann::json out;
     out["host_can_start"] = message.host_can_start;
+    out["allow_cheats"] = message.allow_cheats;
     out["mode_type"] = message.mode_type;
     out["round_time_seconds"] = message.round_time_seconds;
     out["best_of_target_kills"] = message.best_of_target_kills;
@@ -841,6 +911,7 @@ nlohmann::json ToJson(const LobbyStateMessage& message) {
 std::optional<LobbyStateMessage> LobbyStateFromJson(const nlohmann::json& json) {
     LobbyStateMessage out;
     out.host_can_start = json.value("host_can_start", false);
+    out.allow_cheats = json.value("allow_cheats", false);
     out.mode_type = json.value("mode_type", 0);
     out.round_time_seconds = json.value("round_time_seconds", 0);
     out.best_of_target_kills = json.value("best_of_target_kills", 0);
