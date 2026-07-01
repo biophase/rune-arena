@@ -5728,6 +5728,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     last_snapshot_simulation_time_seconds_ = snapshot.simulation_time_seconds;
     last_snapshot_received_local_time_seconds_ = GetTime();
     state_.fire_spirits.clear();
+    std::unordered_set<int> current_fire_spirit_ids;
+    current_fire_spirit_ids.reserve(snapshot.fire_spirits.size());
     for (const auto& spirit_snapshot : snapshot.fire_spirits) {
         FireSpirit spirit;
         spirit.id = spirit_snapshot.id;
@@ -5748,8 +5750,28 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         spirit.peak_height = spirit_snapshot.peak_height;
         spirit.projectile_animation_time = spirit_snapshot.projectile_animation_time;
         spirit.alive = spirit_snapshot.alive;
+        current_fire_spirit_ids.insert(spirit.id);
         if (const auto previous_it = previous_fire_spirits_by_id.find(spirit.id);
             previous_it != previous_fire_spirits_by_id.end()) {
+            const bool keep_local_projectile_runtime =
+                !network_manager_.IsHost() && previous_it->second.alive &&
+                previous_it->second.state == FireSpiritState::Projectile;
+            if (keep_local_projectile_runtime) {
+                spirit.pos = previous_it->second.pos;
+                spirit.vel = previous_it->second.vel;
+                spirit.target_world = previous_it->second.target_world;
+                spirit.launch_world = previous_it->second.launch_world;
+                spirit.impact_world = previous_it->second.impact_world;
+                spirit.launch_time_seconds = previous_it->second.launch_time_seconds;
+                spirit.impact_time_seconds = previous_it->second.impact_time_seconds;
+                spirit.travel_duration_seconds = previous_it->second.travel_duration_seconds;
+                spirit.peak_height = previous_it->second.peak_height;
+                spirit.projectile_animation_time = previous_it->second.projectile_animation_time;
+                spirit.alive = true;
+                if (spirit.state != FireSpiritState::Projectile) {
+                    spirit.state = FireSpiritState::Projectile;
+                }
+            }
             const bool previous_has_trail =
                 previous_it->second.state == FireSpiritState::Projectile || previous_it->second.state == FireSpiritState::Dead;
             const bool current_has_trail =
@@ -5768,6 +5790,21 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             }
         }
         state_.fire_spirits.push_back(std::move(spirit));
+    }
+    if (!network_manager_.IsHost()) {
+        const float simulation_time_seconds = static_cast<float>(snapshot.simulation_time_seconds);
+        for (const auto& [spirit_id, previous_spirit] : previous_fire_spirits_by_id) {
+            if (current_fire_spirit_ids.find(spirit_id) != current_fire_spirit_ids.end()) {
+                continue;
+            }
+            if (!previous_spirit.alive || previous_spirit.state != FireSpiritState::Projectile) {
+                continue;
+            }
+            if (simulation_time_seconds > previous_spirit.impact_time_seconds + 0.001f) {
+                continue;
+            }
+            state_.fire_spirits.push_back(previous_spirit);
+        }
     }
     std::vector<FireWaveSegment> predicted_fire_wave_segments;
     std::unordered_set<int> predicted_fire_wave_source_ids;
