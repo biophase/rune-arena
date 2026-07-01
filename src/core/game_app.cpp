@@ -3449,6 +3449,22 @@ Vector2 GameApp::GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallbac
     return fallback;
 }
 
+Vector2 GameApp::GetRenderFireSpiritPosition(int spirit_id, Vector2 fallback) const {
+    auto it = render_fire_spirit_positions_.find(spirit_id);
+    if (it != render_fire_spirit_positions_.end()) {
+        return it->second;
+    }
+    return fallback;
+}
+
+Vector2 GameApp::GetRenderFireWaveCenterPosition(int segment_id, Vector2 fallback) const {
+    auto it = render_fire_wave_center_positions_.find(segment_id);
+    if (it != render_fire_wave_center_positions_.end()) {
+        return it->second;
+    }
+    return fallback;
+}
+
 const GameApp::ActiveModularAttackVisual* GameApp::FindActiveModularAttackVisual(int player_id) const {
     const auto it = active_modular_attack_visuals_.find(player_id);
     return it != active_modular_attack_visuals_.end() ? &it->second : nullptr;
@@ -4265,6 +4281,8 @@ void GameApp::UpdateClientVisualSmoothing(float dt) {
     if (state_.players.empty()) {
         render_player_positions_.clear();
         render_grappling_hook_head_positions_.clear();
+        render_fire_spirit_positions_.clear();
+        render_fire_wave_center_positions_.clear();
         return;
     }
 
@@ -4277,6 +4295,8 @@ void GameApp::UpdateClientVisualSmoothing(float dt) {
         }
         render_player_positions_.swap(updated_positions);
         render_grappling_hook_head_positions_.clear();
+        render_fire_spirit_positions_.clear();
+        render_fire_wave_center_positions_.clear();
         return;
     }
 
@@ -4337,6 +4357,66 @@ void GameApp::UpdateClientVisualSmoothing(float dt) {
         }
     }
     render_grappling_hook_head_positions_.swap(updated_hook_positions);
+
+    std::unordered_map<int, Vector2> updated_fire_spirit_positions;
+    updated_fire_spirit_positions.reserve(state_.fire_spirits.size());
+    for (const auto& spirit : state_.fire_spirits) {
+        Vector2 fallback = spirit.pos;
+        if (spirit.state == FireSpiritState::Projectile) {
+            fallback = EvaluateFireSpiritRenderWorld(spirit, GetFireSpiritSimTimeSeconds());
+        }
+
+        auto samples_it = fire_spirit_position_samples_.find(spirit.id);
+        if (samples_it == fire_spirit_position_samples_.end() || samples_it->second.empty()) {
+            updated_fire_spirit_positions[spirit.id] = fallback;
+            continue;
+        }
+
+        auto& samples = samples_it->second;
+        while (samples.size() > 2 && samples[1].time_seconds <= target_time) {
+            samples.pop_front();
+        }
+
+        if (samples.size() >= 2 && samples.front().time_seconds <= target_time &&
+            samples[1].time_seconds >= target_time) {
+            const double t0 = samples.front().time_seconds;
+            const double t1 = samples[1].time_seconds;
+            const float alpha =
+                static_cast<float>(std::clamp((target_time - t0) / std::max(0.00001, t1 - t0), 0.0, 1.0));
+            updated_fire_spirit_positions[spirit.id] = Vector2Lerp(samples.front().pos, samples[1].pos, alpha);
+        } else {
+            updated_fire_spirit_positions[spirit.id] = samples.back().pos;
+        }
+    }
+    render_fire_spirit_positions_.swap(updated_fire_spirit_positions);
+
+    std::unordered_map<int, Vector2> updated_fire_wave_centers;
+    updated_fire_wave_centers.reserve(state_.fire_wave_segments.size());
+    for (const auto& segment : state_.fire_wave_segments) {
+        const Vector2 fallback = GetFireWaveCenterWorld(segment, GetFireSpiritSimTimeSeconds());
+        auto samples_it = fire_wave_center_position_samples_.find(segment.id);
+        if (samples_it == fire_wave_center_position_samples_.end() || samples_it->second.empty()) {
+            updated_fire_wave_centers[segment.id] = fallback;
+            continue;
+        }
+
+        auto& samples = samples_it->second;
+        while (samples.size() > 2 && samples[1].time_seconds <= target_time) {
+            samples.pop_front();
+        }
+
+        if (samples.size() >= 2 && samples.front().time_seconds <= target_time &&
+            samples[1].time_seconds >= target_time) {
+            const double t0 = samples.front().time_seconds;
+            const double t1 = samples[1].time_seconds;
+            const float alpha =
+                static_cast<float>(std::clamp((target_time - t0) / std::max(0.00001, t1 - t0), 0.0, 1.0));
+            updated_fire_wave_centers[segment.id] = Vector2Lerp(samples.front().pos, samples[1].pos, alpha);
+        } else {
+            updated_fire_wave_centers[segment.id] = samples.back().pos;
+        }
+    }
+    render_fire_wave_center_positions_.swap(updated_fire_wave_centers);
 }
 
 void GameApp::UpdateDamageFlashVisuals(float dt) {
@@ -5753,25 +5833,6 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         current_fire_spirit_ids.insert(spirit.id);
         if (const auto previous_it = previous_fire_spirits_by_id.find(spirit.id);
             previous_it != previous_fire_spirits_by_id.end()) {
-            const bool keep_local_projectile_runtime =
-                !network_manager_.IsHost() && previous_it->second.alive &&
-                previous_it->second.state == FireSpiritState::Projectile;
-            if (keep_local_projectile_runtime) {
-                spirit.pos = previous_it->second.pos;
-                spirit.vel = previous_it->second.vel;
-                spirit.target_world = previous_it->second.target_world;
-                spirit.launch_world = previous_it->second.launch_world;
-                spirit.impact_world = previous_it->second.impact_world;
-                spirit.launch_time_seconds = previous_it->second.launch_time_seconds;
-                spirit.impact_time_seconds = previous_it->second.impact_time_seconds;
-                spirit.travel_duration_seconds = previous_it->second.travel_duration_seconds;
-                spirit.peak_height = previous_it->second.peak_height;
-                spirit.projectile_animation_time = previous_it->second.projectile_animation_time;
-                spirit.alive = true;
-                if (spirit.state != FireSpiritState::Projectile) {
-                    spirit.state = FireSpiritState::Projectile;
-                }
-            }
             const bool previous_has_trail =
                 previous_it->second.state == FireSpiritState::Projectile || previous_it->second.state == FireSpiritState::Dead;
             const bool current_has_trail =
@@ -5789,21 +5850,26 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 }
             }
         }
+        if (!network_manager_.IsHost()) {
+            Vector2 sample_pos = spirit.pos;
+            if (spirit.state == FireSpiritState::Projectile) {
+                sample_pos = EvaluateFireSpiritRenderWorld(spirit, snapshot.simulation_time_seconds);
+            }
+            auto& samples = fire_spirit_position_samples_[spirit.id];
+            samples.push_back(RemotePositionSample{now_seconds, sample_pos});
+            while (samples.size() > 32) {
+                samples.pop_front();
+            }
+        }
         state_.fire_spirits.push_back(std::move(spirit));
     }
     if (!network_manager_.IsHost()) {
-        const float simulation_time_seconds = static_cast<float>(snapshot.simulation_time_seconds);
-        for (const auto& [spirit_id, previous_spirit] : previous_fire_spirits_by_id) {
-            if (current_fire_spirit_ids.find(spirit_id) != current_fire_spirit_ids.end()) {
-                continue;
+        for (auto it = fire_spirit_position_samples_.begin(); it != fire_spirit_position_samples_.end();) {
+            if (current_fire_spirit_ids.find(it->first) == current_fire_spirit_ids.end()) {
+                it = fire_spirit_position_samples_.erase(it);
+            } else {
+                ++it;
             }
-            if (!previous_spirit.alive || previous_spirit.state != FireSpiritState::Projectile) {
-                continue;
-            }
-            if (simulation_time_seconds > previous_spirit.impact_time_seconds + 0.001f) {
-                continue;
-            }
-            state_.fire_spirits.push_back(previous_spirit);
         }
     }
     std::vector<FireWaveSegment> predicted_fire_wave_segments;
@@ -5827,6 +5893,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
     }
     state_.fire_wave_segments.clear();
+    std::unordered_set<int> current_fire_wave_segment_ids;
+    current_fire_wave_segment_ids.reserve(snapshot.fire_wave_segments.size());
     std::unordered_set<int> authoritative_fire_wave_source_ids;
     for (const auto& segment_snapshot : snapshot.fire_wave_segments) {
         FireWaveSegment segment;
@@ -5841,8 +5909,17 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         segment.duration_seconds = segment_snapshot.duration_seconds;
         segment.range_world = segment_snapshot.range_world;
         segment.alive = segment_snapshot.alive;
+        current_fire_wave_segment_ids.insert(segment.id);
         state_.fire_wave_segments.push_back(segment);
         authoritative_fire_wave_source_ids.insert(segment.source_spirit_id);
+        if (!network_manager_.IsHost()) {
+            auto& samples = fire_wave_center_position_samples_[segment.id];
+            samples.push_back(RemotePositionSample{
+                now_seconds, GetFireWaveCenterWorld(segment, static_cast<float>(snapshot.simulation_time_seconds))});
+            while (samples.size() > 32) {
+                samples.pop_front();
+            }
+        }
         if (!network_manager_.IsHost() && segment.segment_index == 0 &&
             previous_fire_wave_segment_ids.find(segment.id) == previous_fire_wave_segment_ids.end() &&
             predicted_fire_wave_source_ids.find(segment.source_spirit_id) == predicted_fire_wave_source_ids.end()) {
@@ -5860,6 +5937,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 continue;
             }
             state_.fire_wave_segments.push_back(predicted_segment);
+        }
+        for (auto it = fire_wave_center_position_samples_.begin(); it != fire_wave_center_position_samples_.end();) {
+            if (current_fire_wave_segment_ids.find(it->first) == current_fire_wave_segment_ids.end()) {
+                it = fire_wave_center_position_samples_.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
     state_.embers_tile_modifiers.clear();
@@ -8932,7 +9016,10 @@ void GameApp::UpdateFireSpiritTrail(FireSpirit& spirit, float dt, float simulati
         return;
     }
 
-    const Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, simulation_time_seconds);
+    Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, simulation_time_seconds);
+    if (!network_manager_.IsHost()) {
+        render_world = GetRenderFireSpiritPosition(spirit.id, render_world);
+    }
     if (!spirit.has_last_trail_sample_world) {
         spirit.last_trail_sample_world = render_world;
         spirit.has_last_trail_sample_world = true;
@@ -13668,7 +13755,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         if (!segment.alive) {
             continue;
         }
-        const Vector2 center = GetFireWaveCenterWorld(segment, fire_wave_sim_time);
+        const Vector2 center =
+            GetRenderFireWaveCenterPosition(segment.id, GetFireWaveCenterWorld(segment, fire_wave_sim_time));
         if (!point_visible(center) && !point_visible(segment.origin_world)) {
             continue;
         }
@@ -14281,7 +14369,11 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 if (!segment.alive) {
                     break;
                 }
-                const float progress = GetFireWaveProgress(segment, GetFireSpiritSimTimeSeconds());
+                const Vector2 render_center = GetRenderFireWaveCenterPosition(
+                    segment.id, GetFireWaveCenterWorld(segment, GetFireSpiritSimTimeSeconds()));
+                const float progress =
+                    std::clamp(Vector2Distance(segment.origin_world, render_center) / std::max(0.001f, segment.range_world),
+                               0.0f, 1.0f);
                 Rectangle src = sprite_metadata_128x128_.GetFrame("fire_wave", "default", progress);
                 int frame_count = 0;
                 float fps = 1.0f;
@@ -14311,7 +14403,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 const Rectangle src =
                     InsetSourceRect(sprite_metadata_.GetFrame("fire_spirit_idle", "default", render_time_seconds_),
                                     Constants::kAtlasSampleInsetPixels);
-                Rectangle dst = {spirit.pos.x - 16.0f, spirit.pos.y - 16.0f, 32.0f, 32.0f};
+                const Vector2 render_world = GetRenderFireSpiritPosition(spirit.id, spirit.pos);
+                Rectangle dst = {render_world.x - 16.0f, render_world.y - 16.0f, 32.0f, 32.0f};
                 DrawTexturePro(texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
                 break;
             }
@@ -14412,7 +14505,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                     !sprite_metadata_.HasAnimation("fire_spirit_projectile")) {
                     break;
                 }
-                const Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, GetFireSpiritSimTimeSeconds());
+                const Vector2 render_world = GetRenderFireSpiritPosition(
+                    spirit.id, EvaluateFireSpiritRenderWorld(spirit, GetFireSpiritSimTimeSeconds()));
                 Vector2 travel_dir = Vector2Subtract(spirit.impact_world, spirit.launch_world);
                 if (Vector2LengthSqr(travel_dir) <= 0.0001f) {
                     travel_dir = {1.0f, 0.0f};
@@ -14508,13 +14602,14 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 Constants::kFireSpiritTrailEnableDeadLinger && spirit.state == FireSpiritState::Dead &&
                 !spirit.trail_samples.empty();
             if (spirit.state == FireSpiritState::Idle) {
-                if (!point_visible(spirit.pos) || !sprite_metadata_.HasAnimation("fire_spirit_idle")) {
+                const Vector2 render_world = GetRenderFireSpiritPosition(spirit.id, spirit.pos);
+                if (!point_visible(render_world) || !sprite_metadata_.HasAnimation("fire_spirit_idle")) {
                     continue;
                 }
                 const Rectangle src =
                     InsetSourceRect(sprite_metadata_.GetFrame("fire_spirit_idle", "default", render_time_seconds_),
                                     Constants::kAtlasSampleInsetPixels);
-                Rectangle dst = {spirit.pos.x - 16.0f, spirit.pos.y - 16.0f, 32.0f, 32.0f};
+                Rectangle dst = {render_world.x - 16.0f, render_world.y - 16.0f, 32.0f, 32.0f};
                 DrawTexturePro(texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
                 continue;
             }
@@ -14522,7 +14617,8 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 continue;
             }
 
-            const Vector2 render_world = EvaluateFireSpiritRenderWorld(spirit, fire_spirit_sim_time);
+            const Vector2 render_world =
+                GetRenderFireSpiritPosition(spirit.id, EvaluateFireSpiritRenderWorld(spirit, fire_spirit_sim_time));
             if (!point_visible(render_world)) {
                 continue;
             }

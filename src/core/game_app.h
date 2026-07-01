@@ -357,6 +357,8 @@ class GameApp {
     void UpdateEmbersLoopAudio();
     void UpdateLocalFootstepAudio();
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
+    Vector2 GetRenderFireSpiritPosition(int spirit_id, Vector2 fallback) const;
+    Vector2 GetRenderFireWaveCenterPosition(int segment_id, Vector2 fallback) const;
     const ActiveModularAttackVisual* FindActiveModularAttackVisual(int player_id) const;
     float GetPlayerLockedMeleeAimRadians(const Player& player) const;
     float GetPlayerAttackVisualRotationDegrees(const Player& player) const;
@@ -545,6 +547,8 @@ class GameApp {
     };
     std::unordered_map<int, std::deque<RemotePositionSample>> remote_position_samples_;
     std::unordered_map<int, std::deque<RemotePositionSample>> grappling_head_position_samples_;
+    std::unordered_map<int, std::deque<RemotePositionSample>> fire_spirit_position_samples_;
+    std::unordered_map<int, std::deque<RemotePositionSample>> fire_wave_center_position_samples_;
     std::deque<ClientInputMessage> pending_local_prediction_inputs_;
 
     int local_input_tick_ = 0;
@@ -555,6 +559,8 @@ class GameApp {
     double snapshot_accumulator_ = 0.0;
     double lobby_broadcast_accumulator_ = 0.0;
     int winning_team_ = -1;
+    std::unordered_map<int, Vector2> render_fire_spirit_positions_;
+    std::unordered_map<int, Vector2> render_fire_wave_center_positions_;
 
     char player_name_buffer_[64] = {};
     char join_ip_buffer_[64] = "127.0.0.1";
