@@ -361,6 +361,8 @@ class GameApp {
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
     Vector2 GetRenderFireSpiritPosition(int spirit_id, Vector2 fallback) const;
     Vector2 GetRenderFireWaveCenterPosition(int segment_id, Vector2 fallback) const;
+    float GetRemoteFireSpiritVisualSimulationTime(int spirit_id, float fallback_simulation_time_seconds) const;
+    float GetRemoteFireWaveVisualSimulationTime(int source_spirit_id, float fallback_simulation_time_seconds) const;
     void ApplyRemoteFireSpiritLaunchVisual(FireSpirit& spirit, float simulation_time_seconds) const;
     bool TryGetRemoteFireSpiritLaunchVisual(int spirit_id, FireSpiritLaunchMessage* out_message) const;
     bool TryGetRemoteFireWaveStartVisual(int source_spirit_id, FireWaveStartMessage* out_message) const;
@@ -553,10 +555,12 @@ class GameApp {
     struct RemoteFireSpiritLaunchVisual {
         FireSpiritLaunchMessage message;
         bool snapshot_confirmed = false;
+        double local_start_time_seconds = 0.0;
     };
     struct RemoteFireWaveStartVisual {
         FireWaveStartMessage message;
         bool snapshot_confirmed = false;
+        double local_start_time_seconds = 0.0;
     };
     std::unordered_map<int, std::deque<RemotePositionSample>> remote_position_samples_;
     std::unordered_map<int, std::deque<RemotePositionSample>> grappling_head_position_samples_;

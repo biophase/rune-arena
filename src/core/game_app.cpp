@@ -3450,7 +3450,14 @@ Vector2 GameApp::GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallbac
 }
 
 Vector2 GameApp::GetRenderFireSpiritPosition(int spirit_id, Vector2 fallback) const {
-    if (remote_fire_spirit_launch_visuals_.find(spirit_id) != remote_fire_spirit_launch_visuals_.end()) {
+    if (const auto it = remote_fire_spirit_launch_visuals_.find(spirit_id);
+        it != remote_fire_spirit_launch_visuals_.end()) {
+        auto spirit_it = std::find_if(state_.fire_spirits.begin(), state_.fire_spirits.end(),
+                                      [&](const FireSpirit& spirit) { return spirit.id == spirit_id; });
+        if (spirit_it != state_.fire_spirits.end()) {
+            return EvaluateFireSpiritRenderWorld(*spirit_it,
+                                                 GetRemoteFireSpiritVisualSimulationTime(spirit_id, spirit_it->launch_time_seconds));
+        }
         return fallback;
     }
     auto it = render_fire_spirit_positions_.find(spirit_id);
@@ -3465,7 +3472,8 @@ Vector2 GameApp::GetRenderFireWaveCenterPosition(int segment_id, Vector2 fallbac
                                    [&](const FireWaveSegment& segment) { return segment.id == segment_id; });
     if (segment_it != state_.fire_wave_segments.end() &&
         remote_fire_wave_start_visuals_.find(segment_it->source_spirit_id) != remote_fire_wave_start_visuals_.end()) {
-        return fallback;
+        return GetFireWaveCenterWorld(
+            *segment_it, GetRemoteFireWaveVisualSimulationTime(segment_it->source_spirit_id, segment_it->start_time_seconds));
     }
     auto it = render_fire_wave_center_positions_.find(segment_id);
     if (it != render_fire_wave_center_positions_.end()) {
@@ -3474,11 +3482,30 @@ Vector2 GameApp::GetRenderFireWaveCenterPosition(int segment_id, Vector2 fallbac
     return fallback;
 }
 
+float GameApp::GetRemoteFireSpiritVisualSimulationTime(int spirit_id, float fallback_simulation_time_seconds) const {
+    const auto it = remote_fire_spirit_launch_visuals_.find(spirit_id);
+    if (it == remote_fire_spirit_launch_visuals_.end()) {
+        return fallback_simulation_time_seconds;
+    }
+    return it->second.message.launch_time_seconds +
+           static_cast<float>(std::max(0.0, GetTime() - it->second.local_start_time_seconds));
+}
+
+float GameApp::GetRemoteFireWaveVisualSimulationTime(int source_spirit_id, float fallback_simulation_time_seconds) const {
+    const auto it = remote_fire_wave_start_visuals_.find(source_spirit_id);
+    if (it == remote_fire_wave_start_visuals_.end()) {
+        return fallback_simulation_time_seconds;
+    }
+    return it->second.message.start_time_seconds +
+           static_cast<float>(std::max(0.0, GetTime() - it->second.local_start_time_seconds));
+}
+
 void GameApp::ApplyRemoteFireSpiritLaunchVisual(FireSpirit& spirit, float simulation_time_seconds) const {
     FireSpiritLaunchMessage message;
     if (!TryGetRemoteFireSpiritLaunchVisual(spirit.id, &message)) {
         return;
     }
+    simulation_time_seconds = GetRemoteFireSpiritVisualSimulationTime(spirit.id, simulation_time_seconds);
     spirit.state = FireSpiritState::Projectile;
     spirit.launch_world = {message.launch_world_x, message.launch_world_y};
     spirit.impact_world = {message.impact_world_x, message.impact_world_y};
@@ -4343,7 +4370,17 @@ void GameApp::ConsumeRemoteFireVisualEvents() {
 
     const float simulation_time_seconds = GetFireSpiritSimTimeSeconds();
     for (const auto& message : network_manager_.ConsumeFireSpiritLaunches()) {
-        remote_fire_spirit_launch_visuals_[message.spirit_id] = {message, false};
+        auto visual_it = remote_fire_spirit_launch_visuals_.find(message.spirit_id);
+        if (visual_it == remote_fire_spirit_launch_visuals_.end()) {
+            const float elapsed = std::clamp(simulation_time_seconds - message.launch_time_seconds, 0.0f,
+                                             std::max(0.001f, message.travel_duration_seconds));
+            visual_it = remote_fire_spirit_launch_visuals_
+                            .emplace(message.spirit_id,
+                                     RemoteFireSpiritLaunchVisual{message, false, GetTime() - static_cast<double>(elapsed)})
+                            .first;
+        } else {
+            visual_it->second.message = message;
+        }
 
         FireSpirit* spirit = FindFireSpiritById(message.spirit_id);
         if (spirit == nullptr) {
@@ -4367,7 +4404,18 @@ void GameApp::ConsumeRemoteFireVisualEvents() {
     }
 
     for (const auto& message : network_manager_.ConsumeFireWaveStarts()) {
-        remote_fire_wave_start_visuals_[message.source_spirit_id] = {message, false};
+        auto visual_it = remote_fire_wave_start_visuals_.find(message.source_spirit_id);
+        if (visual_it == remote_fire_wave_start_visuals_.end()) {
+            const float elapsed = std::clamp(simulation_time_seconds - message.start_time_seconds, 0.0f,
+                                             std::max(0.001f, message.duration_seconds));
+            visual_it =
+                remote_fire_wave_start_visuals_
+                    .emplace(message.source_spirit_id,
+                             RemoteFireWaveStartVisual{message, false, GetTime() - static_cast<double>(elapsed)})
+                    .first;
+        } else {
+            visual_it->second.message = message;
+        }
         bool has_segments_for_source = false;
         for (auto& segment : state_.fire_wave_segments) {
             if (!segment.alive || segment.source_spirit_id != message.source_spirit_id) {
@@ -5962,8 +6010,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 message.launch_time_seconds = spirit.launch_time_seconds;
                 message.travel_duration_seconds = spirit.travel_duration_seconds;
                 message.peak_height = spirit.peak_height;
-                visual_it =
-                    remote_fire_spirit_launch_visuals_.emplace(spirit.id, RemoteFireSpiritLaunchVisual{message, true}).first;
+                const float elapsed = std::clamp(static_cast<float>(snapshot.simulation_time_seconds) - message.launch_time_seconds,
+                                                 0.0f, std::max(0.001f, message.travel_duration_seconds));
+                visual_it = remote_fire_spirit_launch_visuals_
+                                .emplace(spirit.id,
+                                         RemoteFireSpiritLaunchVisual{message, true,
+                                                                      GetTime() - static_cast<double>(elapsed)})
+                                .first;
             } else {
                 visual_it->second.snapshot_confirmed = true;
             }
@@ -5971,7 +6024,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         } else if (has_remote_launch_visual) {
             const float impact_time_seconds =
                 remote_launch_visual.launch_time_seconds + std::max(0.001f, remote_launch_visual.travel_duration_seconds);
-            if (static_cast<float>(snapshot.simulation_time_seconds) < impact_time_seconds - 0.0001f) {
+            if (GetRemoteFireSpiritVisualSimulationTime(spirit.id, static_cast<float>(snapshot.simulation_time_seconds)) <
+                impact_time_seconds - 0.0001f) {
                 ApplyRemoteFireSpiritLaunchVisual(spirit, static_cast<float>(snapshot.simulation_time_seconds));
             }
         }
@@ -6098,8 +6152,13 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 message.start_time_seconds = segment.start_time_seconds;
                 message.duration_seconds = segment.duration_seconds;
                 message.range_world = segment.range_world;
-                visual_it = remote_fire_wave_start_visuals_.emplace(segment.source_spirit_id,
-                                                                    RemoteFireWaveStartVisual{message, true}).first;
+                const float elapsed = std::clamp(static_cast<float>(snapshot.simulation_time_seconds) - message.start_time_seconds,
+                                                 0.0f, std::max(0.001f, message.duration_seconds));
+                visual_it = remote_fire_wave_start_visuals_
+                                .emplace(segment.source_spirit_id,
+                                         RemoteFireWaveStartVisual{message, true,
+                                                                   GetTime() - static_cast<double>(elapsed)})
+                                .first;
             } else {
                 visual_it->second.snapshot_confirmed = true;
                 segment.origin_world = {visual_it->second.message.origin_world_x, visual_it->second.message.origin_world_y};
@@ -8809,14 +8868,16 @@ void GameApp::UpdateFireSpirits(float dt) {
             FireSpiritLaunchMessage remote_launch_visual;
             const bool has_remote_launch_visual = TryGetRemoteFireSpiritLaunchVisual(spirit.id, &remote_launch_visual);
             if (has_remote_launch_visual) {
+                const float remote_simulation_time =
+                    GetRemoteFireSpiritVisualSimulationTime(spirit.id, simulation_time_seconds);
                 const float impact_time_seconds =
                     remote_launch_visual.launch_time_seconds + std::max(0.001f, remote_launch_visual.travel_duration_seconds);
-                const bool launch_is_active = simulation_time_seconds < impact_time_seconds - 0.0001f;
+                const bool launch_is_active = remote_simulation_time < impact_time_seconds - 0.0001f;
                 if (launch_is_active) {
                     spirit.alive = true;
                     spirit.state = FireSpiritState::Projectile;
-                    ApplyRemoteFireSpiritLaunchVisual(spirit, simulation_time_seconds);
-                    UpdateFireSpiritTrail(spirit, dt, simulation_time_seconds);
+                    ApplyRemoteFireSpiritLaunchVisual(spirit, remote_simulation_time);
+                    UpdateFireSpiritTrail(spirit, dt, remote_simulation_time);
                     continue;
                 }
             }
@@ -8934,7 +8995,8 @@ void GameApp::UpdateFireSpirits(float dt) {
             const float linger_seconds = Constants::kFireSpiritTrailEnableDeadLinger
                                              ? Constants::kFireSpiritTrailDeadLingerSeconds
                                              : 0.0f;
-            if (simulation_time_seconds > impact_time_seconds + linger_seconds + 0.001f) {
+            if (GetRemoteFireSpiritVisualSimulationTime(it->first, simulation_time_seconds) >
+                impact_time_seconds + linger_seconds + 0.001f) {
                 it = remote_fire_spirit_launch_visuals_.erase(it);
             } else {
                 ++it;
@@ -9195,7 +9257,8 @@ void GameApp::UpdateFireWaveSegments(float /*dt*/) {
                     return segment.alive && segment.source_spirit_id == it->first;
                 });
             const float end_time_seconds = it->second.message.start_time_seconds + it->second.message.duration_seconds;
-            if (!has_active_segment && simulation_time_seconds > end_time_seconds + 0.001f) {
+            if (!has_active_segment &&
+                GetRemoteFireWaveVisualSimulationTime(it->first, simulation_time_seconds) > end_time_seconds + 0.001f) {
                 it = remote_fire_wave_start_visuals_.erase(it);
             } else {
                 ++it;
