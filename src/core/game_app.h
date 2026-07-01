@@ -1,10 +1,12 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <deque>
 #include <future>
@@ -140,6 +142,8 @@ class GameApp {
     void UpdateRunes(float dt);
     void UpdateCastles(float dt);
     void UpdateFireSpirits(float dt);
+    void UpdateFireWaveSegments(float dt);
+    void UpdateEmbersTileModifiers(float dt);
     void UpdatePlayerStatusEffects(Player& player, float dt);
     void UpdateProjectiles(float dt);
     void UpdateExplosions(float dt);
@@ -192,6 +196,9 @@ class GameApp {
     void SpawnStormArcVisuals(const FireStormCast& cast);
     void SpawnStormArcSparkParticle(Vector2 world_pos, float visual_z);
     void SpawnFireSpiritSparkParticle(Vector2 world_pos, Vector2 travel_dir);
+    void SpawnFireWaveSegments(const FireSpirit& spirit, float start_time_seconds);
+    void ActivateEmbersTouchedByFireWaveSegment(const FireWaveSegment& segment, Vector2 center, float radius);
+    void SpawnOrRefreshEmbersTileModifier(const FireWaveSegment& segment, const GridCoord& cell);
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
                                    float idle_lifetime_seconds);
     int SpawnEarthRootsGroup(int owner_player_id, int owner_team, const GridCoord& center_cell);
@@ -265,6 +272,7 @@ class GameApp {
     void AddStunnedStatus(Player& player, float duration_seconds);
     void AddFrozenStatus(Player& player, float duration_seconds);
     void RefreshOrAddRootedStatus(Player& player, int source_id);
+    void RefreshOrAddBurningStatus(Player& player, const EmbersTileModifier& modifier);
     void SpawnIceShardDeathParticle(Vector2 position, Vector2 travel_velocity);
     void SpawnIceWaveShardSnowParticle(const Projectile& projectile);
     void SpawnFrozenStatusSnowParticle(const Player& player);
@@ -279,6 +287,9 @@ class GameApp {
     void RenderGroundMapObjects();
     void RenderParticleInstance(const Particle& particle);
     void RenderTopLayerParticles();
+    void EnsureMapObjectRenderCaches();
+    void MarkMapObjectRenderCachesDirty();
+    void RebuildMapObjectIndexLookup();
     void EnsureWorldLayerRenderTarget();
     void EnsureFireSpiritTrailRenderTarget();
     void EnsureShadowLayerRenderTarget();
@@ -331,6 +342,7 @@ class GameApp {
     bool CanPlayerStartGrapplingPreview(const Player& player) const;
     void PlaySfxIfVisible(const Sound& sound, bool loaded, Vector2 world_pos) const;
     bool HasVisibleIdleFireStormDummy() const;
+    bool HasVisibleEmbers() const;
     float GetFireSpiritSimTimeSeconds() const;
     Vector2 GetFireFlowerSpiritWorldPoint(const MapObjectInstance& flower, int offset_x, int offset_y) const;
     Vector2 EvaluateFireSpiritRenderWorld(const FireSpirit& spirit, float simulation_time_seconds,
@@ -341,6 +353,7 @@ class GameApp {
     void UnloadAudioAssets();
     void UpdateAudioFrame();
     void UpdateChargingLoopAudio();
+    void UpdateEmbersLoopAudio();
     void UpdateLocalFootstepAudio();
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
     const ActiveModularAttackVisual* FindActiveModularAttackVisual(int player_id) const;
@@ -473,12 +486,18 @@ class GameApp {
     };
     std::vector<HammerImpactEffect> hammer_impact_effects_;
     std::vector<StormArcVisual> storm_arc_visuals_;
+    struct FireWaveDamageLedger {
+        std::unordered_set<int> damaged_player_ids;
+        std::unordered_set<int> damaged_object_ids;
+    };
     struct FireFlowerRuntimeState {
         float send_cooldown_remaining = 0.0f;
         float spawn_cooldown_remaining = 0.0f;
         std::vector<int> owned_spirit_ids;
     };
     std::unordered_map<int, FireFlowerRuntimeState> fire_flower_runtime_states_;
+    std::unordered_map<int, FireWaveDamageLedger> fire_wave_damage_ledgers_;
+    std::unordered_map<int, std::unordered_set<int64_t>> fire_wave_ember_activation_ledgers_;
     std::unordered_map<int, bool> fire_storm_cast_impact_triggered_;
     std::unordered_map<int, bool> fire_storm_cast_arcs_spawned_;
     std::unordered_map<int, bool> fire_storm_cast_conversion_sfx_triggered_;
@@ -508,8 +527,16 @@ class GameApp {
         size_t decoration_index = 0;
     };
     std::vector<std::vector<StaticDecorationRenderItem>> static_decoration_render_chunks_;
+    // Render caches store direct vector indices so world rendering stays O(N) instead of
+    // repeatedly resolving object ids through a linear scan.
+    std::vector<size_t> flat_map_object_indices_;
+    std::vector<size_t> ysorted_map_object_indices_;
+    std::vector<size_t> shadow_map_object_indices_;
+    // Gameplay code still addresses map objects by id, so keep one shared id->index table.
+    std::unordered_map<int, size_t> map_object_index_by_id_;
     int static_decoration_chunk_cols_ = 0;
     int static_decoration_chunk_rows_ = 0;
+    bool map_object_render_caches_dirty_ = true;
 
     struct RemotePositionSample {
         double time_seconds = 0.0;
@@ -791,7 +818,10 @@ class GameApp {
     int tree_wind_time_loc_ = -1;
     int tree_wind_sway_strength_loc_ = -1;
     int tree_wind_sway_speed_loc_ = -1;
-    int tree_wind_phase_offset_loc_ = -1;
+    int tree_wind_screen_height_loc_ = -1;
+    int tree_wind_camera_target_loc_ = -1;
+    int tree_wind_camera_offset_loc_ = -1;
+    int tree_wind_camera_zoom_loc_ = -1;
     int tree_wind_gradient_start_loc_ = -1;
     float camera_shake_time_remaining_ = 0.0f;
     Texture2D influence_zone_distance_red_from_texture_ = {};
@@ -838,6 +868,7 @@ class GameApp {
     LoadedSfx sfx_player_damaged_;
     LoadedSfx sfx_item_pickup_;
     LoadedSfx sfx_drink_potion_;
+    LoadedSfx sfx_fire_spirit_launch_;
     LoadedSfx sfx_fire_storm_cast_;
     LoadedSfx sfx_fire_storm_impact_;
     LoadedSfx sfx_static_upgrade_;
@@ -875,6 +906,17 @@ class GameApp {
     int charging_loop_secondary_index_ = 1;
     bool charging_loop_crossfade_active_ = false;
     float charging_loop_crossfade_elapsed_seconds_ = 0.0f;
+    Sound embers_loop_base_sound_ = {};
+    bool has_embers_loop_base_sound_ = false;
+    std::array<Sound, 2> embers_loop_instances_{};
+    std::array<bool, 2> has_embers_loop_instances_ = {false, false};
+    std::array<float, 2> embers_loop_elapsed_seconds_ = {0.0f, 0.0f};
+    float embers_loop_duration_seconds_ = 0.0f;
+    float embers_loop_gain_ = 0.0f;
+    int embers_loop_primary_index_ = 0;
+    int embers_loop_secondary_index_ = 1;
+    bool embers_loop_crossfade_active_ = false;
+    float embers_loop_crossfade_elapsed_seconds_ = 0.0f;
     Vector2 local_footstep_prev_pos_ = {0.0f, 0.0f};
     bool has_local_footstep_prev_pos_ = false;
     float local_footstep_distance_accumulator_ = 0.0f;

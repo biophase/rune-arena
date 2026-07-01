@@ -4,6 +4,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -436,6 +437,42 @@ float EvaluateFireSpiritArcHeight(float normalized_time, float peak_height) {
     return std::sin(t * PI) * std::max(0.0f, peak_height);
 }
 
+float GetFireWaveHalfAngleRadians() {
+    return Constants::kFireWaveHalfAngleDegrees * DEG2RAD;
+}
+
+float GetFireWaveProgress(const FireWaveSegment& segment, float simulation_time_seconds) {
+    return std::clamp((simulation_time_seconds - segment.start_time_seconds) /
+                          std::max(0.001f, segment.duration_seconds),
+                      0.0f, 1.0f);
+}
+
+float GetFireWaveElapsedSeconds(const FireWaveSegment& segment, float simulation_time_seconds) {
+    return std::max(0.0f, simulation_time_seconds - segment.start_time_seconds);
+}
+
+float GetFireWaveTravelDistance(const FireWaveSegment& segment, float simulation_time_seconds) {
+    return segment.range_world * GetFireWaveProgress(segment, simulation_time_seconds);
+}
+
+float GetFireWaveRadiusAtDistance(float travel_distance) {
+    return std::max(0.0f, travel_distance * std::tan(GetFireWaveHalfAngleRadians()));
+}
+
+Vector2 GetFireWaveCenterWorld(const FireWaveSegment& segment, float simulation_time_seconds) {
+    const float distance = GetFireWaveTravelDistance(segment, simulation_time_seconds);
+    const Vector2 dir = {std::cos(segment.direction_radians), std::sin(segment.direction_radians)};
+    return Vector2Add(segment.origin_world, Vector2Scale(dir, distance));
+}
+
+int64_t MakeCellKey(const GridCoord& cell) {
+    return (static_cast<int64_t>(cell.x) << 32) ^ static_cast<uint32_t>(cell.y);
+}
+
+bool IsEmbersWalkableTile(TileType tile) {
+    return tile == TileType::Grass || tile == TileType::SpawnPoint || tile == TileType::StoneTiles;
+}
+
 struct OccluderRevealCircle {
     Vector2 screen_center = {0.0f, 0.0f};
     float inner_radius_px = 0.0f;
@@ -793,6 +830,8 @@ StatusEffectUiSpec GetStatusEffectUiSpec(StatusEffectType type) {
             return {"earth_rune_rooted_idle", false};
         case StatusEffectType::Frozen:
             return {"ice_shard_projectile_idle", false};
+        case StatusEffectType::Burning:
+            return {"embers_idle", false};
     }
     return {"altar_rune_slot_generic", true};
 }
@@ -1952,7 +1991,10 @@ void GameApp::LoadRenderShaders() {
             tree_wind_time_loc_ = GetShaderLocation(tree_wind_shader_, "uTime");
             tree_wind_sway_strength_loc_ = GetShaderLocation(tree_wind_shader_, "uSwayStrengthPixels");
             tree_wind_sway_speed_loc_ = GetShaderLocation(tree_wind_shader_, "uSwaySpeed");
-            tree_wind_phase_offset_loc_ = GetShaderLocation(tree_wind_shader_, "uPhaseOffset");
+            tree_wind_screen_height_loc_ = GetShaderLocation(tree_wind_shader_, "uScreenHeight");
+            tree_wind_camera_target_loc_ = GetShaderLocation(tree_wind_shader_, "uCameraTarget");
+            tree_wind_camera_offset_loc_ = GetShaderLocation(tree_wind_shader_, "uCameraOffset");
+            tree_wind_camera_zoom_loc_ = GetShaderLocation(tree_wind_shader_, "uCameraZoom");
             tree_wind_gradient_start_loc_ = GetShaderLocation(tree_wind_shader_, "uGradientStart");
         }
     }
@@ -2092,7 +2134,10 @@ void GameApp::UnloadRenderShaders() {
     tree_wind_time_loc_ = -1;
     tree_wind_sway_strength_loc_ = -1;
     tree_wind_sway_speed_loc_ = -1;
-    tree_wind_phase_offset_loc_ = -1;
+    tree_wind_screen_height_loc_ = -1;
+    tree_wind_camera_target_loc_ = -1;
+    tree_wind_camera_offset_loc_ = -1;
+    tree_wind_camera_zoom_loc_ = -1;
     tree_wind_gradient_start_loc_ = -1;
 }
 
@@ -2309,16 +2354,22 @@ bool GameApp::DrawWindAnimatedMapObject(const MapObjectInstance& object, const O
     }
 
     const float frame_rect[4] = {src.x, src.y, src.width, src.height};
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float camera_target[2] = {camera_.target.x, camera_.target.y};
+    const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+    const float camera_zoom = camera_.zoom;
     const float time_seconds = render_time_seconds_;
     const float sway_strength = proto.wind_strength_pixels;
     const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
-    const float phase_offset = GetMapObjectWindPhaseOffset(object);
     const float gradient_start = proto.wind_gradient_start;
     SetShaderValueV(tree_wind_shader_, tree_wind_frame_rect_loc_, frame_rect, SHADER_UNIFORM_VEC4, 1);
+    SetShaderValue(tree_wind_shader_, tree_wind_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(tree_wind_shader_, tree_wind_camera_target_loc_, camera_target, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(tree_wind_shader_, tree_wind_camera_offset_loc_, camera_offset, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(tree_wind_shader_, tree_wind_camera_zoom_loc_, &camera_zoom, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_wind_shader_, tree_wind_phase_offset_loc_, &phase_offset, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
 
     BeginShaderMode(tree_wind_shader_);
@@ -2364,16 +2415,22 @@ bool GameApp::RenderModularTreeShadow(const MapObjectInstance& object, const Obj
     }
 
     const float frame_rect[4] = {src.x, src.y, src.width, src.height};
+    const float screen_height = static_cast<float>(GetScreenHeight());
+    const float camera_target[2] = {camera_.target.x, camera_.target.y};
+    const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+    const float camera_zoom = camera_.zoom;
     const float time_seconds = render_time_seconds_;
     const float sway_strength = proto.wind_strength_pixels > 0.0f ? proto.wind_strength_pixels : Constants::kTreeWindSwayStrengthPixels;
     const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
-    const float phase_offset = GetMapObjectWindPhaseOffset(object);
     const float gradient_start = proto.wind_gradient_start;
     SetShaderValueV(tree_wind_shader_, tree_wind_frame_rect_loc_, frame_rect, SHADER_UNIFORM_VEC4, 1);
+    SetShaderValue(tree_wind_shader_, tree_wind_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+    SetShaderValueV(tree_wind_shader_, tree_wind_camera_target_loc_, camera_target, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValueV(tree_wind_shader_, tree_wind_camera_offset_loc_, camera_offset, SHADER_UNIFORM_VEC2, 1);
+    SetShaderValue(tree_wind_shader_, tree_wind_camera_zoom_loc_, &camera_zoom, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(tree_wind_shader_, tree_wind_phase_offset_loc_, &phase_offset, SHADER_UNIFORM_FLOAT);
     SetShaderValue(tree_wind_shader_, tree_wind_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
 
     BeginShaderMode(tree_wind_shader_);
@@ -2717,6 +2774,7 @@ void GameApp::LoadAudioAssets() {
     load_sfx(sfx_player_damaged_, Constants::kSfxPlayerDamagedPath, Constants::kSfxVolumePlayerDamaged);
     load_sfx(sfx_item_pickup_, Constants::kSfxItemPickupPath, Constants::kSfxVolumeItemPickup);
     load_sfx(sfx_drink_potion_, Constants::kSfxDrinkPotionPath, Constants::kSfxVolumeDrinkPotion);
+    load_sfx(sfx_fire_spirit_launch_, Constants::kSfxFireSpiritLaunchPath, Constants::kSfxVolumeFireSpiritLaunch);
     load_sfx(sfx_fire_storm_cast_, Constants::kSfxFireStormCastPath, Constants::kSfxVolumeFireStormCast);
     load_sfx(sfx_fire_storm_impact_, Constants::kSfxFireStormImpactPath, Constants::kSfxVolumeFireStormImpact);
     load_sfx(sfx_static_upgrade_, Constants::kSfxStaticUpgradePath, Constants::kSfxVolumeStaticUpgrade);
@@ -2791,6 +2849,30 @@ void GameApp::LoadAudioAssets() {
             }
         }
     }
+    {
+        const std::string resolved = ResolveRuntimePath(Constants::kEmbersLoopPath);
+        if (FileExists(resolved.c_str())) {
+            embers_loop_base_sound_ = LoadSound(resolved.c_str());
+            has_embers_loop_base_sound_ = IsLoadedSound(embers_loop_base_sound_);
+            if (has_embers_loop_base_sound_) {
+                if (embers_loop_base_sound_.stream.sampleRate > 0) {
+                    embers_loop_duration_seconds_ =
+                        static_cast<float>(embers_loop_base_sound_.frameCount) /
+                        static_cast<float>(embers_loop_base_sound_.stream.sampleRate);
+                } else {
+                    embers_loop_duration_seconds_ = 0.0f;
+                }
+                SetSoundVolume(embers_loop_base_sound_, 0.0f);
+                for (size_t i = 0; i < embers_loop_instances_.size(); ++i) {
+                    embers_loop_instances_[i] = LoadSoundAlias(embers_loop_base_sound_);
+                    has_embers_loop_instances_[i] = IsSoundValid(embers_loop_instances_[i]);
+                    if (has_embers_loop_instances_[i]) {
+                        SetSoundVolume(embers_loop_instances_[i], 0.0f);
+                    }
+                }
+            }
+        }
+    }
 
     const std::string bgm_path = ResolveRuntimePath(Constants::kBgmForestDayPath);
     if (FileExists(bgm_path.c_str())) {
@@ -2836,6 +2918,7 @@ void GameApp::UnloadAudioAssets() {
     unload_sfx(sfx_player_damaged_);
     unload_sfx(sfx_item_pickup_);
     unload_sfx(sfx_drink_potion_);
+    unload_sfx(sfx_fire_spirit_launch_);
     unload_sfx(sfx_fire_storm_cast_);
     unload_sfx(sfx_fire_storm_impact_);
     unload_sfx(sfx_static_upgrade_);
@@ -2883,6 +2966,18 @@ void GameApp::UnloadAudioAssets() {
         UnloadSound(charging_loop_base_sound_);
         has_charging_loop_base_sound_ = false;
     }
+    for (size_t i = 0; i < embers_loop_instances_.size(); ++i) {
+        if (!has_embers_loop_instances_[i]) {
+            continue;
+        }
+        StopSound(embers_loop_instances_[i]);
+        UnloadSoundAlias(embers_loop_instances_[i]);
+        has_embers_loop_instances_[i] = false;
+    }
+    if (has_embers_loop_base_sound_) {
+        UnloadSound(embers_loop_base_sound_);
+        has_embers_loop_base_sound_ = false;
+    }
 
     if (has_bgm_forest_day_) {
         StopMusicStream(bgm_forest_day_);
@@ -2903,6 +2998,13 @@ void GameApp::UnloadAudioAssets() {
     charging_loop_crossfade_elapsed_seconds_ = 0.0f;
     charging_loop_elapsed_seconds_ = {0.0f, 0.0f};
     charging_loop_duration_seconds_ = 0.0f;
+    embers_loop_gain_ = 0.0f;
+    embers_loop_primary_index_ = 0;
+    embers_loop_secondary_index_ = 1;
+    embers_loop_crossfade_active_ = false;
+    embers_loop_crossfade_elapsed_seconds_ = 0.0f;
+    embers_loop_elapsed_seconds_ = {0.0f, 0.0f};
+    embers_loop_duration_seconds_ = 0.0f;
 }
 
 void GameApp::UpdateAudioFrame() {
@@ -2911,6 +3013,7 @@ void GameApp::UpdateAudioFrame() {
     }
     UpdateLocalFootstepAudio();
     UpdateChargingLoopAudio();
+    UpdateEmbersLoopAudio();
     const bool should_play_outside_game_bgm = app_screen_ != AppScreen::InMatch;
     const bool should_play_in_match_bgm = app_screen_ == AppScreen::InMatch;
 
@@ -3170,6 +3273,127 @@ void GameApp::UpdateChargingLoopAudio() {
     }
 }
 
+void GameApp::UpdateEmbersLoopAudio() {
+    if (!has_embers_loop_instances_[0] && !has_embers_loop_instances_[1]) {
+        return;
+    }
+
+    const float dt = GetFrameTime();
+    for (size_t i = 0; i < embers_loop_instances_.size(); ++i) {
+        if (has_embers_loop_instances_[i] && IsSoundPlaying(embers_loop_instances_[i])) {
+            embers_loop_elapsed_seconds_[i] += dt;
+        }
+    }
+
+    const float target_gain = (app_screen_ == AppScreen::InMatch && HasVisibleEmbers()) ? 1.0f : 0.0f;
+    const float fade_speed = (Constants::kEmbersLoopFadeSeconds > 0.0f)
+                                 ? (1.0f / Constants::kEmbersLoopFadeSeconds)
+                                 : 1000.0f;
+    if (embers_loop_gain_ < target_gain) {
+        embers_loop_gain_ = std::min(target_gain, embers_loop_gain_ + dt * fade_speed);
+    } else if (embers_loop_gain_ > target_gain) {
+        embers_loop_gain_ = std::max(target_gain, embers_loop_gain_ - dt * fade_speed);
+    }
+
+    const auto stop_instance = [&](int index) {
+        if (index < 0 || index >= static_cast<int>(embers_loop_instances_.size()) ||
+            !has_embers_loop_instances_[static_cast<size_t>(index)]) {
+            return;
+        }
+        if (IsSoundPlaying(embers_loop_instances_[static_cast<size_t>(index)])) {
+            StopSound(embers_loop_instances_[static_cast<size_t>(index)]);
+        }
+        embers_loop_elapsed_seconds_[static_cast<size_t>(index)] = 0.0f;
+        SetSoundVolume(embers_loop_instances_[static_cast<size_t>(index)], 0.0f);
+    };
+    const auto start_instance = [&](int index) {
+        if (index < 0 || index >= static_cast<int>(embers_loop_instances_.size()) ||
+            !has_embers_loop_instances_[static_cast<size_t>(index)]) {
+            return false;
+        }
+        StopSound(embers_loop_instances_[static_cast<size_t>(index)]);
+        embers_loop_elapsed_seconds_[static_cast<size_t>(index)] = 0.0f;
+        PlaySound(embers_loop_instances_[static_cast<size_t>(index)]);
+        return true;
+    };
+
+    if (target_gain > 0.001f) {
+        const bool primary_playing =
+            has_embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)] &&
+            IsSoundPlaying(embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)]);
+        const bool secondary_playing =
+            has_embers_loop_instances_[static_cast<size_t>(embers_loop_secondary_index_)] &&
+            IsSoundPlaying(embers_loop_instances_[static_cast<size_t>(embers_loop_secondary_index_)]);
+        if (!primary_playing && !secondary_playing) {
+            embers_loop_primary_index_ = 0;
+            embers_loop_secondary_index_ = 1;
+            embers_loop_crossfade_active_ = false;
+            embers_loop_crossfade_elapsed_seconds_ = 0.0f;
+            start_instance(embers_loop_primary_index_);
+        }
+    }
+
+    if (embers_loop_crossfade_active_) {
+        embers_loop_crossfade_elapsed_seconds_ += dt;
+        const float crossfade_t =
+            (Constants::kEmbersLoopCrossfadeSeconds > 0.0f)
+                ? std::clamp(embers_loop_crossfade_elapsed_seconds_ / Constants::kEmbersLoopCrossfadeSeconds, 0.0f, 1.0f)
+                : 1.0f;
+        const float primary_mix = 1.0f - crossfade_t;
+        const float secondary_mix = crossfade_t;
+        if (has_embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)]) {
+            SetSoundVolume(embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)],
+                           Constants::kEmbersLoopVolume * embers_loop_gain_ * primary_mix);
+        }
+        if (has_embers_loop_instances_[static_cast<size_t>(embers_loop_secondary_index_)]) {
+            SetSoundVolume(embers_loop_instances_[static_cast<size_t>(embers_loop_secondary_index_)],
+                           Constants::kEmbersLoopVolume * embers_loop_gain_ * secondary_mix);
+        }
+        if (crossfade_t >= 0.999f) {
+            stop_instance(embers_loop_primary_index_);
+            std::swap(embers_loop_primary_index_, embers_loop_secondary_index_);
+            embers_loop_crossfade_active_ = false;
+            embers_loop_crossfade_elapsed_seconds_ = 0.0f;
+        }
+    } else {
+        if (has_embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)]) {
+            SetSoundVolume(embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)],
+                           Constants::kEmbersLoopVolume * embers_loop_gain_);
+        }
+        if (has_embers_loop_instances_[static_cast<size_t>(embers_loop_secondary_index_)]) {
+            SetSoundVolume(embers_loop_instances_[static_cast<size_t>(embers_loop_secondary_index_)], 0.0f);
+        }
+
+        if (embers_loop_gain_ > 0.001f &&
+            has_embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)]) {
+            const float loop_length = embers_loop_duration_seconds_;
+            const float crossfade_window = std::max(0.02f, Constants::kEmbersLoopCrossfadeSeconds);
+            if (loop_length > crossfade_window &&
+                IsSoundPlaying(embers_loop_instances_[static_cast<size_t>(embers_loop_primary_index_)]) &&
+                embers_loop_elapsed_seconds_[static_cast<size_t>(embers_loop_primary_index_)] >=
+                    loop_length - crossfade_window) {
+                const int next_index = embers_loop_secondary_index_;
+                if (has_embers_loop_instances_[static_cast<size_t>(next_index)] &&
+                    !IsSoundPlaying(embers_loop_instances_[static_cast<size_t>(next_index)])) {
+                    if (start_instance(next_index)) {
+                        embers_loop_crossfade_active_ = true;
+                        embers_loop_crossfade_elapsed_seconds_ = 0.0f;
+                    }
+                }
+            }
+        }
+    }
+
+    if (embers_loop_gain_ <= 0.001f) {
+        stop_instance(embers_loop_primary_index_);
+        stop_instance(embers_loop_secondary_index_);
+        embers_loop_primary_index_ = 0;
+        embers_loop_secondary_index_ = 1;
+        embers_loop_crossfade_active_ = false;
+        embers_loop_crossfade_elapsed_seconds_ = 0.0f;
+    }
+}
+
 void GameApp::UpdateLocalFootstepAudio() {
     if (state_.local_player_id < 0) {
         has_local_footstep_prev_pos_ = false;
@@ -3311,6 +3535,18 @@ bool GameApp::HasVisibleIdleFireStormDummy() const {
             continue;
         }
         if (IsWorldPointInsideCameraView(CellToWorldCenter(dummy.cell))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool GameApp::HasVisibleEmbers() const {
+    for (const auto& modifier : state_.embers_tile_modifiers) {
+        if (!modifier.alive) {
+            continue;
+        }
+        if (IsWorldPointInsideCameraView(CellToWorldCenter(modifier.cell))) {
             return true;
         }
     }
@@ -3967,6 +4203,8 @@ void GameApp::UpdateMatch(float dt) {
         }
         UpdateGrapplingHooks(dt);
         UpdateFireSpirits(dt);
+        UpdateFireWaveSegments(dt);
+        UpdateEmbersTileModifiers(dt);
         UpdateClientVisualSmoothing(dt);
         UpdateDamagePopups(dt);
     }
@@ -4718,10 +4956,14 @@ void GameApp::StartMatchAsHost() {
     state_.players.clear();
     state_.runes.clear();
     state_.projectiles.clear();
+    state_.fire_spirits.clear();
     state_.explosions.clear();
     state_.lightning_effects.clear();
     state_.ice_walls.clear();
+    state_.fire_wave_segments.clear();
+    state_.embers_tile_modifiers.clear();
     state_.map_objects.clear();
+    map_object_index_by_id_.clear();
     state_.particles.clear();
     state_.castles.clear();
     state_.next_entity_id = 1;
@@ -4731,6 +4973,9 @@ void GameApp::StartMatchAsHost() {
     remote_position_samples_.clear();
     pending_local_prediction_inputs_.clear();
     player_attached_animations_.clear();
+    fire_wave_damage_ledgers_.clear();
+    fire_wave_ember_activation_ledgers_.clear();
+    fire_flower_runtime_states_.clear();
     console_entries_.clear();
     chat_input_active_ = false;
     chat_input_buffer_.clear();
@@ -5213,6 +5458,11 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     for (const auto& spirit : state_.fire_spirits) {
         previous_fire_spirits_by_id.emplace(spirit.id, spirit);
     }
+    std::unordered_set<int> previous_fire_wave_segment_ids;
+    previous_fire_wave_segment_ids.reserve(state_.fire_wave_segments.size());
+    for (const auto& segment : state_.fire_wave_segments) {
+        previous_fire_wave_segment_ids.insert(segment.id);
+    }
     std::unordered_map<int, IceWallState> previous_wall_states;
     previous_wall_states.reserve(state_.ice_walls.size());
     for (const auto& wall : state_.ice_walls) {
@@ -5506,6 +5756,50 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         state_.fire_spirits.push_back(std::move(spirit));
     }
     if (!network_manager_.IsHost()) {
+        for (const auto& spirit : state_.fire_spirits) {
+            const auto previous_it = previous_fire_spirits_by_id.find(spirit.id);
+            if (previous_it == previous_fire_spirits_by_id.end()) {
+                continue;
+            }
+            if (previous_it->second.state != FireSpiritState::Projectile && spirit.state == FireSpiritState::Projectile) {
+                PlaySfxIfVisible(sfx_fire_spirit_launch_.sound, sfx_fire_spirit_launch_.loaded, spirit.launch_world);
+            }
+        }
+    }
+    state_.fire_wave_segments.clear();
+    for (const auto& segment_snapshot : snapshot.fire_wave_segments) {
+        FireWaveSegment segment;
+        segment.id = segment_snapshot.id;
+        segment.source_spirit_id = segment_snapshot.source_spirit_id;
+        segment.owner_player_id = segment_snapshot.owner_player_id;
+        segment.owner_team = segment_snapshot.owner_team;
+        segment.segment_index = segment_snapshot.segment_index;
+        segment.origin_world = {segment_snapshot.origin_world_x, segment_snapshot.origin_world_y};
+        segment.direction_radians = segment_snapshot.direction_radians;
+        segment.start_time_seconds = segment_snapshot.start_time_seconds;
+        segment.duration_seconds = segment_snapshot.duration_seconds;
+        segment.range_world = segment_snapshot.range_world;
+        segment.alive = segment_snapshot.alive;
+        state_.fire_wave_segments.push_back(segment);
+        if (!network_manager_.IsHost() && segment.segment_index == 0 &&
+            previous_fire_wave_segment_ids.find(segment.id) == previous_fire_wave_segment_ids.end()) {
+            PlaySfxIfVisible(sfx_fire_storm_impact_.sound, sfx_fire_storm_impact_.loaded, segment.origin_world);
+        }
+    }
+    state_.embers_tile_modifiers.clear();
+    for (const auto& modifier_snapshot : snapshot.embers_tile_modifiers) {
+        EmbersTileModifier modifier;
+        modifier.id = modifier_snapshot.id;
+        modifier.source_spirit_id = modifier_snapshot.source_spirit_id;
+        modifier.owner_player_id = modifier_snapshot.owner_player_id;
+        modifier.owner_team = modifier_snapshot.owner_team;
+        modifier.cell = {modifier_snapshot.cell_x, modifier_snapshot.cell_y};
+        modifier.remaining_seconds = modifier_snapshot.remaining_seconds;
+        modifier.total_seconds = modifier_snapshot.total_seconds;
+        modifier.alive = modifier_snapshot.alive;
+        state_.embers_tile_modifiers.push_back(modifier);
+    }
+    if (!network_manager_.IsHost()) {
         std::unordered_set<int> current_projectile_ids;
         current_projectile_ids.reserve(state_.projectiles.size());
         bool played_ice_wave_cast = false;
@@ -5632,6 +5926,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
     }
     state_.map_objects.clear();
+    map_object_index_by_id_.clear();
     for (const auto& object_snapshot : snapshot.map_objects) {
         MapObjectInstance object;
         object.id = object_snapshot.id;
@@ -5652,6 +5947,8 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
         state_.map_objects.push_back(object);
     }
+    RebuildMapObjectIndexLookup();
+    MarkMapObjectRenderCachesDirty();
     RebuildAltarsFromMapObjects();
     state_.castles.clear();
     for (const auto& castle_snapshot : snapshot.castles) {
@@ -5683,6 +5980,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
             current_object_ids.insert(object.id);
             const auto previous_state_it = previous_object_states.find(object.id);
             if (previous_state_it == previous_object_states.end()) {
+                if (object.prototype_id == "fire_flower" && object.state == MapObjectState::Spawning) {
+                    PlaySfxIfVisible(sfx_earth_rune_launch_.sound, sfx_earth_rune_launch_.loaded, CellToWorldCenter(object.cell));
+                }
                 if (object.prototype_id == "catalyst_charge_pickup") {
                     const auto spawn_altar_charge_vfx = [&](const GridCoord& cell) {
                         Particle rune_cast_vfx;
@@ -5715,6 +6015,10 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                     }
                 }
                 continue;
+            }
+            if (object.prototype_id == "fire_flower" && previous_state_it->second == MapObjectState::Spawning &&
+                object.state == MapObjectState::Active) {
+                PlaySfxIfVisible(sfx_earth_rune_impact_.sound, sfx_earth_rune_impact_.loaded, CellToWorldCenter(object.cell));
             }
             if (previous_state_it->second != MapObjectState::Dying && object.state == MapObjectState::Dying) {
                 PlaySfxIfVisible(sfx_vase_breaking_.sound, sfx_vase_breaking_.loaded, CellToWorldCenter(object.cell));
@@ -6020,6 +6324,12 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
     for (const auto& spirit : state_.fire_spirits) {
         max_entity_id = std::max(max_entity_id, spirit.id);
     }
+    for (const auto& segment : state_.fire_wave_segments) {
+        max_entity_id = std::max(max_entity_id, segment.id);
+    }
+    for (const auto& modifier : state_.embers_tile_modifiers) {
+        max_entity_id = std::max(max_entity_id, modifier.id);
+    }
     for (const auto& wall : state_.ice_walls) {
         max_entity_id = std::max(max_entity_id, wall.id);
     }
@@ -6087,6 +6397,12 @@ ServerSnapshotMessage GameApp::BuildHostSnapshot() {
     }
     for (const auto& spirit : state_.fire_spirits) {
         snapshot.fire_spirits.push_back(SnapshotTranslation::BuildFireSpiritSnapshot(spirit));
+    }
+    for (const auto& segment : state_.fire_wave_segments) {
+        snapshot.fire_wave_segments.push_back(SnapshotTranslation::BuildFireWaveSegmentSnapshot(segment));
+    }
+    for (const auto& modifier : state_.embers_tile_modifiers) {
+        snapshot.embers_tile_modifiers.push_back(SnapshotTranslation::BuildEmbersTileModifierSnapshot(modifier));
     }
 
     for (const auto& wall : state_.ice_walls) {
@@ -6274,6 +6590,8 @@ void GameApp::SimulateHostGameplay(float dt) {
     UpdateExplosions(dt);
     UpdateMapObjects(dt);
     UpdateFireSpirits(dt);
+    UpdateFireWaveSegments(dt);
+    UpdateEmbersTileModifiers(dt);
     UpdateRespawns(dt);
     UpdateDamagePopups(dt);
     most_kills_mode_.Update(state_, event_queue_, dt);
@@ -6508,6 +6826,12 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
     }
 
     std::unordered_map<int, int> pending_root_damage_by_source;
+    struct PendingBurnDamage {
+        int spirit_id = -1;
+        int owner_player_id = -1;
+        int damage = 0;
+    };
+    std::vector<PendingBurnDamage> pending_burn_damage;
     for (auto& status : player.status_effects) {
         if (status.remaining_seconds <= 0.0f) {
             continue;
@@ -6539,6 +6863,27 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
             case StatusEffectType::Frozen:
                 status.movement_speed_multiplier = Constants::kFrozenMovementSpeedMultiplier;
                 break;
+            case StatusEffectType::Burning: {
+                status.accumulated_magnitude += Constants::kBurningDamagePerSecond * applied_dt;
+                const int whole_damage = static_cast<int>(std::floor(status.accumulated_magnitude + 0.0001f));
+                if (whole_damage > 0) {
+                    status.accumulated_magnitude -= static_cast<float>(whole_damage);
+                    bool merged = false;
+                    for (auto& pending : pending_burn_damage) {
+                        if (pending.spirit_id == status.origin_source_id &&
+                            pending.owner_player_id == status.source_owner_player_id) {
+                            pending.damage += whole_damage;
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if (!merged) {
+                        pending_burn_damage.push_back(
+                            {status.origin_source_id, status.source_owner_player_id, whole_damage});
+                    }
+                }
+                break;
+            }
             case StatusEffectType::Rooted: {
                 status.source_elapsed_seconds += applied_dt;
                 const float burn_duration = std::max(0.001f, status.burn_duration_seconds);
@@ -6565,6 +6910,19 @@ void GameApp::UpdatePlayerStatusEffects(Player& player, float dt) {
                 const float base_progress = std::clamp(status.progress, 0.0f, 1.0f);
                 const float active_progress = std::max(0.0f, base_progress * (1.0f - normalized));
                 status.movement_speed_multiplier = 1.0f - SmoothRootSigmoid(active_progress);
+                break;
+            }
+        }
+    }
+
+    if (!pending_burn_damage.empty() && player.alive) {
+        for (const auto& pending : pending_burn_damage) {
+            if (pending.damage <= 0) {
+                continue;
+            }
+            ApplyDamageToPlayer(player, pending.owner_player_id, pending.damage, "burning",
+                                pending.owner_player_id >= 0, player.pos);
+            if (!player.alive) {
                 break;
             }
         }
@@ -6698,15 +7056,19 @@ void GameApp::UpdateDamagePopups(float dt) {
 }
 
 MapObjectInstance* GameApp::FindMapObjectById(int id) {
-    auto it = std::find_if(state_.map_objects.begin(), state_.map_objects.end(),
-                           [&](const MapObjectInstance& object) { return object.id == id; });
-    return it == state_.map_objects.end() ? nullptr : &(*it);
+    const auto it = map_object_index_by_id_.find(id);
+    if (it == map_object_index_by_id_.end() || it->second >= state_.map_objects.size()) {
+        return nullptr;
+    }
+    return &state_.map_objects[it->second];
 }
 
 const MapObjectInstance* GameApp::FindMapObjectById(int id) const {
-    auto it = std::find_if(state_.map_objects.begin(), state_.map_objects.end(),
-                           [&](const MapObjectInstance& object) { return object.id == id; });
-    return it == state_.map_objects.end() ? nullptr : &(*it);
+    const auto it = map_object_index_by_id_.find(id);
+    if (it == map_object_index_by_id_.end() || it->second >= state_.map_objects.size()) {
+        return nullptr;
+    }
+    return &state_.map_objects[it->second];
 }
 
 const ObjectPrototype* GameApp::FindObjectPrototype(const std::string& prototype_id) const {
@@ -6747,6 +7109,8 @@ int GameApp::SpawnObjectInstanceAtCell(const std::string& prototype_id, const Gr
     object.death_duration = 0.0f;
     object.alive = true;
     state_.map_objects.push_back(object);
+    map_object_index_by_id_[object.id] = state_.map_objects.size() - 1;
+    MarkMapObjectRenderCachesDirty();
     return object.id;
 }
 
@@ -6800,6 +7164,7 @@ void GameApp::UpdateDroppedItemPickupBlocks() {
 
 void GameApp::RebuildMapObjectsFromSeeds() {
     state_.map_objects.clear();
+    map_object_index_by_id_.clear();
     dropped_item_pickup_blocks_.clear();
     for (const auto& seed : state_.map.object_seeds) {
         SpawnObjectInstanceAtCell(seed.prototype_id, seed.cell);
@@ -6808,10 +7173,32 @@ void GameApp::RebuildMapObjectsFromSeeds() {
     RebuildAltarsFromMapObjects();
 }
 
+void GameApp::EnsureMapObjectRenderCaches() {
+    if (!map_object_render_caches_dirty_) {
+        return;
+    }
+    RebuildStaticRenderCaches();
+}
+
+void GameApp::MarkMapObjectRenderCachesDirty() { map_object_render_caches_dirty_ = true; }
+
+void GameApp::RebuildMapObjectIndexLookup() {
+    map_object_index_by_id_.clear();
+    map_object_index_by_id_.reserve(state_.map_objects.size());
+    for (size_t object_index = 0; object_index < state_.map_objects.size(); ++object_index) {
+        map_object_index_by_id_[state_.map_objects[object_index].id] = object_index;
+    }
+}
+
 void GameApp::RebuildStaticRenderCaches() {
     static_decoration_render_chunks_.clear();
+    flat_map_object_indices_.clear();
+    ysorted_map_object_indices_.clear();
+    shadow_map_object_indices_.clear();
     static_decoration_chunk_cols_ = 0;
     static_decoration_chunk_rows_ = 0;
+    map_object_render_caches_dirty_ = false;
+    RebuildMapObjectIndexLookup();
     if (state_.map.width <= 0 || state_.map.height <= 0) {
         return;
     }
@@ -6833,6 +7220,28 @@ void GameApp::RebuildStaticRenderCaches() {
         const size_t chunk_index = static_cast<size_t>(chunk_y * static_decoration_chunk_cols_ + chunk_x);
         static_decoration_render_chunks_[chunk_index].push_back(
             {((static_cast<float>(cell_y) + 1.0f) * static_cast<float>(state_.map.cell_size)), i});
+    }
+
+    flat_map_object_indices_.reserve(state_.map_objects.size());
+    ysorted_map_object_indices_.reserve(state_.map_objects.size());
+    shadow_map_object_indices_.reserve(state_.map_objects.size());
+    for (size_t object_index = 0; object_index < state_.map_objects.size(); ++object_index) {
+        const auto& object = state_.map_objects[object_index];
+        if (!object.alive) {
+            continue;
+        }
+        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+        if (proto == nullptr) {
+            continue;
+        }
+        if (IsFlatRenderedMapObjectPrototype(proto)) {
+            flat_map_object_indices_.push_back(object_index);
+        } else {
+            ysorted_map_object_indices_.push_back(object_index);
+        }
+        if (proto->casts_shadow && !proto->shadow_animation.empty()) {
+            shadow_map_object_indices_.push_back(object_index);
+        }
     }
 }
 
@@ -7613,6 +8022,31 @@ void GameApp::AddFrozenStatus(Player& player, float duration_seconds) {
     player.status_effects.push_back(status);
 }
 
+void GameApp::RefreshOrAddBurningStatus(Player& player, const EmbersTileModifier& modifier) {
+    for (auto& status : player.status_effects) {
+        if (status.type != StatusEffectType::Burning || status.origin_source_id != modifier.source_spirit_id) {
+            continue;
+        }
+        status.source_id = modifier.id;
+        status.source_owner_player_id = modifier.owner_player_id;
+        status.remaining_seconds = std::max(status.remaining_seconds, Constants::kBurningStatusDurationSeconds);
+        status.total_seconds = std::max(status.total_seconds, Constants::kBurningStatusDurationSeconds);
+        return;
+    }
+
+    StatusEffectInstance status;
+    status.type = StatusEffectType::Burning;
+    status.remaining_seconds = Constants::kBurningStatusDurationSeconds;
+    status.total_seconds = Constants::kBurningStatusDurationSeconds;
+    status.visible = true;
+    status.is_buff = false;
+    status.source_id = modifier.id;
+    status.origin_source_id = modifier.source_spirit_id;
+    status.source_owner_player_id = modifier.owner_player_id;
+    status.accumulated_magnitude = 0.0f;
+    player.status_effects.push_back(status);
+}
+
 void GameApp::RefreshOrAddRootedStatus(Player& player, int source_id) {
     for (auto& status : player.status_effects) {
         if (status.type == StatusEffectType::RootedRecovery && status.source_id == source_id) {
@@ -7649,6 +8083,7 @@ void GameApp::RefreshOrAddRootedStatus(Player& player, int source_id) {
 
 void GameApp::UpdateMapObjects(float dt) {
     UpdateDroppedItemPickupBlocks();
+    bool map_objects_changed = false;
 
     for (auto& object : state_.map_objects) {
         if (!object.alive) {
@@ -7664,6 +8099,10 @@ void GameApp::UpdateMapObjects(float dt) {
                 object.state = MapObjectState::Active;
                 object.state_time = 0.0f;
                 object.collision_enabled = (!object.walkable || object.stops_projectiles);
+                if (object.prototype_id == "fire_flower") {
+                    PlaySfxIfVisible(sfx_earth_rune_impact_.sound, sfx_earth_rune_impact_.loaded,
+                                     CellToWorldCenter(object.cell));
+                }
             }
             continue;
         }
@@ -7699,6 +8138,7 @@ void GameApp::UpdateMapObjects(float dt) {
     for (const auto& pending : pending_object_spawns_) {
         const int object_id = SpawnObjectInstanceAtCell(pending.prototype_id, pending.cell, pending.reserved_object_id);
         if (object_id >= 0) {
+            map_objects_changed = true;
             if (MapObjectInstance* object = FindMapObjectById(object_id); object != nullptr) {
                 if (pending.owner_player_id.has_value()) {
                     object->owner_player_id = *pending.owner_player_id;
@@ -7716,10 +8156,16 @@ void GameApp::UpdateMapObjects(float dt) {
     }
     pending_object_spawns_.clear();
 
+    const size_t object_count_before_erase = state_.map_objects.size();
     state_.map_objects.erase(
         std::remove_if(state_.map_objects.begin(), state_.map_objects.end(),
                        [](const MapObjectInstance& object) { return !object.alive; }),
         state_.map_objects.end());
+    map_objects_changed = map_objects_changed || state_.map_objects.size() != object_count_before_erase;
+    if (map_objects_changed) {
+        RebuildMapObjectIndexLookup();
+        MarkMapObjectRenderCachesDirty();
+    }
 }
 
 void GameApp::UpdateFireSpirits(float dt) {
@@ -7883,6 +8329,8 @@ void GameApp::UpdateFireSpirits(float dt) {
             }
             oldest_idle_spirit->trail_samples.push_back({oldest_idle_spirit->launch_world, 0.0f});
             runtime.send_cooldown_remaining = Constants::kFireSpiritSendCooldownSeconds;
+            PlaySfxIfVisible(sfx_fire_spirit_launch_.sound, sfx_fire_spirit_launch_.loaded,
+                             oldest_idle_spirit->launch_world);
         }
 
         for (auto& spirit : state_.fire_spirits) {
@@ -7958,27 +8406,7 @@ void GameApp::UpdateFireSpirits(float dt) {
                     continue;
                 }
 
-                const float explosion_radius_world =
-                    Constants::kFireSpiritExplosionRadiusTiles * static_cast<float>(state_.map.cell_size);
-                for (auto& player : state_.players) {
-                    if (!player.alive || player.team == spirit.owner_team) {
-                        continue;
-                    }
-                    if (Vector2Distance(player.pos, spirit.impact_world) <= explosion_radius_world) {
-                        ApplyDamageToPlayer(player, spirit.owner_player_id, Constants::kFireSpiritExplosionDamage,
-                                            "fire_spirit", true, spirit.impact_world);
-                    }
-                }
-                for (auto& object : state_.map_objects) {
-                    if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit ||
-                        object.state != MapObjectState::Active || object.owner_team == spirit.owner_team) {
-                        continue;
-                    }
-                    if (Vector2Distance(CellToWorldCenter(object.cell), spirit.impact_world) <= explosion_radius_world) {
-                        ApplyObjectDamage(object.id, Constants::kFireSpiritExplosionDamage, spirit.owner_player_id,
-                                          "fire_spirit", spirit.impact_world);
-                    }
-                }
+                SpawnFireWaveSegments(spirit, simulation_time_seconds);
                 PlaySfxIfVisible(sfx_fire_storm_impact_.sound, sfx_fire_storm_impact_.loaded, spirit.impact_world);
                 spirit.state = FireSpiritState::Dead;
                 if (Constants::kFireSpiritTrailEnableDeadLinger) {
@@ -8031,6 +8459,241 @@ void GameApp::UpdateFireSpirits(float dt) {
         std::remove_if(state_.fire_spirits.begin(), state_.fire_spirits.end(),
                        [](const FireSpirit& spirit) { return !spirit.alive; }),
         state_.fire_spirits.end());
+}
+
+void GameApp::SpawnFireWaveSegments(const FireSpirit& spirit, float start_time_seconds) {
+    fire_wave_damage_ledgers_[spirit.id];
+    fire_wave_ember_activation_ledgers_[spirit.id];
+    const float segment_angle_step = 360.0f / static_cast<float>(Constants::kFireWaveSegmentCount);
+    for (int segment_index = 0; segment_index < Constants::kFireWaveSegmentCount; ++segment_index) {
+        FireWaveSegment segment;
+        segment.id = state_.next_entity_id++;
+        segment.source_spirit_id = spirit.id;
+        segment.owner_player_id = spirit.owner_player_id;
+        segment.owner_team = spirit.owner_team;
+        segment.segment_index = segment_index;
+        segment.origin_world = spirit.impact_world;
+        segment.direction_radians = (segment_angle_step * static_cast<float>(segment_index)) * DEG2RAD;
+        segment.start_time_seconds = start_time_seconds;
+        segment.duration_seconds = Constants::kFireWaveDurationSeconds;
+        segment.range_world = Constants::kFireWaveRangeWorld;
+        segment.alive = true;
+        state_.fire_wave_segments.push_back(segment);
+    }
+}
+
+void GameApp::ActivateEmbersTouchedByFireWaveSegment(const FireWaveSegment& segment, Vector2 center, float radius) {
+    if (radius <= 0.001f) {
+        return;
+    }
+
+    auto ledger_it = fire_wave_ember_activation_ledgers_.find(segment.source_spirit_id);
+    if (ledger_it == fire_wave_ember_activation_ledgers_.end()) {
+        ledger_it = fire_wave_ember_activation_ledgers_.emplace(segment.source_spirit_id, std::unordered_set<int64_t>{}).first;
+    }
+    std::unordered_set<int64_t>& activation_ledger = ledger_it->second;
+
+    const int cell_size = std::max(1, state_.map.cell_size);
+    const float embers_max_range_world = std::max(
+        0.0f, segment.range_world - Constants::kEmbersSpawnRangeReductionTiles * static_cast<float>(cell_size));
+    const GridCoord min_cell = WorldToCell({center.x - radius, center.y - radius});
+    const GridCoord max_cell = WorldToCell({center.x + radius, center.y + radius});
+
+    HitShapeDefinition hit_shape;
+    hit_shape.type = HitShapeType::Circle;
+    hit_shape.radius = radius;
+
+    for (int cell_y = min_cell.y; cell_y <= max_cell.y; ++cell_y) {
+        for (int cell_x = min_cell.x; cell_x <= max_cell.x; ++cell_x) {
+            const GridCoord cell = {cell_x, cell_y};
+            if (!state_.map.IsInside(cell) || !IsEmbersWalkableTile(state_.map.GetTile(cell))) {
+                continue;
+            }
+            const Vector2 cell_center = CellToWorldCenter(cell);
+            if (Vector2Distance(cell_center, segment.origin_world) > embers_max_range_world) {
+                continue;
+            }
+
+            const int64_t cell_key = MakeCellKey(cell);
+            if (activation_ledger.find(cell_key) != activation_ledger.end()) {
+                continue;
+            }
+
+            const Rectangle tile_rect = {static_cast<float>(cell.x * cell_size), static_cast<float>(cell.y * cell_size),
+                                         static_cast<float>(cell_size), static_cast<float>(cell_size)};
+            Vector2 normal = {0.0f, 0.0f};
+            float penetration = 0.0f;
+            if (!HitShapeLibrary::OverlapsAabb(hit_shape, center, 0.0f, tile_rect, &normal, &penetration)) {
+                continue;
+            }
+
+            activation_ledger.insert(cell_key);
+            SpawnOrRefreshEmbersTileModifier(segment, cell);
+        }
+    }
+}
+
+void GameApp::SpawnOrRefreshEmbersTileModifier(const FireWaveSegment& segment, const GridCoord& cell) {
+    for (auto& modifier : state_.embers_tile_modifiers) {
+        if (!modifier.alive || !(modifier.cell == cell)) {
+            continue;
+        }
+        modifier.source_spirit_id = segment.source_spirit_id;
+        modifier.owner_player_id = segment.owner_player_id;
+        modifier.owner_team = segment.owner_team;
+        modifier.remaining_seconds = Constants::kEmbersModifierDurationSeconds;
+        modifier.total_seconds = Constants::kEmbersModifierDurationSeconds;
+        return;
+    }
+
+    EmbersTileModifier modifier;
+    modifier.id = state_.next_entity_id++;
+    modifier.source_spirit_id = segment.source_spirit_id;
+    modifier.owner_player_id = segment.owner_player_id;
+    modifier.owner_team = segment.owner_team;
+    modifier.cell = cell;
+    modifier.remaining_seconds = Constants::kEmbersModifierDurationSeconds;
+    modifier.total_seconds = Constants::kEmbersModifierDurationSeconds;
+    modifier.alive = true;
+    state_.embers_tile_modifiers.push_back(modifier);
+}
+
+void GameApp::UpdateFireWaveSegments(float /*dt*/) {
+    const float simulation_time_seconds = GetFireSpiritSimTimeSeconds();
+    if (network_manager_.IsHost()) {
+        for (auto& segment : state_.fire_wave_segments) {
+            if (!segment.alive) {
+                continue;
+            }
+            const float elapsed_seconds = GetFireWaveElapsedSeconds(segment, simulation_time_seconds);
+            const float progress = GetFireWaveProgress(segment, simulation_time_seconds);
+            const bool expired = elapsed_seconds > std::max(0.001f, segment.duration_seconds);
+
+            auto ledger_it = fire_wave_damage_ledgers_.find(segment.source_spirit_id);
+            if (ledger_it == fire_wave_damage_ledgers_.end()) {
+                ledger_it = fire_wave_damage_ledgers_.emplace(segment.source_spirit_id, FireWaveDamageLedger{}).first;
+            }
+            FireWaveDamageLedger& ledger = ledger_it->second;
+            const Vector2 center = GetFireWaveCenterWorld(segment, simulation_time_seconds);
+            const float radius = GetFireWaveRadiusAtDistance(GetFireWaveTravelDistance(segment, simulation_time_seconds));
+            if (radius <= 0.001f) {
+                continue;
+            }
+
+            ActivateEmbersTouchedByFireWaveSegment(segment, center, radius);
+
+            HitShapeDefinition hit_shape;
+            hit_shape.type = HitShapeType::Circle;
+            hit_shape.radius = radius;
+
+            for (auto& player : state_.players) {
+                if (!player.alive || player.team == segment.owner_team ||
+                    ledger.damaged_player_ids.find(player.id) != ledger.damaged_player_ids.end()) {
+                    continue;
+                }
+                Vector2 normal = {0.0f, 0.0f};
+                float penetration = 0.0f;
+                if (!HitShapeLibrary::OverlapsAabb(hit_shape, center, 0.0f, GetPlayerCollisionRect(player), &normal,
+                                                   &penetration)) {
+                    continue;
+                }
+                ledger.damaged_player_ids.insert(player.id);
+                ApplyDamageToPlayer(player, segment.owner_player_id, Constants::kFireSpiritExplosionDamage,
+                                    "fire_spirit_wave", true, center);
+            }
+
+            for (auto& object : state_.map_objects) {
+                if (!object.alive || object.hp <= 0 || object.type != ObjectType::Unit ||
+                    object.state != MapObjectState::Active || object.owner_team == segment.owner_team ||
+                    ledger.damaged_object_ids.find(object.id) != ledger.damaged_object_ids.end()) {
+                    continue;
+                }
+                Vector2 normal = {0.0f, 0.0f};
+                float penetration = 0.0f;
+                if (!HitShapeLibrary::OverlapsAabb(hit_shape, center, 0.0f,
+                                                   GetMapObjectCollisionAabb(object, FindObjectPrototype(object.prototype_id)),
+                                                   &normal, &penetration)) {
+                    continue;
+                }
+                ledger.damaged_object_ids.insert(object.id);
+                ApplyObjectDamage(object.id, Constants::kFireSpiritExplosionDamage, segment.owner_player_id,
+                                  "fire_spirit_wave", center);
+            }
+
+            if (expired) {
+                segment.alive = false;
+            }
+        }
+    } else {
+        for (auto& segment : state_.fire_wave_segments) {
+            if (segment.alive &&
+                GetFireWaveElapsedSeconds(segment, simulation_time_seconds) >
+                    std::max(0.001f, segment.duration_seconds)) {
+                segment.alive = false;
+            }
+        }
+    }
+
+    state_.fire_wave_segments.erase(
+        std::remove_if(state_.fire_wave_segments.begin(), state_.fire_wave_segments.end(),
+                       [](const FireWaveSegment& segment) { return !segment.alive; }),
+        state_.fire_wave_segments.end());
+
+    for (auto it = fire_wave_damage_ledgers_.begin(); it != fire_wave_damage_ledgers_.end();) {
+        const bool has_active_segment = std::any_of(
+            state_.fire_wave_segments.begin(), state_.fire_wave_segments.end(),
+            [&](const FireWaveSegment& segment) { return segment.alive && segment.source_spirit_id == it->first; });
+        if (!has_active_segment) {
+            it = fire_wave_damage_ledgers_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = fire_wave_ember_activation_ledgers_.begin(); it != fire_wave_ember_activation_ledgers_.end();) {
+        const bool has_active_segment = std::any_of(
+            state_.fire_wave_segments.begin(), state_.fire_wave_segments.end(),
+            [&](const FireWaveSegment& segment) { return segment.alive && segment.source_spirit_id == it->first; });
+        if (!has_active_segment) {
+            it = fire_wave_ember_activation_ledgers_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void GameApp::UpdateEmbersTileModifiers(float dt) {
+    if (network_manager_.IsHost()) {
+        for (auto& modifier : state_.embers_tile_modifiers) {
+            if (!modifier.alive) {
+                continue;
+            }
+            modifier.remaining_seconds = std::max(0.0f, modifier.remaining_seconds - dt);
+            if (modifier.remaining_seconds <= 0.0f) {
+                modifier.alive = false;
+                continue;
+            }
+
+            const Rectangle tile_rect = {static_cast<float>(modifier.cell.x * state_.map.cell_size),
+                                         static_cast<float>(modifier.cell.y * state_.map.cell_size),
+                                         static_cast<float>(state_.map.cell_size),
+                                         static_cast<float>(state_.map.cell_size)};
+            for (auto& player : state_.players) {
+                if (!player.alive || player.team == modifier.owner_team) {
+                    continue;
+                }
+                Vector2 normal = {0.0f, 0.0f};
+                float penetration = 0.0f;
+                if (CollisionWorld::AabbVsAabb(GetPlayerCollisionRect(player), tile_rect, normal, penetration)) {
+                    RefreshOrAddBurningStatus(player, modifier);
+                }
+            }
+        }
+    }
+
+    state_.embers_tile_modifiers.erase(
+        std::remove_if(state_.embers_tile_modifiers.begin(), state_.embers_tile_modifiers.end(),
+                       [](const EmbersTileModifier& modifier) { return !modifier.alive; }),
+        state_.embers_tile_modifiers.end());
 }
 
 float GameApp::GetFireSpiritSimTimeSeconds() const {
@@ -10926,6 +11589,8 @@ void GameApp::CheckSpellPatterns(const RunePlacedEvent& event) {
             PlaySfxIfVisible(sfx_ice_wall_freeze_.sound, sfx_ice_wall_freeze_.loaded, CellToWorldCenter(match.cast_origin));
         } else if (cast_succeeded && match.spell_name == "fire_storm") {
             PlaySfxIfVisible(sfx_fire_storm_cast_.sound, sfx_fire_storm_cast_.loaded, CellToWorldCenter(match.cast_origin));
+        } else if (cast_succeeded && match.spell_name == "fire_flower") {
+            PlaySfxIfVisible(sfx_earth_rune_launch_.sound, sfx_earth_rune_launch_.loaded, CellToWorldCenter(match.cast_origin));
         }
 
         for (const auto& matched_cell : match.matched_cells) {
@@ -11337,6 +12002,7 @@ const FireSpirit* GameApp::FindFireSpiritById(int id) const {
 
 void GameApp::RenderWorld() {
     UpdateCameraTarget();
+    EnsureMapObjectRenderCaches();
     UpdateObjectShadowLayer();
     EnsureWorldLayerRenderTarget();
     if (Constants::kFireSpiritTrailEnableLowResRender) {
@@ -11372,14 +12038,15 @@ void GameApp::RenderWorld() {
 
     BeginMode2D(camera_);
     RenderNonTerrainDepthSorted(DepthSortedRenderPass::OverInfluenceOverlay);
-    if (Constants::kFireSpiritTrailEnableLowResRender) {
-        DrawFireSpiritTrailLayer();
-    }
     RenderTopLayerParticles();
     RenderLocalGrapplingPreview();
     RenderMeleeAttacks();
     RenderDamagePopups();
     EndMode2D();
+
+    if (Constants::kFireSpiritTrailEnableLowResRender) {
+        DrawFireSpiritTrailLayer();
+    }
 
     EndTextureMode();
     DrawWorldLayerWithZonePostProcess();
@@ -11808,20 +12475,69 @@ void GameApp::RenderGroundMapObjects() {
     const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
     const bool has_huge_texture = sprite_metadata_128x128_.IsLoaded();
     const Texture2D huge_texture = sprite_metadata_128x128_.GetTexture();
-
-    for (const auto& object : state_.map_objects) {
-        if (!object.alive) {
-            continue;
+    // Flat decorations are the densest object class, so keep this pass on direct vector indices
+    // and reuse one wind shader instance with deterministic world-space phase when possible.
+    bool wind_shader_active = false;
+    bool wind_shader_uniforms_initialized = false;
+    Rectangle wind_shader_last_src = {};
+    float wind_shader_last_strength = 0.0f;
+    float wind_shader_last_speed = 0.0f;
+    float wind_shader_last_gradient_start = 0.0f;
+    const auto stop_wind_shader = [&]() {
+        if (wind_shader_active) {
+            EndShaderMode();
+            wind_shader_active = false;
+        }
+    };
+    const auto ensure_wind_shader = [&]() {
+        if (wind_shader_active || !has_tree_wind_shader_) {
+            return;
+        }
+        const float screen_height = static_cast<float>(GetScreenHeight());
+        const float camera_target[2] = {camera_.target.x, camera_.target.y};
+        const float camera_offset[2] = {camera_.offset.x, camera_.offset.y};
+        const float camera_zoom = camera_.zoom;
+        SetShaderValue(tree_wind_shader_, tree_wind_screen_height_loc_, &screen_height, SHADER_UNIFORM_FLOAT);
+        SetShaderValueV(tree_wind_shader_, tree_wind_camera_target_loc_, camera_target, SHADER_UNIFORM_VEC2, 1);
+        SetShaderValueV(tree_wind_shader_, tree_wind_camera_offset_loc_, camera_offset, SHADER_UNIFORM_VEC2, 1);
+        SetShaderValue(tree_wind_shader_, tree_wind_camera_zoom_loc_, &camera_zoom, SHADER_UNIFORM_FLOAT);
+        BeginShaderMode(tree_wind_shader_);
+        wind_shader_active = true;
+        wind_shader_uniforms_initialized = false;
+    };
+    const auto configure_wind_shader = [&](Rectangle src, const ObjectPrototype& proto) {
+        ensure_wind_shader();
+        const float sway_strength = proto.wind_strength_pixels;
+        const float sway_speed = Constants::kTreeWindSpeed * proto.wind_speed_multiplier;
+        const float gradient_start = proto.wind_gradient_start;
+        if (wind_shader_uniforms_initialized && wind_shader_last_src.x == src.x && wind_shader_last_src.y == src.y &&
+            wind_shader_last_src.width == src.width && wind_shader_last_src.height == src.height &&
+            wind_shader_last_strength == sway_strength && wind_shader_last_speed == sway_speed &&
+            wind_shader_last_gradient_start == gradient_start) {
+            return;
         }
 
-        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
-        if (!IsFlatRenderedMapObjectPrototype(proto)) {
-            continue;
+        const float frame_rect[4] = {src.x, src.y, src.width, src.height};
+        const float time_seconds = render_time_seconds_;
+        SetShaderValueV(tree_wind_shader_, tree_wind_frame_rect_loc_, frame_rect, SHADER_UNIFORM_VEC4, 1);
+        SetShaderValue(tree_wind_shader_, tree_wind_time_loc_, &time_seconds, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_wind_shader_, tree_wind_sway_strength_loc_, &sway_strength, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_wind_shader_, tree_wind_sway_speed_loc_, &sway_speed, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(tree_wind_shader_, tree_wind_gradient_start_loc_, &gradient_start, SHADER_UNIFORM_FLOAT);
+        wind_shader_last_src = src;
+        wind_shader_last_strength = sway_strength;
+        wind_shader_last_speed = sway_speed;
+        wind_shader_last_gradient_start = gradient_start;
+        wind_shader_uniforms_initialized = true;
+    };
+    const auto draw_object = [&](const MapObjectInstance& object, const ObjectPrototype* proto) {
+        if (proto == nullptr || !IsFlatRenderedMapObjectPrototype(proto)) {
+            return;
         }
 
         const SpriteMetadataLoader* metadata = &sprite_metadata_;
         const Texture2D* draw_texture = has_texture ? &texture : nullptr;
-        switch (proto->shadow_sheet) {
+        switch (proto->sprite_sheet) {
             case SpriteSheetType::Base32:
                 metadata = &sprite_metadata_;
                 draw_texture = has_texture ? &texture : nullptr;
@@ -11844,7 +12560,7 @@ void GameApp::RenderGroundMapObjects() {
             proto->type == ObjectType::Consumable ? Constants::kDroppedItemVisualScale : 1.0f;
         const Rectangle dst = GetMapObjectSpriteRect(object, proto, base_dst_w, base_dst_h, visual_scale);
         if (!IsWorldRectVisible(dst, static_cast<float>(state_.map.cell_size))) {
-            continue;
+            return;
         }
         float anim_time = render_time_seconds_;
         const std::string animation = ResolveMapObjectAnimation(object, *proto, *metadata, &anim_time);
@@ -11854,19 +12570,57 @@ void GameApp::RenderGroundMapObjects() {
                 InsetSourceRect(metadata->GetFrame(animation, "default", anim_time), Constants::kAtlasSampleInsetPixels);
             const float flash_amount = GetObjectDamageFlashAmount(object);
             const bool use_damage_flash = flash_amount > 0.0f && has_damage_flash_shader_;
+            const bool use_wind_batch = !use_damage_flash && proto->wind_strength_pixels > 0.0f && has_tree_wind_shader_;
             if (use_damage_flash) {
+                stop_wind_shader();
                 SetShaderValue(damage_flash_shader_, damage_flash_amount_loc_, &flash_amount, SHADER_UNIFORM_FLOAT);
                 BeginShaderMode(damage_flash_shader_);
             }
-            DrawWindAnimatedMapObject(object, *proto, *draw_texture, src, dst);
+            if (use_wind_batch) {
+                configure_wind_shader(src, *proto);
+                DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+            } else {
+                stop_wind_shader();
+                DrawWindAnimatedMapObject(object, *proto, *draw_texture, src, dst);
+            }
             if (use_damage_flash) {
                 EndShaderMode();
             }
         } else {
+            stop_wind_shader();
             DrawRectangleRec(dst, Color{180, 120, 80, 220});
             DrawRectangleLinesEx(dst, 1.0f, Color{30, 20, 12, 255});
         }
+    };
+
+    if (has_texture && sprite_metadata_.HasAnimation("embers_idle")) {
+        for (const auto& modifier : state_.embers_tile_modifiers) {
+            if (!modifier.alive || !state_.map.IsInside(modifier.cell)) {
+                continue;
+            }
+            const Vector2 center = CellToWorldCenter(modifier.cell);
+            const Rectangle dst = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
+            if (!IsWorldRectVisible(dst, static_cast<float>(state_.map.cell_size))) {
+                continue;
+            }
+            const Rectangle src =
+                InsetSourceRect(sprite_metadata_.GetFrame("embers_idle", "default", render_time_seconds_),
+                                Constants::kAtlasSampleInsetPixels);
+            DrawTexturePro(texture, src, SnapRect(dst), {0, 0}, 0.0f, WHITE);
+        }
     }
+
+    for (size_t object_index : flat_map_object_indices_) {
+        if (object_index >= state_.map_objects.size()) {
+            continue;
+        }
+        const MapObjectInstance& object = state_.map_objects[object_index];
+        if (!object.alive) {
+            continue;
+        }
+        draw_object(object, FindObjectPrototype(object.prototype_id));
+    }
+    stop_wind_shader();
 }
 
 void GameApp::UpdateObjectShadowLayer() {
@@ -11885,17 +12639,15 @@ void GameApp::UpdateObjectShadowLayer() {
     const Texture2D tall_texture = sprite_metadata_tall_.GetTexture();
     const bool has_huge_texture = sprite_metadata_128x128_.IsLoaded();
     const Texture2D huge_texture = sprite_metadata_128x128_.GetTexture();
-
-    for (const auto& object : state_.map_objects) {
-        if (!object.alive || object.state == MapObjectState::Dying) {
-            continue;
+    const auto draw_shadow = [&](const MapObjectInstance& object, const ObjectPrototype* proto) {
+        if (!object.alive || object.state == MapObjectState::Dying || proto == nullptr || proto->shadow_animation.empty()) {
+            return;
         }
-        const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
-        if (proto == nullptr || proto->shadow_animation.empty()) {
-            continue;
+        if (!proto->casts_shadow) {
+            return;
         }
         if (RenderModularTreeShadow(object, *proto)) {
-            continue;
+            return;
         }
 
         const SpriteMetadataLoader* metadata = &sprite_metadata_;
@@ -11915,7 +12667,7 @@ void GameApp::UpdateObjectShadowLayer() {
                 break;
         }
         if (draw_texture == nullptr || !metadata->IsLoaded() || !metadata->HasAnimation(proto->shadow_animation)) {
-            continue;
+            return;
         }
 
         int object_cell_width = state_.map.cell_size;
@@ -11950,13 +12702,21 @@ void GameApp::UpdateObjectShadowLayer() {
         dst.y += (base_dst_h - dst_h) * 0.5f;
         dst = SnapRect(dst);
         if (!IsWorldRectVisible(dst, static_cast<float>(state_.map.cell_size))) {
-            continue;
+            return;
         }
 
         const Rectangle src = InsetSourceRect(
             metadata->GetFrame(proto->shadow_animation, "default", render_time_seconds_),
             Constants::kAtlasSampleInsetPixels);
         DrawTexturePro(*draw_texture, src, dst, {0, 0}, 0.0f, WHITE);
+    };
+
+    for (size_t object_index : shadow_map_object_indices_) {
+        if (object_index >= state_.map_objects.size()) {
+            continue;
+        }
+        const MapObjectInstance& object = state_.map_objects[object_index];
+        draw_shadow(object, FindObjectPrototype(object.prototype_id));
     }
 
     if (modular_player_asset_.HasLayer("shadow")) {
@@ -12352,6 +13112,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         LightningSegment,
         GrapplingHookSegment,
         Projectile,
+        FireWaveSegment,
         FireSpiritIdle,
         FireSpiritTrail,
         FireSpiritProjectile,
@@ -12394,24 +13155,26 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 return 9;
             case RenderKind::Projectile:
                 return 10;
-            case RenderKind::FireSpiritIdle:
+            case RenderKind::FireWaveSegment:
                 return 11;
-            case RenderKind::FireSpiritTrail:
+            case RenderKind::FireSpiritIdle:
                 return 12;
-            case RenderKind::FireSpiritProjectile:
+            case RenderKind::FireSpiritTrail:
                 return 13;
-            case RenderKind::FireStormArc:
+            case RenderKind::FireSpiritProjectile:
                 return 14;
-            case RenderKind::Particle:
+            case RenderKind::FireStormArc:
                 return 15;
-            case RenderKind::HammerImpact:
+            case RenderKind::Particle:
                 return 16;
-            case RenderKind::Player:
+            case RenderKind::HammerImpact:
                 return 17;
-            case RenderKind::PlayerAttachedAnimation:
+            case RenderKind::Player:
                 return 18;
-            default:
+            case RenderKind::PlayerAttachedAnimation:
                 return 19;
+            default:
+                return 20;
         }
     };
 
@@ -12462,8 +13225,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         grappling_segment_total += static_cast<size_t>(std::max(2, static_cast<int>(std::floor(
             distance / std::max(1.0f, static_cast<float>(state_.map.cell_size))))));
     }
-    items.reserve(state_.players.size() + state_.runes.size() + state_.projectiles.size() + storm_arc_visuals_.size() + state_.particles.size() +
-                  hammer_impact_effects_.size() + state_.ice_walls.size() + state_.map_objects.size() +
+    items.reserve(state_.players.size() + state_.runes.size() + state_.projectiles.size() + state_.fire_wave_segments.size() +
+                  storm_arc_visuals_.size() + state_.particles.size() + hammer_impact_effects_.size() +
+                  state_.ice_walls.size() + state_.map_objects.size() +
                   lightning_segment_total + grappling_segment_total + state_.earth_roots_groups.size() * 17);
 
     if (static_decoration_chunk_cols_ > 0 && static_decoration_chunk_rows_ > 0) {
@@ -12491,8 +13255,11 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         }
     }
 
-    for (size_t i = 0; i < state_.map_objects.size(); ++i) {
-        const MapObjectInstance& object = state_.map_objects[i];
+    for (size_t object_index : ysorted_map_object_indices_) {
+        if (object_index >= state_.map_objects.size()) {
+            continue;
+        }
+        const MapObjectInstance& object = state_.map_objects[object_index];
         const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
         if (!object.alive || proto == nullptr || IsFlatRenderedMapObjectPrototype(proto)) {
             continue;
@@ -12512,7 +13279,7 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
             object.prototype_id == "vase_4") {
             sort_y -= 4.0f;
         }
-        items.push_back({RenderKind::MapObject, sort_y, i});
+        items.push_back({RenderKind::MapObject, sort_y, object_index});
     }
 
     for (size_t i = 0; i < state_.composite_effects.size(); ++i) {
@@ -12711,6 +13478,19 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
         items.push_back({RenderKind::Projectile, state_.projectiles[i].pos.y, i});
     }
 
+    const float fire_wave_sim_time = GetFireSpiritSimTimeSeconds();
+    for (size_t i = 0; i < state_.fire_wave_segments.size(); ++i) {
+        const FireWaveSegment& segment = state_.fire_wave_segments[i];
+        if (!segment.alive) {
+            continue;
+        }
+        const Vector2 center = GetFireWaveCenterWorld(segment, fire_wave_sim_time);
+        if (!point_visible(center) && !point_visible(segment.origin_world)) {
+            continue;
+        }
+        items.push_back({RenderKind::FireWaveSegment, center.y, i});
+    }
+
     for (size_t i = 0; i < storm_arc_visuals_.size(); ++i) {
         if (!storm_arc_visuals_[i].alive) {
             continue;
@@ -12838,6 +13618,9 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 break;
             }
             case RenderKind::MapObject: {
+                if (item.index >= state_.map_objects.size()) {
+                    break;
+                }
                 const MapObjectInstance& object = state_.map_objects[item.index];
                 const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
                 if (proto == nullptr) {
@@ -13305,6 +14088,33 @@ void GameApp::RenderNonTerrainDepthSorted(DepthSortedRenderPass pass) {
                 }
                 break;
             }
+            case RenderKind::FireWaveSegment: {
+                if (item.index >= state_.fire_wave_segments.size() || !has_huge_texture ||
+                    !sprite_metadata_128x128_.HasAnimation("fire_wave")) {
+                    break;
+                }
+                const FireWaveSegment& segment = state_.fire_wave_segments[item.index];
+                if (!segment.alive) {
+                    break;
+                }
+                const float progress = GetFireWaveProgress(segment, GetFireSpiritSimTimeSeconds());
+                Rectangle src = sprite_metadata_128x128_.GetFrame("fire_wave", "default", progress);
+                int frame_count = 0;
+                float fps = 1.0f;
+                if (sprite_metadata_128x128_.GetAnimationStats("fire_wave", "default", frame_count, fps) &&
+                    frame_count > 0) {
+                    const int frame_index =
+                        std::clamp(static_cast<int>(progress * static_cast<float>(frame_count)), 0, frame_count - 1);
+                    src = sprite_metadata_128x128_.GetFrameByIndex("fire_wave", "default", frame_index);
+                }
+                src = InsetSourceRect(src, Constants::kAtlasSampleInsetPixels);
+                const float dst_w = static_cast<float>(sprite_metadata_128x128_.GetCellWidth());
+                const float dst_h = static_cast<float>(sprite_metadata_128x128_.GetCellHeight());
+                Rectangle dst = {segment.origin_world.x, segment.origin_world.y, dst_w, dst_h};
+                DrawTexturePro(huge_texture, src, SnapRect(dst), {0.0f, dst_h * 0.5f},
+                               segment.direction_radians * RAD2DEG, WHITE);
+                break;
+            }
             case RenderKind::FireSpiritIdle: {
                 if (item.index >= state_.fire_spirits.size() || !has_texture) {
                     break;
@@ -13769,6 +14579,7 @@ void GameApp::RenderMap() {
     if (has_water_gradient_shader_) {
         EndShaderMode();
     }
+
 }
 
 void GameApp::RenderMapForeground() {
@@ -15899,12 +16710,20 @@ void GameApp::RegisterSpellRuntimes() {
 }
 
 bool GameApp::CastRuntimeSpell(const SpellRuntimeMatch& match) {
+    const size_t map_object_count_before = state_.map_objects.size();
     const SpellRuntimeContext context = {
         &state_,
         &event_queue_,
         [&](const std::string& effect_id) { return GetCompositeEffectDurationSeconds(effect_id); },
     };
-    return spell_runtime_registry_.Cast(match, context);
+    const bool cast_succeeded = spell_runtime_registry_.Cast(match, context);
+    if (state_.map_objects.size() != map_object_count_before) {
+        // Some spells construct map objects directly instead of going through SpawnObjectInstanceAtCell().
+        // Keep the shared id lookup and render buckets in sync with those spell-side mutations.
+        RebuildMapObjectIndexLookup();
+        MarkMapObjectRenderCachesDirty();
+    }
+    return cast_succeeded;
 }
 
 std::string GameApp::ResolvePlayerModularAnimationName(const Player& player) const {

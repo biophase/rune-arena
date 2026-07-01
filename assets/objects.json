@@ -97,6 +97,8 @@
       "map_key": [34, 150, 175],
       "terrain_tile": "tile_water",
       "sprite": { "sheet": "base32", "idle": "lilly_pad_idle" },
+      "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false,
       "wind": {
@@ -110,6 +112,7 @@
       "map_key": [27, 150, 175],
       "sprite": { "sheet": "base32", "idle": "flowers_1" },
       "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false,
       "wind": {
@@ -123,6 +126,7 @@
       "map_key": [28, 150, 175],
       "sprite": { "sheet": "base32", "idle": "flowers_2" },
       "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false,
       "wind": {
@@ -136,6 +140,7 @@
       "map_key": [29, 150, 175],
       "sprite": { "sheet": "base32", "idle": "flowers_3" },
       "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false,
       "wind": {
@@ -149,6 +154,7 @@
       "map_key": [30, 150, 175],
       "sprite": { "sheet": "base32", "idle": "flowers_4" },
       "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false,
       "wind": {
@@ -162,6 +168,7 @@
       "map_key": [31, 150, 175],
       "sprite": { "sheet": "base32", "idle": "stones_1" },
       "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false
     },
@@ -170,6 +177,7 @@
       "map_key": [32, 150, 175],
       "sprite": { "sheet": "base32", "idle": "stones_2" },
       "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false
     },
@@ -178,6 +186,7 @@
       "map_key": [33, 150, 175],
       "sprite": { "sheet": "base32", "idle": "stones_3" },
       "flat": true,
+      "casts_shadow": false,
       "walkable": true,
       "stops_projectiles": false
     },

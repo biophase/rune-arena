@@ -4382,6 +4382,30 @@
     "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 },
     "sourceSize": { "w": 32, "h": 32 },
     "duration": 100
+   },
+   "sprite_sheet 548.aseprite": {
+    "frame": { "x": 0, "y": 4384, "w": 32, "h": 32 },
+    "rotated": false,
+    "trimmed": false,
+    "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 },
+    "sourceSize": { "w": 32, "h": 32 },
+    "duration": 100
+   },
+   "sprite_sheet 549.aseprite": {
+    "frame": { "x": 32, "y": 4384, "w": 32, "h": 32 },
+    "rotated": false,
+    "trimmed": false,
+    "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 },
+    "sourceSize": { "w": 32, "h": 32 },
+    "duration": 500
+   },
+   "sprite_sheet 550.aseprite": {
+    "frame": { "x": 64, "y": 4384, "w": 32, "h": 32 },
+    "rotated": false,
+    "trimmed": false,
+    "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 },
+    "sourceSize": { "w": 32, "h": 32 },
+    "duration": 500
    }
  },
  "meta": {
@@ -4389,7 +4413,7 @@
   "version": "1.3.17-arm64",
   "image": "sprite_sheet.png",
   "format": "RGBA8888",
-  "size": { "w": 128, "h": 4384 },
+  "size": { "w": 128, "h": 4416 },
   "scale": "1",
   "frameTags": [
    { "name": "fire_rune_idle", "from": 20, "to": 23, "direction": "forward", "color": "#000000ff" },
@@ -4497,7 +4521,8 @@
    { "name": "lilly_pad_idle", "from": 494, "to": 504, "direction": "pingpong", "color": "#000000ff" },
    { "name": "fire_spirit_idle", "from": 506, "to": 511, "direction": "forward", "color": "#000000ff" },
    { "name": "fire_spirit_projectile", "from": 513, "to": 518, "direction": "forward", "color": "#000000ff" },
-   { "name": "fire_trail", "from": 520, "to": 547, "direction": "forward", "color": "#000000ff" }
+   { "name": "fire_trail", "from": 520, "to": 547, "direction": "forward", "color": "#000000ff" },
+   { "name": "embers_idle", "from": 549, "to": 550, "direction": "forward", "color": "#000000ff" }
   ],
   "layers": [
    { "name": "glow/shadow", "opacity": 36, "blendMode": "normal" },

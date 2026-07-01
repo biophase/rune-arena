@@ -412,6 +412,8 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
             payload.WriteF32(player.status_effects[j].burn_duration_seconds);
             payload.WriteF32(player.status_effects[j].movement_speed_multiplier);
             payload.WriteBool(player.status_effects[j].source_active);
+            payload.WriteI32(player.status_effects[j].origin_source_id);
+            payload.WriteI32(player.status_effects[j].source_owner_player_id);
             payload.WriteString(player.status_effects[j].composite_effect_id);
         }
         payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(player.item_slots.size(), 65535)));
@@ -520,6 +522,37 @@ std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) 
         payload.WriteF32(spirit.peak_height);
         payload.WriteF32(spirit.projectile_animation_time);
         payload.WriteBool(spirit.alive);
+    }
+
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.fire_wave_segments.size(), 65535)));
+    for (size_t i = 0; i < message.fire_wave_segments.size() && i < 65535; ++i) {
+        const auto& segment = message.fire_wave_segments[i];
+        payload.WriteI32(segment.id);
+        payload.WriteI32(segment.source_spirit_id);
+        payload.WriteI32(segment.owner_player_id);
+        payload.WriteI32(segment.owner_team);
+        payload.WriteI32(segment.segment_index);
+        payload.WriteF32(segment.origin_world_x);
+        payload.WriteF32(segment.origin_world_y);
+        payload.WriteF32(segment.direction_radians);
+        payload.WriteF32(segment.start_time_seconds);
+        payload.WriteF32(segment.duration_seconds);
+        payload.WriteF32(segment.range_world);
+        payload.WriteBool(segment.alive);
+    }
+
+    payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.embers_tile_modifiers.size(), 65535)));
+    for (size_t i = 0; i < message.embers_tile_modifiers.size() && i < 65535; ++i) {
+        const auto& modifier = message.embers_tile_modifiers[i];
+        payload.WriteI32(modifier.id);
+        payload.WriteI32(modifier.source_spirit_id);
+        payload.WriteI32(modifier.owner_player_id);
+        payload.WriteI32(modifier.owner_team);
+        payload.WriteI32(modifier.cell_x);
+        payload.WriteI32(modifier.cell_y);
+        payload.WriteF32(modifier.remaining_seconds);
+        payload.WriteF32(modifier.total_seconds);
+        payload.WriteBool(modifier.alive);
     }
 
     payload.WriteU16(static_cast<uint16_t>(std::min<size_t>(message.ice_walls.size(), 65535)));
@@ -787,6 +820,7 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
                 !reader.ReadI32(status.source_id) || !reader.ReadF32(status.progress) ||
                 !reader.ReadF32(status.source_elapsed_seconds) || !reader.ReadF32(status.burn_duration_seconds) ||
                 !reader.ReadF32(status.movement_speed_multiplier) || !reader.ReadBool(status.source_active) ||
+                !reader.ReadI32(status.origin_source_id) || !reader.ReadI32(status.source_owner_player_id) ||
                 !reader.ReadString(status.composite_effect_id)) {
                 return std::nullopt;
             }
@@ -902,6 +936,37 @@ std::optional<ServerSnapshotMessage> DecodeSnapshotPayload(const uint8_t* payloa
             return std::nullopt;
         }
         out.fire_spirits.push_back(spirit);
+    }
+
+    uint16_t fire_wave_segment_count = 0;
+    if (!reader.ReadU16(fire_wave_segment_count)) return std::nullopt;
+    out.fire_wave_segments.reserve(fire_wave_segment_count);
+    for (uint16_t i = 0; i < fire_wave_segment_count; ++i) {
+        FireWaveSegmentSnapshot segment;
+        if (!reader.ReadI32(segment.id) || !reader.ReadI32(segment.source_spirit_id) ||
+            !reader.ReadI32(segment.owner_player_id) || !reader.ReadI32(segment.owner_team) ||
+            !reader.ReadI32(segment.segment_index) || !reader.ReadF32(segment.origin_world_x) ||
+            !reader.ReadF32(segment.origin_world_y) || !reader.ReadF32(segment.direction_radians) ||
+            !reader.ReadF32(segment.start_time_seconds) || !reader.ReadF32(segment.duration_seconds) ||
+            !reader.ReadF32(segment.range_world) || !reader.ReadBool(segment.alive)) {
+            return std::nullopt;
+        }
+        out.fire_wave_segments.push_back(segment);
+    }
+
+    uint16_t embers_modifier_count = 0;
+    if (!reader.ReadU16(embers_modifier_count)) return std::nullopt;
+    out.embers_tile_modifiers.reserve(embers_modifier_count);
+    for (uint16_t i = 0; i < embers_modifier_count; ++i) {
+        EmbersTileModifierSnapshot modifier;
+        if (!reader.ReadI32(modifier.id) || !reader.ReadI32(modifier.source_spirit_id) ||
+            !reader.ReadI32(modifier.owner_player_id) || !reader.ReadI32(modifier.owner_team) ||
+            !reader.ReadI32(modifier.cell_x) || !reader.ReadI32(modifier.cell_y) ||
+            !reader.ReadF32(modifier.remaining_seconds) || !reader.ReadF32(modifier.total_seconds) ||
+            !reader.ReadBool(modifier.alive)) {
+            return std::nullopt;
+        }
+        out.embers_tile_modifiers.push_back(modifier);
     }
 
     uint16_t wall_count = 0;

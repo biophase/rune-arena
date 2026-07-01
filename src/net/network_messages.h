@@ -123,6 +123,8 @@ struct PlayerSnapshot {
         float burn_duration_seconds = 0.0f;
         float movement_speed_multiplier = 1.0f;
         bool source_active = false;
+        int origin_source_id = -1;
+        int source_owner_player_id = -1;
         std::string composite_effect_id;
 
         bool operator==(const StatusEffectSnapshot& other) const {
@@ -132,7 +134,8 @@ struct PlayerSnapshot {
                    progress == other.progress && source_elapsed_seconds == other.source_elapsed_seconds &&
                    burn_duration_seconds == other.burn_duration_seconds &&
                    movement_speed_multiplier == other.movement_speed_multiplier &&
-                   source_active == other.source_active &&
+                   source_active == other.source_active && origin_source_id == other.origin_source_id &&
+                   source_owner_player_id == other.source_owner_player_id &&
                    composite_effect_id == other.composite_effect_id;
         }
     };
@@ -235,6 +238,33 @@ struct FireSpiritSnapshot {
     float travel_duration_seconds = 0.0f;
     float peak_height = 0.0f;
     float projectile_animation_time = 0.0f;
+    bool alive = true;
+};
+
+struct FireWaveSegmentSnapshot {
+    int id = -1;
+    int source_spirit_id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
+    int segment_index = 0;
+    float origin_world_x = 0.0f;
+    float origin_world_y = 0.0f;
+    float direction_radians = 0.0f;
+    float start_time_seconds = 0.0f;
+    float duration_seconds = 0.0f;
+    float range_world = 0.0f;
+    bool alive = true;
+};
+
+struct EmbersTileModifierSnapshot {
+    int id = -1;
+    int source_spirit_id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
+    int cell_x = 0;
+    int cell_y = 0;
+    float remaining_seconds = 0.0f;
+    float total_seconds = 0.0f;
     bool alive = true;
 };
 
@@ -360,6 +390,10 @@ struct ServerSnapshotMessage {
     std::vector<int> removed_projectile_ids;
     std::vector<FireSpiritSnapshot> fire_spirits;
     std::vector<int> removed_fire_spirit_ids;
+    std::vector<FireWaveSegmentSnapshot> fire_wave_segments;
+    std::vector<int> removed_fire_wave_segment_ids;
+    std::vector<EmbersTileModifierSnapshot> embers_tile_modifiers;
+    std::vector<int> removed_embers_tile_modifier_ids;
     std::vector<IceWallSnapshot> ice_walls;
     std::vector<int> removed_ice_wall_ids;
     std::vector<MapObjectSnapshot> map_objects;

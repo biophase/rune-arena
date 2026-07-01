@@ -262,6 +262,8 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
                 {"burn_duration_seconds", Quantize2(status.burn_duration_seconds)},
                 {"movement_speed_multiplier", Quantize2(status.movement_speed_multiplier)},
                 {"source_active", status.source_active},
+                {"origin_source_id", status.origin_source_id},
+                {"source_owner_player_id", status.source_owner_player_id},
                 {"composite_effect_id", status.composite_effect_id},
             });
         }
@@ -350,6 +352,39 @@ nlohmann::json ToJson(const ServerSnapshotMessage& message) {
             {"peak_height", Quantize2(spirit.peak_height)},
             {"projectile_animation_time", Quantize2(spirit.projectile_animation_time)},
             {"alive", spirit.alive},
+        });
+    }
+
+    out["fire_wave_segments"] = nlohmann::json::array();
+    for (const auto& segment : message.fire_wave_segments) {
+        out["fire_wave_segments"].push_back({
+            {"id", segment.id},
+            {"source_spirit_id", segment.source_spirit_id},
+            {"owner_player_id", segment.owner_player_id},
+            {"owner_team", segment.owner_team},
+            {"segment_index", segment.segment_index},
+            {"origin_world_x", Quantize2(segment.origin_world_x)},
+            {"origin_world_y", Quantize2(segment.origin_world_y)},
+            {"direction_radians", Quantize2(segment.direction_radians)},
+            {"start_time_seconds", Quantize2(segment.start_time_seconds)},
+            {"duration_seconds", Quantize2(segment.duration_seconds)},
+            {"range_world", Quantize2(segment.range_world)},
+            {"alive", segment.alive},
+        });
+    }
+
+    out["embers_tile_modifiers"] = nlohmann::json::array();
+    for (const auto& modifier : message.embers_tile_modifiers) {
+        out["embers_tile_modifiers"].push_back({
+            {"id", modifier.id},
+            {"source_spirit_id", modifier.source_spirit_id},
+            {"owner_player_id", modifier.owner_player_id},
+            {"owner_team", modifier.owner_team},
+            {"cell_x", modifier.cell_x},
+            {"cell_y", modifier.cell_y},
+            {"remaining_seconds", Quantize2(modifier.remaining_seconds)},
+            {"total_seconds", Quantize2(modifier.total_seconds)},
+            {"alive", modifier.alive},
         });
     }
 
@@ -568,6 +603,8 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
                     status.burn_duration_seconds = status_item.value("burn_duration_seconds", 0.0f);
                     status.movement_speed_multiplier = status_item.value("movement_speed_multiplier", 1.0f);
                     status.source_active = status_item.value("source_active", false);
+                    status.origin_source_id = status_item.value("origin_source_id", -1);
+                    status.source_owner_player_id = status_item.value("source_owner_player_id", -1);
                     status.composite_effect_id = status_item.value("composite_effect_id", std::string{});
                     player.status_effects.push_back(status);
                 }
@@ -674,6 +711,43 @@ std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json
             spirit.projectile_animation_time = item.value("projectile_animation_time", 0.0f);
             spirit.alive = item.value("alive", true);
             out.fire_spirits.push_back(spirit);
+        }
+    }
+
+    const auto fire_wave_segments_it = json.find("fire_wave_segments");
+    if (fire_wave_segments_it != json.end() && fire_wave_segments_it->is_array()) {
+        for (const auto& item : *fire_wave_segments_it) {
+            FireWaveSegmentSnapshot segment;
+            segment.id = item.value("id", -1);
+            segment.source_spirit_id = item.value("source_spirit_id", -1);
+            segment.owner_player_id = item.value("owner_player_id", -1);
+            segment.owner_team = item.value("owner_team", 0);
+            segment.segment_index = item.value("segment_index", 0);
+            segment.origin_world_x = item.value("origin_world_x", 0.0f);
+            segment.origin_world_y = item.value("origin_world_y", 0.0f);
+            segment.direction_radians = item.value("direction_radians", 0.0f);
+            segment.start_time_seconds = item.value("start_time_seconds", 0.0f);
+            segment.duration_seconds = item.value("duration_seconds", 0.0f);
+            segment.range_world = item.value("range_world", 0.0f);
+            segment.alive = item.value("alive", true);
+            out.fire_wave_segments.push_back(segment);
+        }
+    }
+
+    const auto embers_tile_modifiers_it = json.find("embers_tile_modifiers");
+    if (embers_tile_modifiers_it != json.end() && embers_tile_modifiers_it->is_array()) {
+        for (const auto& item : *embers_tile_modifiers_it) {
+            EmbersTileModifierSnapshot modifier;
+            modifier.id = item.value("id", -1);
+            modifier.source_spirit_id = item.value("source_spirit_id", -1);
+            modifier.owner_player_id = item.value("owner_player_id", -1);
+            modifier.owner_team = item.value("owner_team", 0);
+            modifier.cell_x = item.value("cell_x", 0);
+            modifier.cell_y = item.value("cell_y", 0);
+            modifier.remaining_seconds = item.value("remaining_seconds", 0.0f);
+            modifier.total_seconds = item.value("total_seconds", 0.0f);
+            modifier.alive = item.value("alive", true);
+            out.embers_tile_modifiers.push_back(modifier);
         }
     }
 

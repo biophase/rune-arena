@@ -49,6 +49,8 @@ PlayerSnapshot BuildPlayerSnapshot(const Player& player) {
         status_snapshot.burn_duration_seconds = status.burn_duration_seconds;
         status_snapshot.movement_speed_multiplier = status.movement_speed_multiplier;
         status_snapshot.source_active = status.source_active;
+        status_snapshot.origin_source_id = status.origin_source_id;
+        status_snapshot.source_owner_player_id = status.source_owner_player_id;
         status_snapshot.composite_effect_id = status.composite_effect_id;
         snapshot.status_effects.push_back(status_snapshot);
     }
@@ -102,6 +104,8 @@ void ApplyPlayerSnapshot(Player* player, const PlayerSnapshot& snapshot, const s
         status.burn_duration_seconds = status_snapshot.burn_duration_seconds;
         status.movement_speed_multiplier = status_snapshot.movement_speed_multiplier;
         status.source_active = status_snapshot.source_active;
+        status.origin_source_id = status_snapshot.origin_source_id;
+        status.source_owner_player_id = status_snapshot.source_owner_player_id;
         status.composite_effect_id = status_snapshot.composite_effect_id;
         status.accumulated_magnitude = 0.0f;
         player->status_effects.push_back(status);
@@ -235,6 +239,37 @@ FireSpiritSnapshot BuildFireSpiritSnapshot(const FireSpirit& spirit) {
     snapshot.peak_height = spirit.peak_height;
     snapshot.projectile_animation_time = spirit.projectile_animation_time;
     snapshot.alive = spirit.alive;
+    return snapshot;
+}
+
+FireWaveSegmentSnapshot BuildFireWaveSegmentSnapshot(const FireWaveSegment& segment) {
+    FireWaveSegmentSnapshot snapshot;
+    snapshot.id = segment.id;
+    snapshot.source_spirit_id = segment.source_spirit_id;
+    snapshot.owner_player_id = segment.owner_player_id;
+    snapshot.owner_team = segment.owner_team;
+    snapshot.segment_index = segment.segment_index;
+    snapshot.origin_world_x = segment.origin_world.x;
+    snapshot.origin_world_y = segment.origin_world.y;
+    snapshot.direction_radians = segment.direction_radians;
+    snapshot.start_time_seconds = segment.start_time_seconds;
+    snapshot.duration_seconds = segment.duration_seconds;
+    snapshot.range_world = segment.range_world;
+    snapshot.alive = segment.alive;
+    return snapshot;
+}
+
+EmbersTileModifierSnapshot BuildEmbersTileModifierSnapshot(const EmbersTileModifier& modifier) {
+    EmbersTileModifierSnapshot snapshot;
+    snapshot.id = modifier.id;
+    snapshot.source_spirit_id = modifier.source_spirit_id;
+    snapshot.owner_player_id = modifier.owner_player_id;
+    snapshot.owner_team = modifier.owner_team;
+    snapshot.cell_x = modifier.cell.x;
+    snapshot.cell_y = modifier.cell.y;
+    snapshot.remaining_seconds = modifier.remaining_seconds;
+    snapshot.total_seconds = modifier.total_seconds;
+    snapshot.alive = modifier.alive;
     return snapshot;
 }
 

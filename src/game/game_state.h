@@ -10,7 +10,9 @@
 #include "game/composite_effect.h"
 #include "game/damage_popup.h"
 #include "game/earth_roots_group.h"
+#include "game/embers_tile_modifier.h"
 #include "game/fire_spirit.h"
+#include "game/fire_wave_segment.h"
 #include "game/fire_storm_cast.h"
 #include "game/fire_storm_dummy.h"
 #include "game/grappling_hook.h"
@@ -64,6 +66,8 @@ struct GameState {
     std::vector<Rune> runes;
     std::vector<Projectile> projectiles;
     std::vector<FireSpirit> fire_spirits;
+    std::vector<FireWaveSegment> fire_wave_segments;
+    std::vector<EmbersTileModifier> embers_tile_modifiers;
     std::vector<Explosion> explosions;
     std::vector<LightningEffect> lightning_effects;
     std::vector<IceWallPiece> ice_walls;

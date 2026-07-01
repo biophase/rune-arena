@@ -9,6 +9,7 @@ enum class StatusEffectType {
     Rooted = 3,
     RootedRecovery = 4,
     Frozen = 5,
+    Burning = 6,
 };
 
 struct StatusEffectInstance {
@@ -25,5 +26,7 @@ struct StatusEffectInstance {
     float burn_duration_seconds = 0.0f;
     float movement_speed_multiplier = 1.0f;
     bool source_active = false;
+    int origin_source_id = -1;
+    int source_owner_player_id = -1;
     std::string composite_effect_id;
 };

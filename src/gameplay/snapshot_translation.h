@@ -11,7 +11,9 @@
 #include "game/fire_storm_dummy.h"
 #include "game/fire_storm_cast.h"
 #include "game/earth_roots_group.h"
+#include "game/embers_tile_modifier.h"
 #include "game/castle.h"
+#include "game/fire_wave_segment.h"
 #include "game/grappling_hook.h"
 #include "net/network_messages.h"
 
@@ -24,6 +26,8 @@ RuneSnapshot BuildRuneSnapshot(const Rune& rune);
 CastleSnapshot BuildCastleSnapshot(const CastleState& castle);
 ProjectileSnapshot BuildProjectileSnapshot(const Projectile& projectile);
 FireSpiritSnapshot BuildFireSpiritSnapshot(const FireSpirit& spirit);
+FireWaveSegmentSnapshot BuildFireWaveSegmentSnapshot(const FireWaveSegment& segment);
+EmbersTileModifierSnapshot BuildEmbersTileModifierSnapshot(const EmbersTileModifier& modifier);
 IceWallSnapshot BuildIceWallSnapshot(const IceWallPiece& wall);
 MapObjectSnapshot BuildMapObjectSnapshot(const MapObjectInstance& object);
 FireStormDummySnapshot BuildFireStormDummySnapshot(const FireStormDummy& dummy);

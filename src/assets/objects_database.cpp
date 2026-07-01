@@ -182,6 +182,7 @@ bool ObjectsDatabase::LoadFromFile(const std::string& path) {
         proto.stops_projectiles = it.value().value("stops_projectiles", false);
         proto.masked_occluder = it.value().value("masked_occluder", false);
         proto.flat_render = it.value().value("flat", false);
+        proto.casts_shadow = it.value().value("casts_shadow", true);
         if (const auto collision_box_it = it.value().find("collision_box");
             collision_box_it != it.value().end() && collision_box_it->is_object()) {
             proto.collision_box_x = collision_box_it->value("x", 0);

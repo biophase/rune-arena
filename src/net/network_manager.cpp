@@ -105,6 +105,37 @@ bool AreEqual(const ProjectileSnapshot& a, const ProjectileSnapshot& b) {
            a.emitter_frame_counter == b.emitter_frame_counter && a.alive == b.alive;
 }
 
+bool AreEqual(const FireSpiritSnapshot& a, const FireSpiritSnapshot& b) {
+    return a.id == b.id && a.flower_object_id == b.flower_object_id &&
+           a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.state == b.state && a.pos_x == b.pos_x && a.pos_y == b.pos_y &&
+           a.vel_x == b.vel_x && a.vel_y == b.vel_y &&
+           a.target_world_x == b.target_world_x && a.target_world_y == b.target_world_y &&
+           a.spawn_order == b.spawn_order && a.age_seconds == b.age_seconds &&
+           a.launch_world_x == b.launch_world_x && a.launch_world_y == b.launch_world_y &&
+           a.impact_world_x == b.impact_world_x && a.impact_world_y == b.impact_world_y &&
+           a.launch_time_seconds == b.launch_time_seconds && a.impact_time_seconds == b.impact_time_seconds &&
+           a.travel_duration_seconds == b.travel_duration_seconds && a.peak_height == b.peak_height &&
+           a.projectile_animation_time == b.projectile_animation_time && a.alive == b.alive;
+}
+
+bool AreEqual(const FireWaveSegmentSnapshot& a, const FireWaveSegmentSnapshot& b) {
+    return a.id == b.id && a.source_spirit_id == b.source_spirit_id &&
+           a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.segment_index == b.segment_index && a.origin_world_x == b.origin_world_x &&
+           a.origin_world_y == b.origin_world_y && a.direction_radians == b.direction_radians &&
+           a.start_time_seconds == b.start_time_seconds && a.duration_seconds == b.duration_seconds &&
+           a.range_world == b.range_world && a.alive == b.alive;
+}
+
+bool AreEqual(const EmbersTileModifierSnapshot& a, const EmbersTileModifierSnapshot& b) {
+    return a.id == b.id && a.source_spirit_id == b.source_spirit_id &&
+           a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
+           a.cell_x == b.cell_x && a.cell_y == b.cell_y &&
+           a.remaining_seconds == b.remaining_seconds && a.total_seconds == b.total_seconds &&
+           a.alive == b.alive;
+}
+
 bool AreEqual(const IceWallSnapshot& a, const IceWallSnapshot& b) {
     return a.id == b.id && a.owner_player_id == b.owner_player_id && a.owner_team == b.owner_team &&
            a.cell_x == b.cell_x && a.cell_y == b.cell_y && a.state == b.state && a.state_time == b.state_time &&
@@ -187,6 +218,12 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
     delta.removed_rune_ids.clear();
     delta.projectiles.clear();
     delta.removed_projectile_ids.clear();
+    delta.fire_spirits.clear();
+    delta.removed_fire_spirit_ids.clear();
+    delta.fire_wave_segments.clear();
+    delta.removed_fire_wave_segment_ids.clear();
+    delta.embers_tile_modifiers.clear();
+    delta.removed_embers_tile_modifier_ids.clear();
     delta.ice_walls.clear();
     delta.removed_ice_wall_ids.clear();
     delta.map_objects.clear();
@@ -241,6 +278,48 @@ ServerSnapshotMessage BuildDeltaSnapshot(const ServerSnapshotMessage& base, cons
     for (const auto& projectile : base.projectiles) {
         if (current_projectiles.find(projectile.id) == current_projectiles.end()) {
             delta.removed_projectile_ids.push_back(projectile.id);
+        }
+    }
+
+    const auto base_fire_spirits = BuildIdMap(base.fire_spirits);
+    const auto current_fire_spirits = BuildIdMap(current.fire_spirits);
+    for (const auto& spirit : current.fire_spirits) {
+        auto it = base_fire_spirits.find(spirit.id);
+        if (it == base_fire_spirits.end() || !AreEqual(spirit, *it->second)) {
+            delta.fire_spirits.push_back(spirit);
+        }
+    }
+    for (const auto& spirit : base.fire_spirits) {
+        if (current_fire_spirits.find(spirit.id) == current_fire_spirits.end()) {
+            delta.removed_fire_spirit_ids.push_back(spirit.id);
+        }
+    }
+
+    const auto base_fire_wave_segments = BuildIdMap(base.fire_wave_segments);
+    const auto current_fire_wave_segments = BuildIdMap(current.fire_wave_segments);
+    for (const auto& segment : current.fire_wave_segments) {
+        auto it = base_fire_wave_segments.find(segment.id);
+        if (it == base_fire_wave_segments.end() || !AreEqual(segment, *it->second)) {
+            delta.fire_wave_segments.push_back(segment);
+        }
+    }
+    for (const auto& segment : base.fire_wave_segments) {
+        if (current_fire_wave_segments.find(segment.id) == current_fire_wave_segments.end()) {
+            delta.removed_fire_wave_segment_ids.push_back(segment.id);
+        }
+    }
+
+    const auto base_embers = BuildIdMap(base.embers_tile_modifiers);
+    const auto current_embers = BuildIdMap(current.embers_tile_modifiers);
+    for (const auto& modifier : current.embers_tile_modifiers) {
+        auto it = base_embers.find(modifier.id);
+        if (it == base_embers.end() || !AreEqual(modifier, *it->second)) {
+            delta.embers_tile_modifiers.push_back(modifier);
+        }
+    }
+    for (const auto& modifier : base.embers_tile_modifiers) {
+        if (current_embers.find(modifier.id) == current_embers.end()) {
+            delta.removed_embers_tile_modifier_ids.push_back(modifier.id);
         }
     }
 
@@ -384,6 +463,21 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
         UpsertById(out.projectiles, projectile);
     }
 
+    RemoveByIds(out.fire_spirits, delta.removed_fire_spirit_ids);
+    for (const auto& spirit : delta.fire_spirits) {
+        UpsertById(out.fire_spirits, spirit);
+    }
+
+    RemoveByIds(out.fire_wave_segments, delta.removed_fire_wave_segment_ids);
+    for (const auto& segment : delta.fire_wave_segments) {
+        UpsertById(out.fire_wave_segments, segment);
+    }
+
+    RemoveByIds(out.embers_tile_modifiers, delta.removed_embers_tile_modifier_ids);
+    for (const auto& modifier : delta.embers_tile_modifiers) {
+        UpsertById(out.embers_tile_modifiers, modifier);
+    }
+
     RemoveByIds(out.ice_walls, delta.removed_ice_wall_ids);
     for (const auto& wall : delta.ice_walls) {
         UpsertById(out.ice_walls, wall);
@@ -417,6 +511,9 @@ std::optional<ServerSnapshotMessage> ApplyDeltaSnapshot(const ServerSnapshotMess
     out.removed_player_ids.clear();
     out.removed_rune_ids.clear();
     out.removed_projectile_ids.clear();
+    out.removed_fire_spirit_ids.clear();
+    out.removed_fire_wave_segment_ids.clear();
+    out.removed_embers_tile_modifier_ids.clear();
     out.removed_ice_wall_ids.clear();
     out.removed_map_object_ids.clear();
     out.removed_castle_ids.clear();
