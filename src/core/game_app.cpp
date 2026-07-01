@@ -4205,6 +4205,20 @@ void GameApp::UpdateMatch(float dt) {
         UpdateFireSpirits(dt);
         UpdateFireWaveSegments(dt);
         UpdateEmbersTileModifiers(dt);
+        for (auto& object : state_.map_objects) {
+            if (!object.alive || object.state != MapObjectState::Spawning) {
+                continue;
+            }
+            object.state_time += dt;
+            const ObjectPrototype* proto = FindObjectPrototype(object.prototype_id);
+            const float spawn_duration =
+                (proto != nullptr) ? GetMapObjectAnimationDurationSeconds(*proto, proto->born_animation) : 0.0f;
+            if (spawn_duration > 0.0f && object.state_time >= spawn_duration) {
+                object.state = MapObjectState::Active;
+                object.state_time = 0.0f;
+                object.collision_enabled = (!object.walkable || object.stops_projectiles);
+            }
+        }
         UpdateClientVisualSmoothing(dt);
         UpdateDamagePopups(dt);
     }
@@ -5755,7 +5769,16 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
         state_.fire_spirits.push_back(std::move(spirit));
     }
+    std::vector<FireWaveSegment> predicted_fire_wave_segments;
+    std::unordered_set<int> predicted_fire_wave_source_ids;
     if (!network_manager_.IsHost()) {
+        predicted_fire_wave_segments.reserve(previous_fire_wave_segment_ids.size());
+        for (const auto& previous_segment : state_.fire_wave_segments) {
+            if (previous_segment.alive && previous_segment.id < 0) {
+                predicted_fire_wave_segments.push_back(previous_segment);
+                predicted_fire_wave_source_ids.insert(previous_segment.source_spirit_id);
+            }
+        }
         for (const auto& spirit : state_.fire_spirits) {
             const auto previous_it = previous_fire_spirits_by_id.find(spirit.id);
             if (previous_it == previous_fire_spirits_by_id.end()) {
@@ -5767,6 +5790,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         }
     }
     state_.fire_wave_segments.clear();
+    std::unordered_set<int> authoritative_fire_wave_source_ids;
     for (const auto& segment_snapshot : snapshot.fire_wave_segments) {
         FireWaveSegment segment;
         segment.id = segment_snapshot.id;
@@ -5781,9 +5805,24 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         segment.range_world = segment_snapshot.range_world;
         segment.alive = segment_snapshot.alive;
         state_.fire_wave_segments.push_back(segment);
+        authoritative_fire_wave_source_ids.insert(segment.source_spirit_id);
         if (!network_manager_.IsHost() && segment.segment_index == 0 &&
-            previous_fire_wave_segment_ids.find(segment.id) == previous_fire_wave_segment_ids.end()) {
+            previous_fire_wave_segment_ids.find(segment.id) == previous_fire_wave_segment_ids.end() &&
+            predicted_fire_wave_source_ids.find(segment.source_spirit_id) == predicted_fire_wave_source_ids.end()) {
             PlaySfxIfVisible(sfx_fire_storm_impact_.sound, sfx_fire_storm_impact_.loaded, segment.origin_world);
+        }
+    }
+    if (!network_manager_.IsHost()) {
+        for (const auto& predicted_segment : predicted_fire_wave_segments) {
+            if (authoritative_fire_wave_source_ids.find(predicted_segment.source_spirit_id) !=
+                authoritative_fire_wave_source_ids.end()) {
+                continue;
+            }
+            const float elapsed = snapshot.simulation_time_seconds - predicted_segment.start_time_seconds;
+            if (elapsed > predicted_segment.duration_seconds + 0.001f) {
+                continue;
+            }
+            state_.fire_wave_segments.push_back(predicted_segment);
         }
     }
     state_.embers_tile_modifiers.clear();
@@ -8418,8 +8457,80 @@ void GameApp::UpdateFireSpirits(float dt) {
             }
         }
     } else {
+        std::unordered_map<int, size_t> spirit_index_by_id;
+        spirit_index_by_id.reserve(state_.fire_spirits.size());
+        SpatialHashGrid spirit_grid(Constants::kSpatialCellSize);
+        for (size_t i = 0; i < state_.fire_spirits.size(); ++i) {
+            FireSpirit& spirit = state_.fire_spirits[i];
+            spirit_index_by_id[spirit.id] = i;
+            if (!spirit.alive || spirit.state != FireSpiritState::Idle) {
+                continue;
+            }
+            spirit_grid.Insert(spirit.id, spirit.pos, Constants::kFireSpiritRepulsionRadius);
+        }
+        const auto has_fire_wave_for_spirit = [&](int spirit_id) {
+            return std::any_of(state_.fire_wave_segments.begin(), state_.fire_wave_segments.end(),
+                               [&](const FireWaveSegment& segment) {
+                                   return segment.alive && segment.source_spirit_id == spirit_id;
+                               });
+        };
         for (auto& spirit : state_.fire_spirits) {
             if (!spirit.alive) {
+                continue;
+            }
+            if (spirit.state == FireSpiritState::Idle) {
+                const MapObjectInstance* flower = FindMapObjectById(spirit.flower_object_id);
+                if (flower == nullptr || !flower->alive) {
+                    spirit.alive = false;
+                    spirit.state = FireSpiritState::Dead;
+                    continue;
+                }
+                spirit.target_world = GetFireFlowerSpiritWorldPoint(*flower, Constants::kFireSpiritIdleAnchorOffsetX,
+                                                                    Constants::kFireSpiritIdleAnchorOffsetY);
+                Vector2 acceleration = {0.0f, 0.0f};
+                const Vector2 to_target = Vector2Subtract(spirit.target_world, spirit.pos);
+                if (Vector2LengthSqr(to_target) > 0.0001f) {
+                    const Vector2 target_dir = Vector2Normalize(to_target);
+                    acceleration = Vector2Scale(target_dir, Constants::kFireSpiritIdleAcceleration);
+                    acceleration = Vector2Add(
+                        acceleration,
+                        Vector2Scale(Vector2{-target_dir.y, target_dir.x}, Constants::kFireSpiritIdleOrbitForce));
+                }
+
+                for (int other_id : spirit_grid.Query(spirit.pos, Constants::kFireSpiritRepulsionRadius)) {
+                    if (other_id == spirit.id) {
+                        continue;
+                    }
+                    const auto other_it = spirit_index_by_id.find(other_id);
+                    if (other_it == spirit_index_by_id.end()) {
+                        continue;
+                    }
+                    const FireSpirit& other = state_.fire_spirits[other_it->second];
+                    if (!other.alive || other.state != FireSpiritState::Idle) {
+                        continue;
+                    }
+                    Vector2 away = Vector2Subtract(spirit.pos, other.pos);
+                    float distance = Vector2Length(away);
+                    if (distance <= 0.001f) {
+                        away = {1.0f, 0.0f};
+                        distance = 1.0f;
+                    }
+                    if (distance >= Constants::kFireSpiritRepulsionRadius) {
+                        continue;
+                    }
+                    const float normalized = 1.0f - distance / Constants::kFireSpiritRepulsionRadius;
+                    acceleration = Vector2Add(acceleration, Vector2Scale(Vector2Normalize(away),
+                                                                         Constants::kFireSpiritRepulsionStrength *
+                                                                             normalized));
+                }
+
+                spirit.vel = Vector2Add(spirit.vel, Vector2Scale(acceleration, dt));
+                spirit.vel = Vector2Scale(spirit.vel, std::max(0.0f, 1.0f - Constants::kFireSpiritIdleDamping * dt));
+                const float speed = Vector2Length(spirit.vel);
+                if (speed > Constants::kFireSpiritIdleMaxSpeed) {
+                    spirit.vel = Vector2Scale(Vector2Normalize(spirit.vel), Constants::kFireSpiritIdleMaxSpeed);
+                }
+                spirit.pos = Vector2Add(spirit.pos, Vector2Scale(spirit.vel, dt));
                 continue;
             }
             if (spirit.state == FireSpiritState::Projectile) {
@@ -8430,6 +8541,19 @@ void GameApp::UpdateFireSpirits(float dt) {
                 spirit.pos = Vector2Lerp(spirit.launch_world, spirit.impact_world, t);
                 spirit.projectile_animation_time += dt;
                 UpdateFireSpiritTrail(spirit, dt, simulation_time_seconds);
+                if (t >= 1.0f - 0.0001f) {
+                    if (!has_fire_wave_for_spirit(spirit.id)) {
+                        SpawnPredictedFireWaveSegments(spirit, spirit.impact_time_seconds);
+                    }
+                    spirit.state = FireSpiritState::Dead;
+                    if (Constants::kFireSpiritTrailEnableDeadLinger) {
+                        spirit.dead_trail_linger_remaining =
+                            std::max(spirit.dead_trail_linger_remaining, Constants::kFireSpiritTrailDeadLingerSeconds);
+                        spirit.has_last_trail_sample_world = false;
+                    } else {
+                        spirit.alive = false;
+                    }
+                }
             }
         }
     }
@@ -8468,6 +8592,29 @@ void GameApp::SpawnFireWaveSegments(const FireSpirit& spirit, float start_time_s
     for (int segment_index = 0; segment_index < Constants::kFireWaveSegmentCount; ++segment_index) {
         FireWaveSegment segment;
         segment.id = state_.next_entity_id++;
+        segment.source_spirit_id = spirit.id;
+        segment.owner_player_id = spirit.owner_player_id;
+        segment.owner_team = spirit.owner_team;
+        segment.segment_index = segment_index;
+        segment.origin_world = spirit.impact_world;
+        segment.direction_radians = (segment_angle_step * static_cast<float>(segment_index)) * DEG2RAD;
+        segment.start_time_seconds = start_time_seconds;
+        segment.duration_seconds = Constants::kFireWaveDurationSeconds;
+        segment.range_world = Constants::kFireWaveRangeWorld;
+        segment.alive = true;
+        state_.fire_wave_segments.push_back(segment);
+    }
+}
+
+void GameApp::SpawnPredictedFireWaveSegments(const FireSpirit& spirit, float start_time_seconds) {
+    if (network_manager_.IsHost()) {
+        return;
+    }
+    PlaySfxIfVisible(sfx_fire_storm_impact_.sound, sfx_fire_storm_impact_.loaded, spirit.impact_world);
+    const float segment_angle_step = 360.0f / static_cast<float>(Constants::kFireWaveSegmentCount);
+    for (int segment_index = 0; segment_index < Constants::kFireWaveSegmentCount; ++segment_index) {
+        FireWaveSegment segment;
+        segment.id = next_predicted_entity_id_--;
         segment.source_spirit_id = spirit.id;
         segment.owner_player_id = spirit.owner_player_id;
         segment.owner_team = spirit.owner_team;

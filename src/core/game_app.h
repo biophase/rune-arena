@@ -197,6 +197,7 @@ class GameApp {
     void SpawnStormArcSparkParticle(Vector2 world_pos, float visual_z);
     void SpawnFireSpiritSparkParticle(Vector2 world_pos, Vector2 travel_dir);
     void SpawnFireWaveSegments(const FireSpirit& spirit, float start_time_seconds);
+    void SpawnPredictedFireWaveSegments(const FireSpirit& spirit, float start_time_seconds);
     void ActivateEmbersTouchedByFireWaveSegment(const FireWaveSegment& segment, Vector2 center, float radius);
     void SpawnOrRefreshEmbersTileModifier(const FireWaveSegment& segment, const GridCoord& cell);
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
