@@ -5944,6 +5944,9 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
         spirit.projectile_animation_time = spirit_snapshot.projectile_animation_time;
         spirit.alive = spirit_snapshot.alive;
         current_fire_spirit_ids.insert(spirit.id);
+        FireSpiritLaunchMessage remote_launch_visual;
+        const bool has_remote_launch_visual =
+            !network_manager_.IsHost() && TryGetRemoteFireSpiritLaunchVisual(spirit.id, &remote_launch_visual);
         if (!network_manager_.IsHost() && spirit.state == FireSpiritState::Projectile) {
             auto visual_it = remote_fire_spirit_launch_visuals_.find(spirit.id);
             if (visual_it == remote_fire_spirit_launch_visuals_.end()) {
@@ -5959,11 +5962,18 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 message.launch_time_seconds = spirit.launch_time_seconds;
                 message.travel_duration_seconds = spirit.travel_duration_seconds;
                 message.peak_height = spirit.peak_height;
-                visual_it = remote_fire_spirit_launch_visuals_.emplace(spirit.id, RemoteFireSpiritLaunchVisual{message, true}).first;
+                visual_it =
+                    remote_fire_spirit_launch_visuals_.emplace(spirit.id, RemoteFireSpiritLaunchVisual{message, true}).first;
             } else {
                 visual_it->second.snapshot_confirmed = true;
             }
             ApplyRemoteFireSpiritLaunchVisual(spirit, static_cast<float>(snapshot.simulation_time_seconds));
+        } else if (has_remote_launch_visual) {
+            const float impact_time_seconds =
+                remote_launch_visual.launch_time_seconds + std::max(0.001f, remote_launch_visual.travel_duration_seconds);
+            if (static_cast<float>(snapshot.simulation_time_seconds) < impact_time_seconds - 0.0001f) {
+                ApplyRemoteFireSpiritLaunchVisual(spirit, static_cast<float>(snapshot.simulation_time_seconds));
+            }
         }
         if (const auto previous_it = previous_fire_spirits_by_id.find(spirit.id);
             previous_it != previous_fire_spirits_by_id.end()) {
@@ -5984,7 +5994,7 @@ void GameApp::ApplySnapshotToClientState(const ServerSnapshotMessage& snapshot) 
                 }
             }
         }
-        if (!network_manager_.IsHost()) {
+        if (!network_manager_.IsHost() && !has_remote_launch_visual) {
             Vector2 sample_pos = spirit.pos;
             if (spirit.state == FireSpiritState::Projectile) {
                 sample_pos = EvaluateFireSpiritRenderWorld(spirit, snapshot.simulation_time_seconds);
@@ -8796,6 +8806,20 @@ void GameApp::UpdateFireSpirits(float dt) {
             if (!spirit.alive) {
                 continue;
             }
+            FireSpiritLaunchMessage remote_launch_visual;
+            const bool has_remote_launch_visual = TryGetRemoteFireSpiritLaunchVisual(spirit.id, &remote_launch_visual);
+            if (has_remote_launch_visual) {
+                const float impact_time_seconds =
+                    remote_launch_visual.launch_time_seconds + std::max(0.001f, remote_launch_visual.travel_duration_seconds);
+                const bool launch_is_active = simulation_time_seconds < impact_time_seconds - 0.0001f;
+                if (launch_is_active) {
+                    spirit.alive = true;
+                    spirit.state = FireSpiritState::Projectile;
+                    ApplyRemoteFireSpiritLaunchVisual(spirit, simulation_time_seconds);
+                    UpdateFireSpiritTrail(spirit, dt, simulation_time_seconds);
+                    continue;
+                }
+            }
             if (spirit.state == FireSpiritState::Idle) {
                 const MapObjectInstance* flower = FindMapObjectById(spirit.flower_object_id);
                 if (flower == nullptr || !flower->alive) {
@@ -8852,8 +8876,6 @@ void GameApp::UpdateFireSpirits(float dt) {
                 continue;
             }
             if (spirit.state == FireSpiritState::Projectile) {
-                const bool has_remote_launch_visual =
-                    remote_fire_spirit_launch_visuals_.find(spirit.id) != remote_fire_spirit_launch_visuals_.end();
                 if (has_remote_launch_visual) {
                     ApplyRemoteFireSpiritLaunchVisual(spirit, simulation_time_seconds);
                 }
