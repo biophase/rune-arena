@@ -181,6 +181,64 @@ std::optional<ConsoleMessageNet> ConsoleMessageNetFromJson(const nlohmann::json&
     return out;
 }
 
+nlohmann::json ToJson(const FireSpiritLaunchMessage& message) {
+    return {
+        {"spirit_id", message.spirit_id},
+        {"flower_object_id", message.flower_object_id},
+        {"owner_player_id", message.owner_player_id},
+        {"owner_team", message.owner_team},
+        {"launch_world_x", Quantize2(message.launch_world_x)},
+        {"launch_world_y", Quantize2(message.launch_world_y)},
+        {"impact_world_x", Quantize2(message.impact_world_x)},
+        {"impact_world_y", Quantize2(message.impact_world_y)},
+        {"launch_time_seconds", Quantize2(message.launch_time_seconds)},
+        {"travel_duration_seconds", Quantize2(message.travel_duration_seconds)},
+        {"peak_height", Quantize2(message.peak_height)},
+    };
+}
+
+std::optional<FireSpiritLaunchMessage> FireSpiritLaunchFromJson(const nlohmann::json& json) {
+    FireSpiritLaunchMessage out;
+    out.spirit_id = json.value("spirit_id", -1);
+    out.flower_object_id = json.value("flower_object_id", -1);
+    out.owner_player_id = json.value("owner_player_id", -1);
+    out.owner_team = json.value("owner_team", 0);
+    out.launch_world_x = json.value("launch_world_x", 0.0f);
+    out.launch_world_y = json.value("launch_world_y", 0.0f);
+    out.impact_world_x = json.value("impact_world_x", 0.0f);
+    out.impact_world_y = json.value("impact_world_y", 0.0f);
+    out.launch_time_seconds = json.value("launch_time_seconds", 0.0f);
+    out.travel_duration_seconds = json.value("travel_duration_seconds", 0.0f);
+    out.peak_height = json.value("peak_height", 0.0f);
+    return out;
+}
+
+nlohmann::json ToJson(const FireWaveStartMessage& message) {
+    return {
+        {"source_spirit_id", message.source_spirit_id},
+        {"owner_player_id", message.owner_player_id},
+        {"owner_team", message.owner_team},
+        {"origin_world_x", Quantize2(message.origin_world_x)},
+        {"origin_world_y", Quantize2(message.origin_world_y)},
+        {"start_time_seconds", Quantize2(message.start_time_seconds)},
+        {"duration_seconds", Quantize2(message.duration_seconds)},
+        {"range_world", Quantize2(message.range_world)},
+    };
+}
+
+std::optional<FireWaveStartMessage> FireWaveStartFromJson(const nlohmann::json& json) {
+    FireWaveStartMessage out;
+    out.source_spirit_id = json.value("source_spirit_id", -1);
+    out.owner_player_id = json.value("owner_player_id", -1);
+    out.owner_team = json.value("owner_team", 0);
+    out.origin_world_x = json.value("origin_world_x", 0.0f);
+    out.origin_world_y = json.value("origin_world_y", 0.0f);
+    out.start_time_seconds = json.value("start_time_seconds", 0.0f);
+    out.duration_seconds = json.value("duration_seconds", 0.0f);
+    out.range_world = json.value("range_world", 0.0f);
+    return out;
+}
+
 nlohmann::json ToJson(const ServerSnapshotMessage& message) {
     nlohmann::json out;
     out["server_tick"] = message.server_tick;

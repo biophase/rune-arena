@@ -842,6 +842,20 @@ void NetworkManager::Poll() {
                             }
                             break;
                         }
+                        case binary::PacketType::FireSpiritLaunch: {
+                            auto message = binary::DecodeFireSpiritLaunchPayload(header.payload, header.payload_size);
+                            if (message.has_value()) {
+                                pending_fire_spirit_launches_.push_back(std::move(*message));
+                            }
+                            break;
+                        }
+                        case binary::PacketType::FireWaveStart: {
+                            auto message = binary::DecodeFireWaveStartPayload(header.payload, header.payload_size);
+                            if (message.has_value()) {
+                                pending_fire_wave_starts_.push_back(std::move(*message));
+                            }
+                            break;
+                        }
                         default:
                             break;
                     }
@@ -1043,6 +1057,34 @@ void NetworkManager::SendConsoleMessageToPlayer(int player_id, const ConsoleMess
 std::vector<ConsoleMessageNet> NetworkManager::ConsumeConsoleMessages() {
     std::vector<ConsoleMessageNet> out;
     out.swap(pending_console_messages_);
+    return out;
+}
+
+void NetworkManager::BroadcastFireSpiritLaunch(const FireSpiritLaunchMessage& message) {
+    if (!is_host_) {
+        return;
+    }
+    BroadcastPacket(binary::EncodeFireSpiritLaunchPacket(message), NetworkPacketReliability::Reliable, kChannelReliable,
+                    false);
+}
+
+std::vector<FireSpiritLaunchMessage> NetworkManager::ConsumeFireSpiritLaunches() {
+    std::vector<FireSpiritLaunchMessage> out;
+    out.swap(pending_fire_spirit_launches_);
+    return out;
+}
+
+void NetworkManager::BroadcastFireWaveStart(const FireWaveStartMessage& message) {
+    if (!is_host_) {
+        return;
+    }
+    BroadcastPacket(binary::EncodeFireWaveStartPacket(message), NetworkPacketReliability::Reliable, kChannelReliable,
+                    false);
+}
+
+std::vector<FireWaveStartMessage> NetworkManager::ConsumeFireWaveStarts() {
+    std::vector<FireWaveStartMessage> out;
+    out.swap(pending_fire_wave_starts_);
     return out;
 }
 

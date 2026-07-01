@@ -462,6 +462,31 @@ struct ConsoleMessageNet {
     ConsoleMessage message;
 };
 
+struct FireSpiritLaunchMessage {
+    int spirit_id = -1;
+    int flower_object_id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
+    float launch_world_x = 0.0f;
+    float launch_world_y = 0.0f;
+    float impact_world_x = 0.0f;
+    float impact_world_y = 0.0f;
+    float launch_time_seconds = 0.0f;
+    float travel_duration_seconds = 0.0f;
+    float peak_height = 0.0f;
+};
+
+struct FireWaveStartMessage {
+    int source_spirit_id = -1;
+    int owner_player_id = -1;
+    int owner_team = 0;
+    float origin_world_x = 0.0f;
+    float origin_world_y = 0.0f;
+    float start_time_seconds = 0.0f;
+    float duration_seconds = 0.0f;
+    float range_world = 0.0f;
+};
+
 nlohmann::json ToJson(const ClientInputMessage& message);
 std::optional<ClientInputMessage> ClientInputFromJson(const nlohmann::json& json);
 nlohmann::json ToJson(const ClientMoveMessage& message);
@@ -474,6 +499,10 @@ nlohmann::json ToJson(const ConsoleMessage& message);
 std::optional<ConsoleMessage> ConsoleMessageFromJson(const nlohmann::json& json);
 nlohmann::json ToJson(const ConsoleMessageNet& message);
 std::optional<ConsoleMessageNet> ConsoleMessageNetFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const FireSpiritLaunchMessage& message);
+std::optional<FireSpiritLaunchMessage> FireSpiritLaunchFromJson(const nlohmann::json& json);
+nlohmann::json ToJson(const FireWaveStartMessage& message);
+std::optional<FireWaveStartMessage> FireWaveStartFromJson(const nlohmann::json& json);
 
 nlohmann::json ToJson(const ServerSnapshotMessage& message);
 std::optional<ServerSnapshotMessage> ServerSnapshotFromJson(const nlohmann::json& json);

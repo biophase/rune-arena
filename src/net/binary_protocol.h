@@ -23,6 +23,8 @@ enum class PacketType : uint8_t {
     MapTransferComplete = 10,
     ChatSubmit = 11,
     ConsoleMessage = 12,
+    FireSpiritLaunch = 13,
+    FireWaveStart = 14,
 };
 
 struct DecodedPacketHeader {
@@ -67,6 +69,12 @@ std::optional<ChatSubmitMessage> DecodeChatSubmitPayload(const uint8_t* payload,
 
 std::vector<uint8_t> EncodeConsoleMessagePacket(const ConsoleMessageNet& message);
 std::optional<ConsoleMessageNet> DecodeConsoleMessagePayload(const uint8_t* payload, size_t payload_size);
+
+std::vector<uint8_t> EncodeFireSpiritLaunchPacket(const FireSpiritLaunchMessage& message);
+std::optional<FireSpiritLaunchMessage> DecodeFireSpiritLaunchPayload(const uint8_t* payload, size_t payload_size);
+
+std::vector<uint8_t> EncodeFireWaveStartPacket(const FireWaveStartMessage& message);
+std::optional<FireWaveStartMessage> DecodeFireWaveStartPayload(const uint8_t* payload, size_t payload_size);
 
 bool DecodePacketHeader(const uint8_t* data, size_t data_size, DecodedPacketHeader& out_header);
 

@@ -118,6 +118,7 @@ class GameApp {
     void BroadcastConsoleMessageToAll(const ConsoleMessage& message);
     void SendConsoleMessageToPlayer(int player_id, const ConsoleMessage& message);
     void SendConsoleMessageToTeam(int team, const ConsoleMessage& message);
+    void ConsumeRemoteFireVisualEvents();
     bool TryHandleCheatCommand(const ChatSubmitMessage& message, const Player& sender);
     std::string ResolveSpawnCheatPrototypeId(const std::string& item_name) const;
     void SendCheatCommandFeedback(int player_id, const std::string& text, Color color);
@@ -198,6 +199,7 @@ class GameApp {
     void SpawnFireSpiritSparkParticle(Vector2 world_pos, Vector2 travel_dir);
     void SpawnFireWaveSegments(const FireSpirit& spirit, float start_time_seconds);
     void SpawnPredictedFireWaveSegments(const FireSpirit& spirit, float start_time_seconds);
+    void SpawnPredictedFireWaveSegments(const FireWaveStartMessage& message);
     void ActivateEmbersTouchedByFireWaveSegment(const FireWaveSegment& segment, Vector2 center, float radius);
     void SpawnOrRefreshEmbersTileModifier(const FireWaveSegment& segment, const GridCoord& cell);
     void SpawnFireStormDummyAtCell(int owner_player_id, int owner_team, const GridCoord& cell,
@@ -359,6 +361,9 @@ class GameApp {
     Vector2 GetRenderGrapplingHookHeadPosition(int hook_id, Vector2 fallback) const;
     Vector2 GetRenderFireSpiritPosition(int spirit_id, Vector2 fallback) const;
     Vector2 GetRenderFireWaveCenterPosition(int segment_id, Vector2 fallback) const;
+    void ApplyRemoteFireSpiritLaunchVisual(FireSpirit& spirit, float simulation_time_seconds) const;
+    bool TryGetRemoteFireSpiritLaunchVisual(int spirit_id, FireSpiritLaunchMessage* out_message) const;
+    bool TryGetRemoteFireWaveStartVisual(int source_spirit_id, FireWaveStartMessage* out_message) const;
     const ActiveModularAttackVisual* FindActiveModularAttackVisual(int player_id) const;
     float GetPlayerLockedMeleeAimRadians(const Player& player) const;
     float GetPlayerAttackVisualRotationDegrees(const Player& player) const;
@@ -545,10 +550,20 @@ class GameApp {
         double time_seconds = 0.0;
         Vector2 pos = {0.0f, 0.0f};
     };
+    struct RemoteFireSpiritLaunchVisual {
+        FireSpiritLaunchMessage message;
+        bool snapshot_confirmed = false;
+    };
+    struct RemoteFireWaveStartVisual {
+        FireWaveStartMessage message;
+        bool snapshot_confirmed = false;
+    };
     std::unordered_map<int, std::deque<RemotePositionSample>> remote_position_samples_;
     std::unordered_map<int, std::deque<RemotePositionSample>> grappling_head_position_samples_;
     std::unordered_map<int, std::deque<RemotePositionSample>> fire_spirit_position_samples_;
     std::unordered_map<int, std::deque<RemotePositionSample>> fire_wave_center_position_samples_;
+    std::unordered_map<int, RemoteFireSpiritLaunchVisual> remote_fire_spirit_launch_visuals_;
+    std::unordered_map<int, RemoteFireWaveStartVisual> remote_fire_wave_start_visuals_;
     std::deque<ClientInputMessage> pending_local_prediction_inputs_;
 
     int local_input_tick_ = 0;

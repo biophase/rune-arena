@@ -88,6 +88,10 @@ class NetworkManager {
     void BroadcastConsoleMessage(const ConsoleMessageNet& message);
     void SendConsoleMessageToPlayer(int player_id, const ConsoleMessageNet& message);
     std::vector<ConsoleMessageNet> ConsumeConsoleMessages();
+    void BroadcastFireSpiritLaunch(const FireSpiritLaunchMessage& message);
+    std::vector<FireSpiritLaunchMessage> ConsumeFireSpiritLaunches();
+    void BroadcastFireWaveStart(const FireWaveStartMessage& message);
+    std::vector<FireWaveStartMessage> ConsumeFireWaveStarts();
     void BroadcastMapTransferBegin(const MapTransferBeginMessage& message);
     void BroadcastMapTransferChunk(const MapTransferChunkMessage& message);
     void BroadcastMapTransferComplete(const MapTransferCompleteMessage& message);
@@ -139,6 +143,8 @@ class NetworkManager {
     std::optional<LobbyStateMessage> latest_lobby_state_;
     std::optional<MatchStartMessage> pending_match_start_;
     std::vector<ConsoleMessageNet> pending_console_messages_;
+    std::vector<FireSpiritLaunchMessage> pending_fire_spirit_launches_;
+    std::vector<FireWaveStartMessage> pending_fire_wave_starts_;
     std::vector<RemotePlayerInfo> disconnected_remote_players_;
     std::optional<MapTransferBeginMessage> latest_map_transfer_begin_;
     std::vector<MapTransferChunkMessage> pending_map_transfer_chunks_;

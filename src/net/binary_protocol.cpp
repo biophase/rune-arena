@@ -332,6 +332,61 @@ std::optional<ConsoleMessageNet> DecodeConsoleMessagePayload(const uint8_t* payl
     return out;
 }
 
+std::vector<uint8_t> EncodeFireSpiritLaunchPacket(const FireSpiritLaunchMessage& message) {
+    BufferWriter payload;
+    payload.WriteI32(message.spirit_id);
+    payload.WriteI32(message.flower_object_id);
+    payload.WriteI32(message.owner_player_id);
+    payload.WriteI32(message.owner_team);
+    payload.WriteF32(message.launch_world_x);
+    payload.WriteF32(message.launch_world_y);
+    payload.WriteF32(message.impact_world_x);
+    payload.WriteF32(message.impact_world_y);
+    payload.WriteF32(message.launch_time_seconds);
+    payload.WriteF32(message.travel_duration_seconds);
+    payload.WriteF32(message.peak_height);
+    return MakePacket(PacketType::FireSpiritLaunch, payload.Bytes());
+}
+
+std::optional<FireSpiritLaunchMessage> DecodeFireSpiritLaunchPayload(const uint8_t* payload, size_t payload_size) {
+    BufferReader reader(payload, payload_size);
+    FireSpiritLaunchMessage out;
+    if (!reader.ReadI32(out.spirit_id) || !reader.ReadI32(out.flower_object_id) ||
+        !reader.ReadI32(out.owner_player_id) || !reader.ReadI32(out.owner_team) ||
+        !reader.ReadF32(out.launch_world_x) || !reader.ReadF32(out.launch_world_y) ||
+        !reader.ReadF32(out.impact_world_x) || !reader.ReadF32(out.impact_world_y) ||
+        !reader.ReadF32(out.launch_time_seconds) || !reader.ReadF32(out.travel_duration_seconds) ||
+        !reader.ReadF32(out.peak_height) || !reader.End()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::vector<uint8_t> EncodeFireWaveStartPacket(const FireWaveStartMessage& message) {
+    BufferWriter payload;
+    payload.WriteI32(message.source_spirit_id);
+    payload.WriteI32(message.owner_player_id);
+    payload.WriteI32(message.owner_team);
+    payload.WriteF32(message.origin_world_x);
+    payload.WriteF32(message.origin_world_y);
+    payload.WriteF32(message.start_time_seconds);
+    payload.WriteF32(message.duration_seconds);
+    payload.WriteF32(message.range_world);
+    return MakePacket(PacketType::FireWaveStart, payload.Bytes());
+}
+
+std::optional<FireWaveStartMessage> DecodeFireWaveStartPayload(const uint8_t* payload, size_t payload_size) {
+    BufferReader reader(payload, payload_size);
+    FireWaveStartMessage out;
+    if (!reader.ReadI32(out.source_spirit_id) || !reader.ReadI32(out.owner_player_id) ||
+        !reader.ReadI32(out.owner_team) || !reader.ReadF32(out.origin_world_x) ||
+        !reader.ReadF32(out.origin_world_y) || !reader.ReadF32(out.start_time_seconds) ||
+        !reader.ReadF32(out.duration_seconds) || !reader.ReadF32(out.range_world) || !reader.End()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
 std::vector<uint8_t> EncodeSnapshotPacket(const ServerSnapshotMessage& message) {
     BufferWriter payload;
     payload.WriteI32(message.server_tick);
